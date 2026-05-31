@@ -14,14 +14,13 @@ import re
 import subprocess
 import threading
 import uuid
-import datetime
 from typing import Optional, Dict, Any, List
 from sqlalchemy import select, and_
 
 # Core Config, Database, and Model imports
 from backend.app.core.config import settings
 from backend.app.core.database import async_session_factory
-from backend.app.models.scan import ScanTask, VulnerabilityFinding
+from backend.app.models.scan import ScanTask, VulnerabilityFinding, utcnow
 
 # Configure service-specific logger for scanner diagnostics
 logger = logging.getLogger("app.services.nuclei")
@@ -92,15 +91,19 @@ async def generate_gemini_remediation_patch(
 {poc_response or "未捕获到响应报文上下文"}
 """
         
-        # Call the Google GenAI SDK asynchronously.
-        # system_instruction and temperature are wrapped in GenerateContentConfig.
-        response = await client.aio.models.generate_content(
-            model=model_name,
-            contents=user_content,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                temperature=0.2,
+        # Call the Google GenAI SDK asynchronously, bounded by a hard timeout
+        # budget so a slow/hung upstream (observed 503s + multi-second stalls)
+        # can never block the scan pipeline indefinitely (D3).
+        response = await asyncio.wait_for(
+            client.aio.models.generate_content(
+                model=model_name,
+                contents=user_content,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    temperature=0.2,
+                ),
             ),
+            timeout=settings.GEMINI_REQUEST_TIMEOUT_SECONDS,
         )
         
         logger.info(f"[GEMINI AI] Successful patch analysis received for {template_id}")
@@ -109,6 +112,16 @@ async def generate_gemini_remediation_patch(
     except ImportError:
         logger.error("[GEMINI AI] SDK ImportError: 'google-genai' library not installed correctly in Python path.")
         return "本地级联降级提示：本地 Python 运行环境缺少 `google-genai` 最新版官方 SDK。请执行 `pip install google-genai` 修复。"
+    except (asyncio.TimeoutError, TimeoutError):
+        logger.error(
+            f"[GEMINI AI TIMEOUT] Patch generation for {template_id} exceeded "
+            f"{settings.GEMINI_REQUEST_TIMEOUT_SECONDS}s budget; returning degraded fallback."
+        )
+        return (
+            "本地级联降级提示：调用 Gemini AI 决策层超时"
+            f"（超过 {settings.GEMINI_REQUEST_TIMEOUT_SECONDS} 秒预算）。"
+            "本次未生成修复建议，请稍后重试或检查网络连接。"
+        )
     except Exception as e:
         logger.error(f"[GEMINI AI API ERROR] Failed calling Gemini AI ({settings.GEMINI_PRO_MODEL}): {e}")
         # Return elegant soft fallback rather than raising database transactions failure
@@ -193,7 +206,7 @@ async def _persist_finding_fast(finding: Dict[str, Any], scan_id: str) -> None:
                 poc_request=poc_request,
                 poc_response=poc_response,
                 ai_patch=None,
-                created_at=datetime.datetime.utcnow()
+                created_at=utcnow()
             )
             db.add(vulnerability)
             await db.commit()
@@ -560,7 +573,7 @@ async def execute_nuclei_scan_async(
             task = result.scalar_one_or_none()
             if task:
                 task.status = "running"
-                task.updated_at = datetime.datetime.utcnow()
+                task.updated_at = utcnow()
                 await db.commit()
                 logger.info(f"[DB STATE] Scan Task [{scan_id}] marked as RUNNING.")
             else:
@@ -649,7 +662,7 @@ async def execute_nuclei_scan_async(
             task = result.scalar_one_or_none()
             if task:
                 task.status = final_status
-                task.updated_at = datetime.datetime.utcnow()
+                task.updated_at = utcnow()
                 await db.commit()
                 logger.info(f"[PHASE 2 · DB STATE] Scan Task [{scan_id}] status → {final_status.upper()}")
         except Exception as db_err:

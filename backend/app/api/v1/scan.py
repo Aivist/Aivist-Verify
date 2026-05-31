@@ -5,14 +5,13 @@
 
 import uuid
 import logging
-import datetime
 from fastapi import APIRouter, BackgroundTasks, status, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.schemas.scan import ScanRequest, ScanResponse, ScanTaskState, FindingDetails
 from backend.app.services.nuclei import execute_nuclei_scan_async
 from backend.app.core.database import get_db
-from backend.app.models.scan import ScanTask, VulnerabilityFinding
+from backend.app.models.scan import ScanTask, VulnerabilityFinding, utcnow
 from sqlalchemy import select
 
 # Create standard API router for vulnerability scan namespace
@@ -62,8 +61,8 @@ async def start_scan(
             target_url=target_str,
             status="running",
             cookie=cookie_header,
-            created_at=datetime.datetime.utcnow(),
-            updated_at=datetime.datetime.utcnow()
+            created_at=utcnow(),
+            updated_at=utcnow()
         )
         db.add(scan_task)
         await db.commit()

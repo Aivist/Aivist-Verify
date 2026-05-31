@@ -26,6 +26,41 @@ logging.basicConfig(
 logger = logging.getLogger("app.main")
 
 
+def _verify_schema_integrity(sync_conn) -> None:
+    """
+    D1 guard — detect schema drift instead of failing deep inside an INSERT.
+
+    ``create_all`` creates missing *tables* but never ALTERs existing ones, so
+    an older DB file can be missing columns added to the ORM later (this already
+    bit Step D). We diff each ORM table's expected columns against the live
+    ``PRAGMA table_info`` and raise a clear, actionable error at startup if any
+    expected column is absent. This does NOT auto-migrate (no Alembic yet).
+    """
+    from sqlalchemy import inspect as sa_inspect
+
+    inspector = sa_inspect(sync_conn)
+    drift: dict[str, list[str]] = {}
+    for table_name, table in Base.metadata.tables.items():
+        if not inspector.has_table(table_name):
+            drift[table_name] = ["<entire table missing>"]
+            continue
+        existing_cols = {col["name"] for col in inspector.get_columns(table_name)}
+        expected_cols = {col.name for col in table.columns}
+        missing = sorted(expected_cols - existing_cols)
+        if missing:
+            drift[table_name] = missing
+
+    if drift:
+        details = "; ".join(f"{t} -> missing {cols}" for t, cols in drift.items())
+        raise RuntimeError(
+            "Database schema drift detected (D1: no migrations). The existing "
+            f"database is missing columns the ORM now expects: {details}. Because "
+            "this project uses create_all (which never ALTERs existing tables), "
+            "either delete the SQLite DB file and restart to recreate it, or apply "
+            "a migration. Refusing to start with a broken schema."
+        )
+
+
 # 2. Modern FastAPI Lifespan Handler for Startup/Shutdown Events
 # Enforces automated database table synchronization, preventing 'no such table' errors on first launch.
 @asynccontextmanager
@@ -35,9 +70,11 @@ async def lifespan(app: FastAPI):
         # Asynchronous table creation mapping directly onto target aiosqlite context
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            # D1: fail fast with a clear message on schema drift (missing columns)
+            await conn.run_sync(_verify_schema_integrity)
         logger.info("[LIFESPAN STARTUP] Async database ORM schema sync completed successfully.")
     except Exception as e:
-        logger.critical(f"[LIFESPAN STARTUP FAILURE] Failed auto-creating ORM tables: {e}")
+        logger.critical(f"[LIFESPAN STARTUP FAILURE] Database schema initialization/verification failed: {e}")
         raise e
         
     yield  # Hand over control to FastAPI execution loop

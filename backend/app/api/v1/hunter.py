@@ -4,6 +4,7 @@
 # ==============================================================================
 
 import json
+import asyncio
 import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, status, HTTPException, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -160,14 +161,19 @@ async def _invoke_gemini_logic_hunt(
         if model_name.startswith("models/"):
             model_name = model_name[len("models/"):]
 
-        response = await client.aio.models.generate_content(
-            model=model_name,
-            contents=user_content,
-            config=types.GenerateContentConfig(
-                system_instruction=_SYSTEM_PROMPT,
-                response_mime_type="application/json",
-                temperature=0.4,
+        # Bounded by a hard timeout budget so a slow/hung upstream cannot block
+        # the analyze endpoint indefinitely; surface a fast degraded response (D3).
+        response = await asyncio.wait_for(
+            client.aio.models.generate_content(
+                model=model_name,
+                contents=user_content,
+                config=types.GenerateContentConfig(
+                    system_instruction=_SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    temperature=0.4,
+                ),
             ),
+            timeout=settings.GEMINI_REQUEST_TIMEOUT_SECONDS,
         )
 
         # Parse the structured JSON response
@@ -186,6 +192,19 @@ async def _invoke_gemini_logic_hunt(
             "report_markdown": (
                 "## ⚠️ SDK 缺失\n\n"
                 "Python 环境缺少 `google-genai` 官方 SDK。请执行 `pip install google-genai` 后重试。"
+            ),
+            "automation_payloads": [],
+        }
+    except (asyncio.TimeoutError, TimeoutError):
+        logger.error(
+            f"[HUNTER · GEMINI TIMEOUT] analyze exceeded "
+            f"{settings.GEMINI_REQUEST_TIMEOUT_SECONDS}s budget; returning degraded fallback."
+        )
+        return {
+            "report_markdown": (
+                "## ⚠️ Gemini AI 调用超时\n\n"
+                f"调用 Gemini AI 决策层超过 {settings.GEMINI_REQUEST_TIMEOUT_SECONDS} 秒预算，已中止本次分析。\n\n"
+                "请稍后重试，或检查网络连接 / API 配额。"
             ),
             "automation_payloads": [],
         }
@@ -341,12 +360,18 @@ async def persist_hunter_finding(
 
     payloads = [p.model_dump() for p in request.automation_payloads]
     # Synthesize the NOT NULL columns that only Nuclei findings populate natively.
-    severity = (payloads[0].get("type") or "info").upper()
+    # D6: `severity` must hold a real severity level (CRITICAL/HIGH/.../INFO), NOT
+    # a vulnerability *type*. Hunter has no real severity, so we record "INFO" and
+    # keep the detected type both in the payloads JSON (`type`) and, for UI
+    # visibility, appended to template_id (e.g. "logic-hunter:BOLA").
+    vuln_type = (payloads[0].get("type") if payloads else None) or "unknown"
+    severity = "INFO"
+    template_id = f"logic-hunter:{vuln_type}"
 
     finding = VulnerabilityFinding(
         scan_id=None,
         source="hunter",
-        template_id="logic-hunter",
+        template_id=template_id,
         severity=severity,
         matched_at=base_url,
         poc_request=None,

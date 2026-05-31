@@ -84,6 +84,11 @@ class Settings(BaseSettings):
         description="Rate-limit cooldown (seconds) between sequential Gemini API calls during batch enrichment."
     )
 
+    GEMINI_REQUEST_TIMEOUT_SECONDS: float = Field(
+        default=60.0,
+        description="Hard wall-clock budget (seconds) for a single Gemini API call before it is abandoned and a degraded fallback is returned (D3)."
+    )
+
     FUZZER_HTTP_TIMEOUT_CONNECT: float = Field(
         default=10.0,
         description="HTTP connect timeout (seconds) for the fuzzing engine's outbound requests."

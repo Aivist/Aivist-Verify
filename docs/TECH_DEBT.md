@@ -17,12 +17,18 @@
 |---|---|---|---|
 | R1 | **Hunter → Verify link was broken** | Step D: `models/scan.py`, `fuzzer.py`, `hunter.py`, `schemas/hunter.py` | `analyze` produced payloads that could never reach `verify`. Fixed by typed JSON columns + `POST /hunter/findings`. **Verified end-to-end** (real server + real local target + real DB): analyze → save → verify → 6 `FuzzingRecord`s with verdicts. |
 | R2 | **`pruner` non-determinism (`PYTHONHASHSEED`)** | `services/pruner.py` | Keyword scoring depended on frozenset iteration order. Now counts all distinct keywords; locked by regression tests in `test_pruner.py`. Suite passes under random seeds. |
+| R3 | **Tech-debt cleanup sweep (D1/D3/D4/D6/D7/D8/D9 + hardcoding N1–N7)** | see each item below | Done in two commits: **Stage A** (config/hardcoding/hygiene: D4, D8, N1–N7) and **Stage B** (D9, D3, D6, D1, D7). All 66 tests pass. Remaining open: **D2** (auth, intentionally deferred for local use) and **D5** (frontend consolidation, tracked as a separate task). |
 
 ---
 
 ## 🔴 High severity / fix before any real use
 
 ### D1 — No database migrations (schema drift trap)
+- **✅ RESOLVED (Stage B):** added `_verify_schema_integrity` to the `main.py`
+  lifespan. After `create_all`, it diffs each ORM table's expected columns
+  against live `PRAGMA table_info` and raises a clear, actionable startup error
+  (delete DB / migrate) instead of failing deep in an INSERT. Does NOT
+  auto-migrate — Alembic is still the right long-term move if schemas churn.
 - **Where:** `main.py` lifespan uses `Base.metadata.create_all` only; no Alembic.
 - **Problem:** `create_all` never alters existing tables. Any model change leaves
   old DBs missing columns → runtime `OperationalError`. This already bit Step D
@@ -40,6 +46,11 @@
   token before any shared or hosted deployment.
 
 ### D3 — `analyze` can hang on the external Gemini call
+- **✅ RESOLVED (Stage B):** both Gemini call sites
+  (`hunter._invoke_gemini_logic_hunt` + `nuclei.generate_gemini_remediation_patch`)
+  are now wrapped in `asyncio.wait_for(..., timeout=settings.GEMINI_REQUEST_TIMEOUT_SECONDS)`
+  (default 60s, configurable). On timeout each returns a fast degraded fallback
+  instead of blocking the caller.
 - **Where:** `hunter.py` `_invoke_gemini_logic_hunt` (and `nuclei.py` patch gen).
 - **Problem:** the SDK call has no explicit timeout; observed real-world 503s and
   multi-second/timeout hangs. The endpoint catches errors but can still block the
@@ -52,6 +63,9 @@
 ## 🟠 Medium severity
 
 ### D4 — `FindingDetails.scan_id` typed as non-optional `str`
+- **✅ RESOLVED (Stage A):** `scan_id` is now `Optional[str] = None` and a
+  `source: Optional[str]` field was added to `FindingDetails`; the scan endpoint
+  populates it.
 - **Where:** `schemas/scan.py` `FindingDetails.scan_id: str`.
 - **Problem:** Hunter findings have `scan_id = NULL`. The scan-scoped endpoint
   filters by `scan_id` so it never serializes a Hunter row today, but **any
@@ -67,6 +81,10 @@
   canonical HTML into it with a real build. Don't leave both as "the frontend."
 
 ### D6 — `severity` column misused for Hunter findings
+- **✅ RESOLVED (Stage B):** `persist_hunter_finding` now stores a real severity
+  (`"INFO"`) and preserves the vulnerability *type* in `template_id`
+  (e.g. `"logic-hunter:BOLA"`) and in the `automation_payloads` JSON. Severity
+  filtering/sorting is no longer polluted by type strings.
 - **Where:** `hunter.py` `persist_hunter_finding` sets `severity =
   payloads[0].type.upper()` (e.g. `"BOLA"`).
 - **Problem:** `severity` semantically means CRITICAL/HIGH/… but for Hunter rows
@@ -76,6 +94,10 @@
   payload; or add a dedicated `vuln_type` column.
 
 ### D7 — No test coverage for the API layer or Nuclei pipeline
+- **✅ RESOLVED (Stage B):** added `backend/tests/test_api_endpoints.py` — 10
+  FastAPI `TestClient` tests over an isolated per-test SQLite DB with Gemini +
+  nuclei + background fuzzing mocked. Covers analyze (success + 422), findings
+  persist (201 + 422 paths), verify/batch 404s, and scan start/status (202 + 404).
 - **Where:** `backend/tests/` covers pruner, custody, Step D extraction only.
 - **Problem:** `api/v1/scan.py`, `api/v1/hunter.py`, and `services/nuclei.py`
   have **no automated tests**. Regressions there are invisible.
@@ -83,6 +105,10 @@
   HAR ingest, batch validation 400/404) and a mocked-subprocess nuclei test.
 
 ### D8 — `requirements.txt` gaps
+- **✅ RESOLVED (Stage A):** pinned `sqlalchemy`/`aiosqlite`/`google-genai`/
+  `python-multipart` to tested versions, added `backend/requirements-dev.txt`
+  (pytest), and annotated `python-jose`/`passlib` as reserved-for-D2 (still
+  unused). Kept rather than removed so the future auth work has them ready.
 - **Where:** `backend/requirements.txt`.
 - **Problems:** ships unused `python-jose`/`passlib`; omits `pytest`
   (needed to run the suite); some pins are loose (`sqlalchemy>=2.0`, `aiosqlite`,
@@ -95,11 +121,14 @@
 ## 🟡 Low severity / hygiene
 
 ### D9 — `datetime.datetime.utcnow()` is deprecated
+- **✅ RESOLVED (Stage B):** added a single `utcnow()` helper in `models/scan.py`
+  and swept all call sites (`models/scan.py`, `fuzzer.py`, `nuclei.py`,
+  `api/v1/scan.py`) to use it; removed now-unused `import datetime`s. Kept the
+  values **naive UTC** on purpose (columns are not `timezone=True`) so stored
+  timestamps and all existing comparisons remain byte-identical.
 - **Where:** ~11 call sites across `models/scan.py`, `fuzzer.py`, `nuclei.py`,
   `api/v1/scan.py`.
 - **Problem:** deprecated in Python 3.12+ (returns naive UTC). Works on 3.11.
-- **Direction:** migrate to `datetime.now(datetime.UTC)` (timezone-aware) when
-  convenient; do it as one sweep to keep DB timestamps consistent.
 
 ### D10 — Single-table inheritance without polymorphic mapping
 - **Where:** `vulnerability_findings.source` is set manually by each producer.
@@ -128,9 +157,11 @@
 ---
 
 ## Suggested priority order for the next agent
-1. **D1** (migrations/schema self-check) — unblocks all future model changes.
-2. **D4** (`FindingDetails` Optional) — cheap, removes a latent crash.
-3. **D7** (API tests) — establishes a safety net before further changes.
-4. **D3** (Gemini timeout) — improves UX reliability.
-5. **D2** (auth) — before any non-localhost exposure.
-6. Everything else as opportunistic cleanup.
+> D1, D3, D4, D6, D7, D8, D9 are now **resolved** (see ✅ notes above). What's left:
+1. **D5** (frontend consolidation) — pick one frontend; the canonical light
+   `preview_dashboard.html` is the product, `frontend/` (Vite, dark, mock) is not.
+   Tracked as a separate dedicated task (white/light "清新" theme).
+2. **D2** (auth) — required before any non-localhost / shared exposure. The
+   `API_HOST` knob + security notes are in place; `python-jose`/`passlib` are
+   already vendored for this.
+3. Everything else (D10–D13) is intentional/low-priority — see notes above.
