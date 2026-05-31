@@ -14,7 +14,6 @@ import json
 import time
 import logging
 import uuid
-import datetime
 import re
 import asyncio
 import random
@@ -28,9 +27,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import async_session_factory
 from backend.app.core.config import settings
-from backend.app.models.scan import VulnerabilityFinding, FuzzingRecord
+from backend.app.models.scan import VulnerabilityFinding, FuzzingRecord, utcnow
 
 logger = logging.getLogger("app.services.fuzzer")
+
+# Max chars of the response body stored in the FuzzingRecord display log (N4).
+# Note: the differential oracle runs on the full captured body
+# (settings.FUZZER_RESPONSE_BODY_MAX_LENGTH); this smaller cap only trims what
+# we persist for human review, so it intentionally differs from the capture cap.
+_RECORD_RESPONSE_LOG_MAX_LENGTH = 3000
 
 # Keywords that indicate a WAF / security filter blocked the request
 _BLOCK_KEYWORDS = frozenset({
@@ -1370,7 +1375,7 @@ async def _execute_single_fuzz(
                 f"HTTP {test_result['status_code']}\n"
                 f"Content-Length: {test_result['content_length']}\n"
                 f"Elapsed: {test_result['elapsed_ms']}ms\n\n"
-                f"{test_result['response_body'][:3000]}"
+                f"{test_result['response_body'][:_RECORD_RESPONSE_LOG_MAX_LENGTH]}"
             )
             await result_queue.put(_item(response_log, diff["verdict"], diff, sent_log))
 
@@ -1413,6 +1418,6 @@ def _persist_record(
         received_response=received_response,
         verification_status=verification_status,
         diff_details=diff_details,
-        created_at=datetime.datetime.utcnow(),
+        created_at=utcnow(),
     )
     db.add(record)

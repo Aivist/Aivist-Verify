@@ -13,6 +13,19 @@ def generate_uuid() -> str:
     """Helper method to generate safe dynamic string representation UUIDs"""
     return str(uuid.uuid4())
 
+
+def utcnow() -> datetime.datetime:
+    """
+    Naive UTC 'now' (D9).
+
+    Replaces the deprecated stdlib ``datetime.utcnow()`` (slated for removal in
+    a future Python) while preserving the EXACT prior behavior: a timezone-naive
+    datetime expressed in UTC. The DateTime columns here are not declared with
+    ``timezone=True``, so emitting naive values keeps SQLite storage and all
+    existing comparisons identical (avoids offset-naive vs offset-aware errors).
+    """
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+
 class ScanTask(Base):
     """
     ScanTask stores structural properties of targeted scanning tasks.
@@ -45,14 +58,14 @@ class ScanTask(Base):
     created_at = Column(
         DateTime,
         nullable=False,
-        default=datetime.datetime.utcnow
+        default=utcnow
     )
     
     updated_at = Column(
         DateTime,
         nullable=False,
-        default=datetime.datetime.utcnow,
-        onupdate=datetime.datetime.utcnow
+        default=utcnow,
+        onupdate=utcnow
     )
 
     # Establishes cascading relationship to automatically drop findings if parent task is purged.
@@ -149,7 +162,7 @@ class VulnerabilityFinding(Base):
     created_at = Column(
         DateTime,
         nullable=False,
-        default=datetime.datetime.utcnow
+        default=utcnow
     )
 
     # Inverse relationship mapper pointing to the primary scan task controller
@@ -217,7 +230,7 @@ class FuzzingRecord(Base):
     created_at = Column(
         DateTime,
         nullable=False,
-        default=datetime.datetime.utcnow
+        default=utcnow
     )
 
     # Inverse relationship mapper back to the parent finding
