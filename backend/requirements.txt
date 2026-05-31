@@ -1,0 +1,44 @@
+# ==============================================================================
+# Commercial-Grade AI Penetration Testing & Vulnerability Audit Platform
+# Dependency Requirements Specifications - Product Environment Stable Version
+# ==============================================================================
+
+# Core Web Framework and Asynchronous HTTP Engine
+fastapi>=0.110.0,<0.112.0
+
+# Enterprise-grade ASGI web server for running FastAPI applications
+uvicorn[standard]>=0.29.0,<0.31.0
+
+# Advanced data validation and parsing using Python type hints
+pydantic>=2.7.0,<2.8.0
+
+# Settings management using pydantic (Separates config from execution)
+pydantic-settings>=2.3.0,<2.4.0
+
+# RESERVED FOR FUTURE AUTH (D2, currently DEFERRED) — these are NOT used by any
+# code today. They are kept here so the eventual API-key/token + password layer
+# has its deps ready. If auth is abandoned, remove these two lines.
+# Security and Cryptography Utilities for Token Generation and Verification
+python-jose[cryptography]>=3.3.0,<3.4.0
+
+# High-performance hashing and password strength verification
+passlib[bcrypt]>=1.7.4,<1.8.0
+
+# Stream processing support and async utility extensions
+anyio>=4.3.0,<4.5.0
+
+# Python environment dotenv file parsing engine
+python-dotenv>=1.0.1,<1.1.0
+
+# Async ORM + SQLite driver (pinned to tested versions — D8)
+sqlalchemy>=2.0.49,<2.1.0
+aiosqlite>=0.22.1,<0.23.0
+
+# Google Gemini official SDK (pinned: pre-2.0 to avoid breaking API changes — D8)
+google-genai>=1.4.0,<2.0.0
+
+# Async HTTP client for Fuzzing engine differential request replay
+httpx>=0.27.0,<0.29.0
+
+# Multipart form data parsing (required by FastAPI UploadFile / Form)
+python-multipart>=0.0.9,<0.1.0

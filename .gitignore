@@ -1,0 +1,48 @@
+# ==============================================================================
+# Anti-Gravity — Git ignore rules
+# ==============================================================================
+
+# --- Secrets / local config (NEVER commit) ---
+.env
+backend/.env
+*.env
+!.env.example
+!backend/.env.example
+frontend/.env.local
+
+# --- Local SQLite database + WAL sidecars ---
+*.db
+*.db-wal
+*.db-shm
+security_platform.db*
+fresh.db*
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# --- Node / frontend ---
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+*.local
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Logs ---
+*.log

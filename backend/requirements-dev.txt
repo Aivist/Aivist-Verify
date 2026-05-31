@@ -1,0 +1,12 @@
+# ==============================================================================
+# Development / test-only dependencies (D8)
+#
+# Install on top of the runtime deps:
+#   pip install -r requirements.txt -r requirements-dev.txt
+#
+# These are NOT needed to run the server in production — only to run the
+# pytest suite (see docs/DEVELOPMENT.md).
+# ==============================================================================
+
+# Test runner (pinned to the version the current 56-test suite was verified on)
+pytest>=9.0.3,<10.0.0
