@@ -61,6 +61,65 @@ _TELEMETRY_ROUTES: tuple = (
 
 
 # =============================================================================
+# Shared deterministic helpers (single source of truth)
+#
+# Reused by: HAR ingestion (api/v1/hunter.py) and the Step 9 proxy radar —
+# both the mitmdump Tier-1 hook (addon) and the FastAPI Tier-2 pipeline — so the
+# scope lock, static veto, and login-endpoint detection never drift between
+# subsystems.
+# =============================================================================
+
+# Public alias of the static-asset veto set for Tier-1 reuse by the proxy addon.
+STATIC_EXTENSIONS: frozenset = _STATIC_EXTENSIONS
+
+# Login / identity endpoint signatures (deterministic, no AI).
+LOGIN_PATH_MARKERS: tuple = ("login", "signin", "sign-in", "auth", "token", "session", "oauth")
+LOGIN_BODY_MARKERS: tuple = ("password", "passwd", "username", "login", "token", "session", "grant_type")
+
+
+def is_static_path(path: str) -> bool:
+    """True if the path points at a static asset (Tier-1 negative-weight veto)."""
+    p = (path or "").lower().split("?", 1)[0]
+    return any(p.endswith(ext) for ext in _STATIC_EXTENSIONS)
+
+
+def host_in_scope(host: str, scope) -> bool:
+    """
+    Scope-lock check. Empty/falsy scope == no host filter (everything in scope).
+    A host matches if it equals an approved entry or is a subdomain of it.
+    """
+    if not scope:
+        return True
+    h = (host or "").lower()
+    for s in scope:
+        s = (s or "").lower().strip()
+        if not s:
+            continue
+        if h == s or h.endswith("." + s):
+            return True
+    return False
+
+
+def detect_login_candidate(method: str, path: str, body) -> bool:
+    """
+    Flags a request as a likely login/identity endpoint: a POST/PUT-family
+    method AND a login/auth/token/session/password marker in the path or body.
+    Powers the Identity Provider Anchor pre-fill in both HAR and proxy flows.
+    """
+    if (method or "").upper() not in ("POST", "PUT"):
+        return False
+    low_path = (path or "").lower()
+    if any(m in low_path for m in LOGIN_PATH_MARKERS):
+        return True
+    body_text = ""
+    if isinstance(body, dict):
+        body_text = " ".join(str(k) for k in body.keys()).lower()
+    elif body:
+        body_text = str(body).lower()
+    return any(m in body_text for m in LOGIN_BODY_MARKERS)
+
+
+# =============================================================================
 # Core Scoring Engine
 # =============================================================================
 

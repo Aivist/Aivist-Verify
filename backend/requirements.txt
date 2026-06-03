@@ -42,3 +42,23 @@ httpx>=0.27.0,<0.29.0
 
 # Multipart form data parsing (required by FastAPI UploadFile / Form)
 python-multipart>=0.0.9,<0.1.0
+
+# ------------------------------------------------------------------------------
+# Step 9 · Passive Traffic Ingestion Proxy Radar
+# ------------------------------------------------------------------------------
+# Intercepting proxy. The 'mitmdump' headless runner is spawned + supervised as a
+# child process by ProxyManager (it lives in its own Python interpreter; IPC is a
+# loopback HTTP POST back into FastAPI). Pinned to the tested version.
+mitmproxy==11.0.2
+
+# mitmproxy 11.0.2 constrains h11<0.15. The newer httpcore 1.0.9 demands
+# h11>=0.16, which would conflict and break httpx (used by the fuzzer + proxy
+# ingest). Pin httpcore to the last release compatible with h11 0.14 so both
+# mitmproxy and httpx coexist. (Verified: `pip check` clean, 66 tests green.)
+httpcore==1.0.7
+
+# passlib 1.7.4 (above) probes the bcrypt version at import by hashing a >72-byte
+# test value; bcrypt >= 4.1 raises ValueError on that, which crashes mitmdump at
+# boot (mitmproxy also imports passlib). Pin bcrypt < 4.1 so mitmdump starts.
+# bcrypt is only a transitive of the (currently unused) passlib[bcrypt] auth dep.
+bcrypt==4.0.1

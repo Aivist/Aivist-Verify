@@ -13,6 +13,8 @@ from backend.app.core.config import settings
 from backend.app.core.database import engine, Base
 from backend.app.api.v1.scan import router as scan_router_v1
 from backend.app.api.v1.hunter import router as hunter_router_v1
+from backend.app.services.proxy_pipeline import get_writer_service, get_ingest_pipeline
+from backend.app.services.proxy_manager import get_proxy_manager
 
 # Import models to register ORM structures within Base metadata prior to engine.run_sync
 from backend.app.models.scan import ScanTask, VulnerabilityFinding, FuzzingRecord
@@ -76,10 +78,22 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.critical(f"[LIFESPAN STARTUP FAILURE] Database schema initialization/verification failed: {e}")
         raise e
-        
+
+    # Step 9: bring up the app-wide single SQLite writer + proxy ingest pipeline.
+    # The writer is the SOLE DB writer (fuzzing records + captured flows funnel
+    # through it). The ingest pipeline idles until the radar is started.
+    await get_writer_service().start()
+    await get_ingest_pipeline().start()
+    logger.info("[LIFESPAN STARTUP] Unified writer service + proxy ingest pipeline online.")
+
     yield  # Hand over control to FastAPI execution loop
-    
+
     logger.info("[LIFESPAN SHUTDOWN] Application environment teardown complete. Releasing core resources.")
+    # Order matters: kill the proxy subprocess first (no new flows), then drain
+    # the ingest pipeline, then drain the writer, then release the DB engine.
+    await get_proxy_manager().shutdown()
+    await get_ingest_pipeline().stop()
+    await get_writer_service().stop()
     # Safe release of database async engine pool on hot-reload/shutdown
     await engine.dispose()
     logger.info("[LIFESPAN SHUTDOWN] Async database connection pools released.")

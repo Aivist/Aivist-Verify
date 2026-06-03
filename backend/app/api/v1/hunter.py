@@ -6,9 +6,10 @@
 import json
 import asyncio
 import logging
-from fastapi import APIRouter, BackgroundTasks, Depends, status, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, BackgroundTasks, Depends, status, HTTPException, UploadFile, File, Form, Request
+from fastapi.responses import StreamingResponse, FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, desc
 
 from backend.app.schemas.hunter import (
     HunterAnalyzeRequest,
@@ -34,10 +35,19 @@ from backend.app.services.fuzzer import (
     get_active_custody,
     _host_of,
 )
-from backend.app.services.pruner import filter_high_value_traffic
+from backend.app.services.pruner import filter_high_value_traffic, detect_login_candidate
+from backend.app.schemas.proxy import (
+    ProxyStartRequest,
+    ProxyControlResponse,
+    ProxyStatusResponse,
+    ProxyFlowProjection,
+    ProxyIngestFlow,
+)
+from backend.app.services.proxy_manager import get_proxy_manager
+from backend.app.services.proxy_pipeline import get_ingest_pipeline, get_sse_hub
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
-from backend.app.models.scan import VulnerabilityFinding, FuzzingRecord
+from backend.app.models.scan import VulnerabilityFinding, FuzzingRecord, CapturedFlow
 
 # Create standard API router for AI Logic Hunter namespace
 router = APIRouter(prefix="/hunter", tags=["AI Logic Hunter / 逻辑狩猎大脑"])
@@ -45,32 +55,14 @@ router = APIRouter(prefix="/hunter", tags=["AI Logic Hunter / 逻辑狩猎大脑
 # Initialize logging diagnostics
 logger = logging.getLogger("app.api.v1.hunter")
 
-# Step 8 Objective A: deterministic markers for identity / login endpoints
-_LOGIN_PATH_MARKERS = ("login", "signin", "sign-in", "auth", "token", "session", "oauth")
-_LOGIN_BODY_MARKERS = ("password", "passwd", "username", "login", "token", "session", "grant_type")
-
 # Max chars retained from a HAR entry's response body during ingestion, to keep
 # large captures from bloating memory before pruning (N3: was an inline 5000).
 _HAR_RESPONSE_BODY_CAP = 5000
 
-
-def _detect_login_candidate(method: str, path: str, body) -> bool:
-    """
-    Flags a request as a likely login/identity endpoint (deterministic, no AI):
-    POST-family method AND a login/auth/token/session/password marker in the
-    path or body. Powers the Identity Provider Anchor pre-fill.
-    """
-    if method.upper() not in ("POST", "PUT"):
-        return False
-    low_path = (path or "").lower()
-    if any(m in low_path for m in _LOGIN_PATH_MARKERS):
-        return True
-    body_text = ""
-    if isinstance(body, dict):
-        body_text = " ".join(str(k) for k in body.keys()).lower()
-    elif body:
-        body_text = str(body).lower()
-    return any(m in body_text for m in _LOGIN_BODY_MARKERS)
+# Step 8 Objective A: identity/login endpoint detection now lives in pruner as a
+# single source of truth shared with the Step 9 proxy radar. Thin alias keeps the
+# existing internal call sites stable.
+_detect_login_candidate = detect_login_candidate
 
 
 # ==============================================================================
@@ -1005,3 +997,227 @@ async def ingest_har_file_upload(
         )
     finally:
         await file.close()
+
+
+# ==============================================================================
+# Step 9 — Passive Traffic Ingestion Proxy Radar
+# ==============================================================================
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+
+def _client_is_loopback(request: Request) -> bool:
+    """
+    True only if the real TCP peer is loopback. We use request.client.host (the
+    socket peer) and deliberately IGNORE X-Forwarded-For — in local mode no
+    trusted proxy sits in front, so XFF is attacker-controlled and must not be
+    honored. This is the application-level enforcement of "127.0.0.1 only" given
+    the route shares the single uvicorn socket (which may bind 0.0.0.0).
+    """
+    client = request.client
+    return bool(client and client.host in _LOOPBACK_HOSTS)
+
+
+@router.post(
+    "/proxy/start",
+    response_model=ProxyControlResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Start the passive interception proxy (mitmdump) radar.",
+)
+async def proxy_start(request: ProxyStartRequest):
+    """Spawn + supervise the mitmdump subprocess under an operator-supplied scope."""
+    manager = get_proxy_manager()
+    st = await manager.start(scope=request.scope, listen_port=request.listen_port)
+    msg = {
+        "RUNNING": "Radar started. Point your browser proxy at 127.0.0.1 and install the CA cert (GET /proxy/cert).",
+        "FAILED": f"Radar failed to start: {st.get('message') or 'unknown error'}",
+    }.get(st["state"], f"Radar state: {st['state']}")
+    return ProxyControlResponse(
+        state=st["state"],
+        listen_port=st.get("listen_port") or settings.PROXY_LISTEN_PORT,
+        pid=st.get("pid"),
+        scope=st.get("scope", []),
+        message=msg,
+    )
+
+
+@router.post(
+    "/proxy/stop",
+    response_model=ProxyControlResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Stop the interception proxy and force-kill its process tree.",
+)
+async def proxy_stop():
+    manager = get_proxy_manager()
+    st = await manager.stop()
+    return ProxyControlResponse(
+        state=st["state"],
+        listen_port=settings.PROXY_LISTEN_PORT,
+        pid=st.get("pid"),
+        scope=st.get("scope", []),
+        message="Radar stopped; mitmdump process tree terminated.",
+    )
+
+
+@router.get(
+    "/proxy/status",
+    response_model=ProxyStatusResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Current radar process state + ingest/stream telemetry.",
+)
+async def proxy_status():
+    manager = get_proxy_manager()
+    pipeline = get_ingest_pipeline()
+    hub = get_sse_hub()
+    st = manager.status()
+    return ProxyStatusResponse(
+        state=st["state"],
+        pid=st.get("pid"),
+        listen_port=st.get("listen_port"),
+        uptime_seconds=st.get("uptime_seconds"),
+        dropped_flows=pipeline.dropped_flows,
+        sse_clients=hub.client_count,
+        queue_depth=pipeline.queue_depth,
+        scope=st.get("scope", []),
+        ca_cert_available=st.get("ca_cert_available", False),
+        message=st.get("message"),
+    )
+
+
+@router.post(
+    "/proxy/internal-ingest",
+    include_in_schema=False,  # never advertised in OpenAPI / docs
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def proxy_internal_ingest(request: Request):
+    """
+    INTERNAL ONLY — receives captured flows from the mitmdump addon.
+
+    Defense in depth (all must pass; any failure returns 404 to avoid confirming
+    the route exists):
+      1. Loopback-only: real TCP peer must be 127.0.0.1/::1 (XFF ignored).
+      2. Per-session token: constant-time match of X-Ingest-Token.
+    Plus: 413 on oversize bodies, and 503 backpressure when the queue is full.
+    """
+    manager = get_proxy_manager()
+
+    # (1) loopback + (2) token — fail closed as 404.
+    if not _client_is_loopback(request):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
+    if not manager.verify_ingest_token(request.headers.get("X-Ingest-Token")):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
+
+    raw = await request.body()
+    if len(raw) > settings.PROXY_INGEST_MAX_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Captured flow payload too large.",
+        )
+
+    try:
+        flow = ProxyIngestFlow.model_validate_json(raw)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Malformed flow: {str(e)[:200]}")
+
+    accepted = get_ingest_pipeline().enqueue(flow.model_dump())
+    if not accepted:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Ingest queue saturated; apply backpressure.",
+        )
+    return {"status": "accepted"}
+
+
+@router.get(
+    "/proxy/stream",
+    summary="Live Server-Sent-Events stream of captured flows (radar).",
+)
+async def proxy_stream(request: Request):
+    """
+    SSE radar stream. Each client gets a bounded fan-out queue; on disconnect the
+    generator's finally block deregisters it (CancelledError-safe) so memory is
+    never leaked. Heartbeat comments keep the connection alive and detect death.
+    """
+    hub = get_sse_hub()
+    if hub.at_capacity():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Too many radar stream clients.",
+        )
+
+    async def event_generator():
+        q = hub.register()
+        try:
+            yield ": radar connected\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=15.0)
+                    yield f"event: {event['event']}\ndata: {json.dumps(event['data'])}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": heartbeat\n\n"  # keepalive
+        except asyncio.CancelledError:
+            raise
+        finally:
+            hub.unregister(q)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+
+@router.get(
+    "/proxy/cert",
+    summary="Download the mitmproxy CA certificate for HTTPS interception.",
+)
+async def proxy_cert():
+    """Stream the locally-generated mitmproxy CA cert (after the radar has run once)."""
+    manager = get_proxy_manager()
+    path = manager.ca_cert_path()
+    if path is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="CA certificate not generated yet. Start the radar once, then retry.",
+        )
+    return FileResponse(
+        str(path),
+        media_type="application/x-x509-ca-cert",
+        filename=path.name,
+    )
+
+
+@router.get(
+    "/proxy/flows",
+    response_model=list[ProxyFlowProjection],
+    status_code=status.HTTP_200_OK,
+    summary="List recently captured flows (most recent first).",
+)
+async def proxy_flows(
+    limit: int = 100,
+    db: AsyncSession = Depends(get_db),
+):
+    limit = max(1, min(limit, 500))
+    result = await db.execute(
+        select(CapturedFlow).order_by(desc(CapturedFlow.captured_at)).limit(limit)
+    )
+    rows = result.scalars().all()
+    return [
+        ProxyFlowProjection(
+            id=r.id,
+            flow_id=r.flow_id,
+            captured_at=r.captured_at.isoformat() if r.captured_at else None,
+            method=r.method,
+            host=r.host,
+            path=r.path,
+            url=r.url,
+            response_status=r.response_status,
+            exposure_score=r.exposure_score,
+            is_login_candidate=r.is_login_candidate,
+            in_scope=r.in_scope,
+            promoted_finding_id=r.promoted_finding_id,
+        )
+        for r in rows
+    ]

@@ -5,7 +5,7 @@
 
 import uuid
 import datetime
-from sqlalchemy import Column, String, Integer, Text, DateTime, ForeignKey, JSON
+from sqlalchemy import Column, String, Integer, Text, DateTime, ForeignKey, JSON, Boolean, Float
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 
@@ -238,3 +238,77 @@ class FuzzingRecord(Base):
         "VulnerabilityFinding",
         back_populates="fuzz_records"
     )
+
+
+class CapturedFlow(Base):
+    """
+    CapturedFlow — a single HTTP exchange intercepted by the Step 9 Passive
+    Traffic Ingestion Proxy Radar.
+
+    Rationale for a dedicated table (the three existing tables are insufficient):
+      * ``vulnerability_findings`` models a *triaged finding* (severity,
+        template_id, AI payloads) with NOT NULL semantics that don't fit raw
+        traffic.
+      * ``fuzzing_records`` is *verification output* bound to a finding_id.
+      * Neither captures a live request/response pair with timing, scope, and
+        the Tier-2 exposure score the radar needs.
+
+    This is a brand-new table, so ``create_all`` provisions it cleanly and the
+    D1 schema-drift guard never trips (it only fires on missing columns of
+    pre-existing tables). No existing table is altered.
+
+    ``promoted_finding_id`` is a deliberately decoupled, nullable back-reference
+    (NOT a ForeignKey) recording that an operator pushed this flow into the
+    Hunter pipeline via POST /hunter/findings — keeping capture and analysis
+    loosely coupled and migration-free.
+    """
+    __tablename__ = "captured_flows"
+
+    id = Column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid
+    )
+
+    # Addon-assigned correlation id for the originating mitmproxy flow.
+    flow_id = Column(
+        String(64),
+        nullable=True
+    )
+
+    captured_at = Column(
+        DateTime,
+        nullable=False,
+        default=utcnow
+    )
+
+    scheme = Column(String(8), nullable=False, default="http")
+    method = Column(String(16), nullable=False, default="GET")
+    host = Column(String(255), nullable=False)
+    port = Column(Integer, nullable=True)
+    path = Column(String(4096), nullable=False, default="/")
+    # Fully-qualified URL kept denormalized for convenient display / re-issue.
+    url = Column(String(4096), nullable=False)
+
+    request_headers = Column(JSON, nullable=True)
+    request_query = Column(JSON, nullable=True)
+    request_body = Column(Text, nullable=True)
+
+    response_status = Column(Integer, nullable=True)
+    response_headers = Column(JSON, nullable=True)
+    response_body = Column(Text, nullable=True)
+    elapsed_ms = Column(Float, nullable=True)
+
+    # Tier-2 (async, server-side) heuristic exposure score from the pruner.
+    exposure_score = Column(Float, nullable=True)
+
+    # Deterministic login/identity-endpoint hint (powers Identity Anchor pre-fill).
+    is_login_candidate = Column(Boolean, nullable=False, default=False)
+
+    # Tier-1 scope verdict: out-of-scope flows are captured-but-inert.
+    in_scope = Column(Boolean, nullable=False, default=True)
+
+    source = Column(String(16), nullable=False, default="proxy")
+
+    # One-way, decoupled link set when the flow is promoted into a finding.
+    promoted_finding_id = Column(Integer, nullable=True)

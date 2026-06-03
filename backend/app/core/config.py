@@ -110,6 +110,56 @@ class Settings(BaseSettings):
     )
 
     # --------------------------------------------------------------------------
+    # 5. Step 9 — Passive Traffic Ingestion Proxy Radar
+    # --------------------------------------------------------------------------
+    # Absolute path to the 'mitmdump' executable. Left empty by default: the
+    # ProxyManager falls back to a PATH lookup (shutil.which). Set this only if
+    # mitmdump is not on PATH. Validated as absolute (like NUCLEI_BINARY_PATH) to
+    # avoid relative-path execution hijacks.
+    MITMDUMP_PATH: Optional[str] = Field(
+        default=None,
+        description="Absolute path to the mitmdump binary. Empty => discover on PATH."
+    )
+
+    # Network port the intercepting proxy listens on (distinct from API_PORT).
+    PROXY_LISTEN_PORT: int = Field(
+        default=8888,
+        description="Listen port for the mitmdump intercepting proxy. Must differ from API_PORT."
+    )
+
+    # Backpressure: max buffered flows awaiting the DB writer before the ingest
+    # endpoint returns 503 (signals the addon to slow down).
+    PROXY_INGEST_QUEUE_MAX: int = Field(
+        default=1000,
+        description="Bounded size of the in-memory proxy ingest queue (backpressure threshold)."
+    )
+
+    # Hard ceiling on concurrent SSE radar subscribers (resource-exhaustion guard).
+    PROXY_SSE_MAX_CLIENTS: int = Field(
+        default=32,
+        description="Maximum simultaneous Server-Sent-Events clients on the proxy stream."
+    )
+
+    # Per-SSE-client bounded fan-out queue; oldest events dropped on overflow so a
+    # slow browser tab cannot grow memory unbounded.
+    PROXY_SSE_CLIENT_QUEUE_MAX: int = Field(
+        default=500,
+        description="Per-client SSE fan-out queue capacity (latest-wins on overflow)."
+    )
+
+    # Max characters retained per captured request/response body.
+    PROXY_BODY_CAP: int = Field(
+        default=65536,
+        description="Maximum characters retained from each captured request/response body."
+    )
+
+    # Hard cap on a single internal-ingest POST body (defense against abuse).
+    PROXY_INGEST_MAX_BYTES: int = Field(
+        default=262144,
+        description="Maximum byte size of a single /proxy/internal-ingest POST body (else 413)."
+    )
+
+    # --------------------------------------------------------------------------
     # 4. Pydantic Settings Configurations
     # --------------------------------------------------------------------------
     # Dynamically locate the absolute path to the parent directory containing '.env'
@@ -147,6 +197,31 @@ class Settings(BaseSettings):
         if upper_level not in allowed_levels:
             raise ValueError(f"LOG_LEVEL must be one of {allowed_levels}. Got: {level}")
         return upper_level
+
+    @field_validator("MITMDUMP_PATH")
+    @classmethod
+    def validate_mitmdump_path(cls, path: Optional[str]) -> Optional[str]:
+        """
+        MITMDUMP_PATH is optional. When empty/None, the ProxyManager discovers
+        mitmdump on PATH at runtime. When explicitly set, enforce an absolute,
+        normalized path (mirrors NUCLEI_BINARY_PATH) to prevent relative-path
+        execution hijacks. Existence is verified at radar-start, not here.
+        """
+        if path is None or not str(path).strip():
+            return None
+        if not os.path.isabs(path):
+            raise ValueError(
+                f"MITMDUMP_PATH MUST be an absolute path (or empty to use PATH lookup). Got: '{path}'"
+            )
+        return os.path.normpath(path)
+
+    @field_validator("PROXY_LISTEN_PORT")
+    @classmethod
+    def validate_proxy_port(cls, port: int) -> int:
+        """Validate the proxy listen port is within the RFC range."""
+        if not (1 <= port <= 65535):
+            raise ValueError(f"PROXY_LISTEN_PORT must be in [1, 65535]. Got: {port}")
+        return port
 
     @field_validator("NUCLEI_BINARY_PATH")
     @classmethod

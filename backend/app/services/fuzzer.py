@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.database import async_session_factory
 from backend.app.core.config import settings
 from backend.app.models.scan import VulnerabilityFinding, FuzzingRecord, utcnow
+from backend.app.services.proxy_pipeline import is_writer_running, get_writer_service
 
 logger = logging.getLogger("app.services.fuzzer")
 
@@ -868,6 +869,41 @@ class _FindingJob:
         self.baseline: Optional[Dict[str, Any]] = None
 
 
+def _make_persist_job(item: dict):
+    """Wrap a result item as a model-agnostic WriteJob for the WriterService."""
+    def _job(db: AsyncSession) -> None:
+        _persist_record(
+            db,
+            item["record_id"],
+            item["finding_id"],
+            item["payload_index"],
+            item["sent_request"],
+            item["received_response"],
+            item["verification_status"],
+            item["diff_details"],
+        )
+    return _job
+
+
+async def _forward_results_to_writer(result_queue: "asyncio.Queue", writer) -> None:
+    """
+    Step 9 unified-writer adapter: drain this batch's result_queue and submit
+    each record as a WriteJob to the shared app-wide WriterService (which owns
+    the only write session and commits on its own cadence). Stops on sentinel.
+    Does NOT commit — serialization & commit are the WriterService's job.
+    """
+    while True:
+        item = await result_queue.get()
+        try:
+            if item is _QUEUE_SENTINEL:
+                return
+            await writer.submit(_make_persist_job(item))
+        except Exception:
+            logger.exception("[FUZZER · WRITER-FWD] Failed to forward a result record")
+        finally:
+            result_queue.task_done()
+
+
 async def _db_writer_consumer(result_queue: "asyncio.Queue") -> None:
     """
     The SOLE database writer (Step 8 Constraint 1).
@@ -1001,7 +1037,16 @@ async def execute_parallel_fuzzing(
 
     result_queue: "asyncio.Queue" = asyncio.Queue()
     semaphore = asyncio.Semaphore(max(1, max_concurrency))
-    writer_task = asyncio.create_task(_db_writer_consumer(result_queue))
+    # Unified-writer decision (Step 9): when the app-wide WriterService is up
+    # (production / lifespan), forward results into it so flows + fuzz records
+    # share ONE SQLite writer. When it isn't (standalone unit tests), fall back
+    # to the original ephemeral per-batch consumer — preserving Step 8 behavior.
+    if is_writer_running():
+        writer_task = asyncio.create_task(
+            _forward_results_to_writer(result_queue, get_writer_service())
+        )
+    else:
+        writer_task = asyncio.create_task(_db_writer_consumer(result_queue))
 
     try:
         async with httpx.AsyncClient(
