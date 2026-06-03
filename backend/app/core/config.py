@@ -71,6 +71,15 @@ class Settings(BaseSettings):
         description="Google Gemini model identifier used for all AI calls (logic-hunt analysis + remediation patches)."
     )
 
+    # Feature flag for the NEW, isolated AI-in-the-loop deep verification component
+    # (services/deep_verifier.py). Default False so existing behavior is unchanged:
+    # nothing calls the deep verifier unless this is explicitly enabled. This gate
+    # does NOT affect the parallel fuzzing engine or any of the existing endpoints.
+    AI_DEEP_VERIFY_ENABLED: bool = Field(
+        default=False,
+        description="Enable the isolated AI-in-the-loop write-then-read deep verifier (off by default; not wired into any endpoint yet)."
+    )
+
     # --------------------------------------------------------------------------
     # 4. Scan & Fuzzing Engine Settings
     # --------------------------------------------------------------------------
