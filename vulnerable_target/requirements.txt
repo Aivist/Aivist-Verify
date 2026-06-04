@@ -1,0 +1,16 @@
+# ==============================================================================
+# Standalone Vulnerable Test Target — dependencies
+#
+# Versions mirror the main repo's backend/requirements.txt (same MAJOR versions)
+# so the target runs in the same virtualenv with no conflicts. This app is fully
+# self-contained and imports nothing from backend/app.
+# ==============================================================================
+
+fastapi>=0.110.0,<0.112.0
+uvicorn[standard]>=0.29.0,<0.31.0
+pydantic>=2.7.0,<2.8.0
+sqlalchemy>=2.0.49,<2.1.0
+aiosqlite>=0.22.1,<0.23.0
+
+# Test-only: FastAPI's TestClient needs httpx (already pinned in the main repo).
+httpx>=0.27.0,<0.29.0
