@@ -1114,6 +1114,15 @@ async def execute_parallel_fuzzing(
             _ACTIVE_CUSTODY.pop(job.finding_id, None)
     logger.info(f"[FUZZER · PARALLEL] Batch complete for finding_ids={finding_ids}")
 
+    # --- Phase 7 (SHADOW MODE, purely additive) ---------------------------------
+    # Runs ONLY after the batch above is fully complete and its FuzzingRecords are
+    # persisted. Gated behind settings.AI_DEEP_VERIFY_SHADOW (default False), so when
+    # off this is an immediate no-op and the engine behaves byte-for-byte as before.
+    # It is READ-ONLY: it observes "suspicious" records and logs an AI second
+    # opinion without touching verification_status / diff_details / the writer path.
+    # Any failure is logged and swallowed — it can never affect the batch result.
+    await _run_shadow_deep_verification(jobs, custody)
+
 
 # ==============================================================================
 # 6b. Backward-compatible single-target entry point (Step 6/7)
@@ -1128,6 +1137,135 @@ async def execute_differential_fuzzing(finding_id: int) -> None:
     finding JSON — preserving the exact prior Step 6/7 behavior with zero regression.
     """
     await execute_parallel_fuzzing([finding_id])
+
+
+# ==============================================================================
+# 6c. Phase 7 — SHADOW-MODE AI-in-the-loop deep verification (read-only, additive)
+# ==============================================================================
+# This block is the FIRST integration cut (architecture option B), but it is
+# strictly OBSERVATIONAL. It does not modify Phases 1–6, _execute_single_fuzz, or
+# _differential_verdict — those stay byte-for-byte unchanged — and it never alters
+# a persisted verdict. It runs after a completed batch, gated behind
+# settings.AI_DEEP_VERIFY_SHADOW (default False), querying back this run's
+# "suspicious" FuzzingRecords and asking the isolated deep verifier for a second
+# opinion that is LOGGED ONLY. Everything here fails closed (logged + swallowed).
+
+
+def _shadow_auth_context(
+    custody: Optional["AuthCustodyController"], parsed_request: dict
+) -> Dict[str, str]:
+    """
+    Auth seam for shadow mode. Prefer the live custody controller's currently-active
+    credential (token/cookie); fall back to the auth header carried on the finding's
+    own parsed_request. Returns headers to merge into the deep verifier's request.
+    """
+    if custody is not None and getattr(custody, "current_active_auth_value", ""):
+        value = custody.current_active_auth_value
+        if custody.auth_kind == "token":
+            return {"Authorization": value if value.lower().startswith("bearer ") else f"Bearer {value}"}
+        return {"Cookie": value}
+
+    headers = (parsed_request or {}).get("headers", {}) or {}
+    for k, v in headers.items():
+        if k.lower() in ("authorization", "cookie", "x-token"):
+            return {k: v}
+    return {}
+
+
+def _shadow_endpoint_catalog(parsed_request: dict) -> List[str]:
+    """
+    Endpoint-catalog seam for shadow mode.
+
+    KNOWN LIMITATION (pending real endpoint discovery): we do NOT yet have a true
+    API surface (OpenAPI / HAR / proxy capture) to hand the verifier. As a minimal
+    placeholder we expose only the finding's own path plus an obvious GET read-back
+    of the same resource path, so a silent-write case still has a read-back option.
+    This is intentionally narrow and should be replaced once endpoint discovery exists.
+    """
+    path = (parsed_request or {}).get("path", "") or ""
+    method = str((parsed_request or {}).get("method", "GET") or "GET").upper()
+    catalog: List[str] = []
+    if path:
+        catalog.append(f"{method} {path}")
+        if method != "GET":
+            catalog.append(f"GET {path}")  # obvious read-back of the same resource
+    return catalog
+
+
+async def _run_shadow_deep_verification(
+    jobs: List["_FindingJob"], custody: Optional["AuthCustodyController"]
+) -> None:
+    """
+    Phase 7 shadow runner (read-only). For each "suspicious" FuzzingRecord produced
+    by this batch, re-run the isolated execute_deep_verification against the same
+    target and LOG the AI's verdict alongside the rule verdict. Never overwrites the
+    record, never changes what the user sees, and NEVER raises.
+    """
+    # Hard gate: when off, this is an immediate no-op (byte-identical behavior).
+    if not settings.AI_DEEP_VERIFY_SHADOW:
+        return
+
+    try:
+        # Imported lazily so the module has zero new import-time dependencies when
+        # shadow mode is off (the default).
+        from backend.app.services.deep_verifier import execute_deep_verification
+
+        job_by_id = {job.finding_id: job for job in (jobs or [])}
+        finding_ids = list(job_by_id.keys())
+        if not finding_ids:
+            return
+
+        # Query back THIS run's suspicious records (read-only session).
+        async with async_session_factory() as db:
+            rows = (await db.execute(
+                select(FuzzingRecord).where(
+                    FuzzingRecord.finding_id.in_(finding_ids),
+                    FuzzingRecord.verification_status == "suspicious",
+                )
+            )).scalars().all()
+
+        if not rows:
+            logger.info("[FUZZER · SHADOW] No 'suspicious' records to shadow-verify.")
+            return
+
+        logger.info(f"[FUZZER · SHADOW] Shadow-verifying {len(rows)} suspicious record(s) (read-only).")
+
+        for rec in rows:
+            # Each record is independent; one failure must not stop the others.
+            try:
+                job = job_by_id.get(rec.finding_id)
+                if job is None:
+                    continue
+                payloads = job.payloads or []
+                payload = (
+                    payloads[rec.payload_index]
+                    if 0 <= rec.payload_index < len(payloads) else None
+                )
+
+                result = await execute_deep_verification(
+                    parsed_request=job.parsed_request,
+                    payload=payload,
+                    base_url=job.base_url,
+                    approved_host=(custody.approved_host or None) if custody is not None else None,
+                    auth_context=_shadow_auth_context(custody, job.parsed_request),
+                    available_endpoints=_shadow_endpoint_catalog(job.parsed_request),
+                )
+
+                logger.info(
+                    "[FUZZER · SHADOW] finding_id=%s payload#%s | rule_verdict=suspicious | "
+                    "AI_shadow_verdict=%s (status=%s, confidence=%s, follow_up=%s) | "
+                    "NOT applied (shadow, observe-only).",
+                    rec.finding_id, rec.payload_index, result.ai_verdict, result.status,
+                    result.ai_confidence, result.ai_requested_follow_up,
+                )
+            except Exception as e:
+                logger.warning(
+                    "[FUZZER · SHADOW] Shadow deep-verify failed for finding_id=%s payload#%s: %s",
+                    getattr(rec, "finding_id", "?"), getattr(rec, "payload_index", "?"), e,
+                )
+    except Exception as e:
+        # Shadow mode must NEVER affect the main batch — swallow everything.
+        logger.warning(f"[FUZZER · SHADOW] Shadow pass aborted (swallowed): {e}")
 
 
 async def dry_run_auth_refresh(auth_refresh_request: dict, approved_host: str = "") -> dict:

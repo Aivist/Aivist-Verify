@@ -80,6 +80,18 @@ class Settings(BaseSettings):
         description="Enable the isolated AI-in-the-loop write-then-read deep verifier (off by default; not wired into any endpoint yet)."
     )
 
+    # Phase 7 SHADOW MODE flag — separate from AI_DEEP_VERIFY_ENABLED. When True,
+    # the parallel fuzzing engine runs the deep verifier as a READ-ONLY second
+    # opinion on "suspicious" records AFTER the normal batch completes, logging the
+    # AI verdict WITHOUT changing verification_status/diff_details or what the user
+    # sees. Default False => behavior is byte-identical to today. NOTE: to actually
+    # invoke Gemini, AI_DEEP_VERIFY_ENABLED must ALSO be True (the verifier itself
+    # respects that gate); the shadow flag only controls whether the fuzzer calls it.
+    AI_DEEP_VERIFY_SHADOW: bool = Field(
+        default=False,
+        description="Run the deep verifier in read-only shadow mode after a fuzzing batch (observes 'suspicious' records; never changes verdicts). Off by default."
+    )
+
     # --------------------------------------------------------------------------
     # 4. Scan & Fuzzing Engine Settings
     # --------------------------------------------------------------------------
