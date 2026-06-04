@@ -9,6 +9,7 @@
 > - [`DATA_MODEL.md`](./DATA_MODEL.md) — database schema & ORM
 > - [`HUNTER_PIPELINE.md`](./HUNTER_PIPELINE.md) — AI Logic Hunter (HAR → analyze → persist)
 > - [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md) — differential fuzzing / verification engine
+> - [`DEEP_VERIFY.md`](./DEEP_VERIFY.md) — `deep_verifier.py` (AI write-then-read; shadow-mode Phase 7, not API-wired)
 > - [`NUCLEI_SCAN_PIPELINE.md`](./NUCLEI_SCAN_PIPELINE.md) — Nuclei 3-phase scanner
 > - [`API_REFERENCE.md`](./API_REFERENCE.md) — every HTTP endpoint
 > - [`DEVELOPMENT.md`](./DEVELOPMENT.md) — how to run & test
@@ -32,6 +33,15 @@ share one database and one frontend:
 The Hunter → Verify path is the more novel/valuable subsystem. The Nuclei path
 is a more conventional scanner wrapper.
 
+A third, **passive** front-end feeds the Hunter:
+
+3. **Proxy Radar (Step 9)** — a supervised `mitmdump` subprocess acts as an
+   HTTP/S intercepting proxy. The operator points a browser at it; in-scope
+   dynamic flows are captured, scored, persisted to `captured_flows`, streamed
+   live to the UI over SSE, and can be promoted into the Hunter → Verify pipeline
+   with one click. It does not actively attack — it observes traffic the operator
+   generates.
+
 ---
 
 ## 2. Tech stack
@@ -44,6 +54,7 @@ is a more conventional scanner wrapper.
 | Database | SQLite via `aiosqlite` (WAL mode) |
 | HTTP client | `httpx.AsyncClient` (TLS verification disabled by design) |
 | External scanner | Nuclei (subprocess) |
+| Intercepting proxy | mitmproxy's `mitmdump` (subprocess, supervised by `ProxyManager`) |
 | AI | Google Gemini via the official `google-genai` SDK |
 | Frontend (canonical) | `preview_dashboard.html` — single-file React (CDN + Babel), Tailwind, light theme |
 | Frontend (legacy) | `frontend/` Vite + TypeScript app — **dark theme, mock data, NOT the product baseline** |
@@ -63,25 +74,40 @@ anti gravity/
 ├─ backend/
 │  ├─ .env                        # config (NUCLEI_BINARY_PATH, GEMINI_API_KEY, ...)
 │  ├─ run.py                      # uvicorn entrypoint (reload=True)
+│  ├─ requirements.txt            # runtime deps
+│  ├─ requirements-dev.txt        # pytest (dev-only)
 │  ├─ app/
-│  │  ├─ main.py                  # FastAPI app, lifespan create_all, CORS, routers
+│  │  ├─ main.py                  # FastAPI app, lifespan create_all + schema check, CORS, routers
 │  │  ├─ core/
 │  │  │  ├─ config.py             # Pydantic Settings + validators (fail-fast)
 │  │  │  └─ database.py           # async engine, session factory, get_db, SQLite pragmas
 │  │  ├─ models/
-│  │  │  └─ scan.py               # ScanTask, VulnerabilityFinding, FuzzingRecord
+│  │  │  └─ scan.py               # ScanTask, VulnerabilityFinding, FuzzingRecord, CapturedFlow
 │  │  ├─ schemas/
 │  │  │  ├─ scan.py               # Nuclei scan request/response schemas
-│  │  │  └─ hunter.py             # Hunter + verify + HAR + batch schemas
+│  │  │  ├─ hunter.py             # Hunter + verify + HAR + batch schemas
+│  │  │  └─ proxy.py              # Step 9: ingest/projection/control/status contracts
 │  │  ├─ api/v1/
 │  │  │  ├─ scan.py               # /api/v1/scan/*  (Nuclei)
-│  │  │  └─ hunter.py             # /api/v1/hunter/* (Hunter, verify, HAR, batch, auth)
+│  │  │  └─ hunter.py             # /api/v1/hunter/* (Hunter, verify, HAR, batch, auth, proxy)
+│  │  ├─ proxy/
+│  │  │  └─ radar_addon.py        # Step 9: mitmdump addon (separate interpreter), Tier-1 filter + loopback POST
 │  │  └─ services/
 │  │     ├─ nuclei.py             # 3-phase scan orchestrator + Gemini patch + profiler
 │  │     ├─ traffic_parser.py     # raw HTTP text → structured dict
-│  │     ├─ pruner.py             # heuristic exposure scoring / HAR noise filter
-│  │     └─ fuzzer.py             # differential fuzzing engine + auth custody (the core)
-│  └─ tests/                      # pytest: test_pruner, test_step8_custody, test_step_d_hunter_link
+│  │     ├─ pruner.py             # heuristic exposure scoring / HAR noise filter (shared Tier-2 helpers)
+│  │     ├─ fuzzer.py             # differential fuzzing engine + auth custody (the core)
+│  │     ├─ proxy_pipeline.py     # Step 9: unified WriterService + SSEHub + ingest pipeline
+│  │     ├─ proxy_manager.py      # Step 9: mitmdump process state machine + OS-agnostic tree kill
+│  │     └─ deep_verifier.py      # AI write-then-read verifier (shadow-mode Phase 7; not API-wired)
+│  ├─ scripts/
+│  │  └─ deep_verify_live_check.py  # Manual Gemini+target check (not pytest)
+│  └─ tests/                      # pytest (73): test_pruner, test_step8_custody,
+│                                 # test_step_d_hunter_link, test_api_endpoints, test_step9_proxy
+├─ vulnerable_target/            # Standalone ground-truth target (:8001), own DB, 14 pytest cases
+│  ├─ main.py
+│  ├─ test_vulns.py
+│  └─ benchmark/                  # BAC verification benchmark docs + RESULTS
 └─ docs/                          # you are here
 ```
 
@@ -113,6 +139,33 @@ POST /hunter/verify/batch       → true-concurrent multi-endpoint fuzzing (shar
 POST /hunter/auth/dry-run       → test an Identity Provider Anchor (re-auth) before a batch
 ```
 
+> **AI deep verifier (shadow mode).** The fuzzer additionally has an
+> **AI-in-the-loop deep verifier** (`services/deep_verifier.py`) wired as an
+> additive, read-only **Phase 7** of `execute_parallel_fuzzing`. Gated by
+> `AI_DEEP_VERIFY_SHADOW` (default off; needs `AI_DEEP_VERIFY_ENABLED` too for a
+> live Gemini call), it re-checks `suspicious` records with a two-turn
+> write-then-read and **only logs** its verdict — it never changes the persisted
+> verdict or what the user sees. See [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md)
+> §Phase 7 and [`DEEP_VERIFY.md`](./DEEP_VERIFY.md).
+
+### 4c. Proxy Radar (Step 9 — passive capture)
+```
+POST /hunter/proxy/start  → ProxyManager spawns mitmdump with radar_addon.py
+                            (env carries scope host, ingest URL, per-session token)
+browser → mitmdump:
+   Tier-1 (inline, <5ms): host-scope lock + static-asset veto (radar_addon.py)
+   in-scope dynamic flow → fire-and-forget loopback HTTP POST
+        → POST /hunter/proxy/internal-ingest  (loopback-only + token; include_in_schema=False)
+             → ProxyIngestPipeline bounded asyncio.Queue
+                  Tier-2 (async): calculate_exposure_score + detect_login_candidate
+                  → WriterService (single serialized SQLite writer) → captured_flows
+                  → SSEHub.publish(flow)
+GET /hunter/proxy/stream  → SSE fan-out of captured flows to the UI
+GET /hunter/proxy/flows   → recent captured flows (DB read projection)
+GET /hunter/proxy/cert    → download the mitmproxy CA cert (for HTTPS interception)
+POST /hunter/proxy/stop   → graceful stop + OS-agnostic process-tree kill
+```
+
 See [`HUNTER_PIPELINE.md`](./HUNTER_PIPELINE.md) and [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md) for the internals.
 
 ---
@@ -128,12 +181,35 @@ See [`HUNTER_PIPELINE.md`](./HUNTER_PIPELINE.md) and [`VERIFY_ENGINE.md`](./VERI
   compatibility and to avoid blocking the loop on process I/O.
 - **Fuzzing is fully async.** `fuzzer.py` runs concurrent `httpx` requests under
   an `asyncio.Semaphore`, but **all database writes funnel through a single
-  consumer coroutine** (`_db_writer_consumer`) draining an `asyncio.Queue`. This
-  is the central design rule: *parallelize the network, serialize the DB.*
+  consumer coroutine** draining an `asyncio.Queue`. This is the central design
+  rule: *parallelize the network, serialize the DB.*
   → See the `async-session-custody` skill and [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md).
-- **SQLite tuning.** `database.py` sets `PRAGMA journal_mode=WAL` and a
-  `busy_timeout` so transient "database is locked" is waited out; the fuzzer also
-  wraps commits in `_commit_with_retry` with exponential backoff.
+- **Unified WriterService (Step 9).** The single-writer pattern was generalized
+  out of the fuzzer into an **app-wide** `WriterService` (in
+  `services/proxy_pipeline.py`): one long-lived consumer coroutine drains a queue
+  of `WriteJob` callables and executes them sequentially against one
+  `AsyncSession`. It is started in the lifespan and shared by **both** the proxy
+  ingest pipeline and the fuzzer. When the service is running the fuzzer forwards
+  its persistence jobs to it (so there is globally at most one SQLite writer);
+  when it isn't (e.g. an isolated unit test), the fuzzer falls back to an
+  ephemeral per-batch consumer. Net effect: *one writer for the whole process.*
+- **Proxy IPC is out-of-process (Step 9).** `mitmdump` runs in a **separate
+  Python interpreter**, so shared globals don't work. The `radar_addon.py` ships
+  captured flows back to FastAPI via a low-latency loopback HTTP POST to
+  `/hunter/proxy/internal-ingest`, which feeds an in-process `asyncio.Queue`.
+  `ProxyManager` supervises the child: a small state machine, bounded restarts
+  with backoff/circuit-breaker, and **OS-agnostic clean tree termination**
+  (`taskkill /F /T` on Windows, process-group signals on Unix) wired into the
+  lifespan so no orphan proxy survives a crash.
+- **SSE is non-blocking with cleanup (Step 9).** `SSEHub` fans out flows to
+  subscribers via **bounded per-client queues** (overflow drops oldest, never
+  blocks ingest), enforces a max-subscriber cap, emits heartbeats, and on client
+  disconnect catches `asyncio.CancelledError` to remove the queue — no memory
+  leak.
+- **SQLite tuning.** `database.py` sets `PRAGMA journal_mode=WAL`,
+  `busy_timeout=5000`, and `synchronous=NORMAL` so reads proceed during writes and
+  transient "database is locked" is waited out; writers wrap commits in a
+  `commit_with_retry` helper with exponential backoff.
 
 ---
 
@@ -146,10 +222,24 @@ See [`HUNTER_PIPELINE.md`](./HUNTER_PIPELINE.md) and [`VERIFY_ENGINE.md`](./VERI
   will then fail at runtime with a clear log).
 - `GEMINI_API_KEY` is optional; when missing, all AI calls return a graceful
   Chinese "degraded" fallback string instead of crashing.
-- On startup, `main.py`'s lifespan runs `Base.metadata.create_all` — this
-  **creates missing tables but never alters existing ones** (see the migration
-  warning in [`DATA_MODEL.md`](./DATA_MODEL.md) §Migrations).
-- Health check: `GET /` returns status + the configured Nuclei path / DB URL.
+- **AI deep-verify flags** (both default `False`, so off by default):
+  `AI_DEEP_VERIFY_ENABLED` (the `deep_verifier.py` component may run / call Gemini)
+  and `AI_DEEP_VERIFY_SHADOW` (the fuzzer runs the read-only Phase 7 shadow pass).
+  Both must be `True` for a live shadow second opinion. See
+  [`DEEP_VERIFY.md`](./DEEP_VERIFY.md).
+- On startup, `main.py`'s lifespan runs `Base.metadata.create_all`, then
+  `_verify_schema_integrity` (D1) — `create_all` **creates missing tables but
+  never alters existing ones**; the integrity check refuses to boot if an existing
+  DB is missing ORM columns (see [`DATA_MODEL.md`](./DATA_MODEL.md) §Migrations).
+- **Step 9 lifespan wiring:** the lifespan also **starts the `WriterService`**
+  (and the `ProxyIngestPipeline`/`SSEHub`) on startup, and after `yield`
+  **stops the proxy and drains/stops the writer** on shutdown, in that order, so
+  the proxy subprocess and the writer coroutine are torn down cleanly.
+- **Step 9 proxy config:** `config.py` adds `MITMDUMP_PATH` (validated; resolved
+  from PATH if blank), `PROXY_LISTEN_PORT`, and bounds — `PROXY_INGEST_QUEUE_MAX`,
+  `PROXY_SSE_MAX_CLIENTS`, `PROXY_SSE_CLIENT_QUEUE_MAX`, `PROXY_BODY_CAP`,
+  `PROXY_INGEST_MAX_BYTES`.
+- Health check: `GET /` returns status + the configured Nuclei path / DB URL / log level.
 
 ---
 
@@ -163,17 +253,26 @@ agent must treat the following as deliberate-but-dangerous:
 | API auth | **None.** No auth on any endpoint. | Anyone who can reach `:8000` can launch scans/fuzzing. Keep it bound to localhost. |
 | TLS verification | `verify=False` on every outbound `httpx` client. | Required for self-signed pentest targets; do not "fix" without understanding. |
 | CORS | Allows configured origins **plus `'null'`** (so the `file://` HTML preview works). | `'null'` origin is broad; tighten for any hosted deployment. |
-| Outbound scope | **Scope-lock** guards exist: the Nuclei profiler and the fuzzer's re-auth refuse to probe hosts outside the approved target. | This is the main guardrail against hitting third-party hosts (Stripe/AWS/etc.). Preserve it. |
+| Outbound scope | **Scope-lock** guards exist: the Nuclei profiler, the fuzzer's re-auth, and the proxy radar (Tier-1 host lock) refuse to touch hosts outside the approved target. | This is the main guardrail against hitting third-party hosts (Stripe/AWS/etc.). Preserve it. |
 | Command injection | Nuclei is invoked with an argument list (no `shell=True`). | Safe; keep it that way. |
 | Cookie header injection | `ScanRequest.cookie` validator rejects CRLF. | Minimal but present. |
+| Proxy internal ingest | `/hunter/proxy/internal-ingest` is **excluded from OpenAPI** (`include_in_schema=False`), guarded by an **application-level loopback check** (request client must be `127.0.0.1`/`::1`) **plus a per-session shared token** generated on each proxy start. Any failure → **404** (not 401/403, to avoid confirming the route exists). | Shared-socket design (no second uvicorn) — see note below. Do **not** put the app behind a reverse proxy that rewrites client IP without re-adding an equivalent guard. |
+| Proxy CA cert | `/hunter/proxy/cert` streams the generated mitmproxy CA so the operator can trust it for HTTPS interception. | The CA exists only after the proxy has run once; required for HTTPS capture. |
 
 ---
 
 ## 8. Mental model for the next agent
 
-- The **fuzzer (`services/fuzzer.py`, ~1400 lines) is the heart** of the product
+- The **fuzzer (`services/fuzzer.py`, ~1600 lines) is the heart** of the product
   and the hardest file. Budget time there. It is heavily structured into
   numbered "Sections 7.x / Step 8" matching the `async-session-custody` skill.
+- The **proxy radar (Step 9)** spans four files: `services/proxy_manager.py`
+  (process state machine + tree kill), `services/proxy_pipeline.py`
+  (`WriterService` + `SSEHub` + ingest pipeline), `proxy/radar_addon.py` (the
+  out-of-process mitmdump addon — Tier-1 filter), and the `/hunter/proxy/*`
+  routes. The addon imports **shared helpers from `pruner.py`**
+  (`is_static_path`, `host_in_scope`, `detect_login_candidate`) so Tier-1 and
+  Tier-2 share one definition of "static" / "in scope" / "login candidate".
 - The **two subsystems barely interact**: a Nuclei finding and a Hunter finding
   are both rows in `vulnerability_findings`, distinguished by the `source`
   column (single-table inheritance, but *without* SQLAlchemy polymorphic mapping
@@ -181,5 +280,13 @@ agent must treat the following as deliberate-but-dangerous:
 - **"Step D"** is the recently-added bridge that lets a Hunter analysis become a
   fuzzable finding. Anything labelled Step D in code/comments is part of that
   Hunter→Verify link.
+- **`deep_verifier.py`** is isolated from the fuzzer verdict path and has **no
+  HTTP route**. It is, however, invoked **read-only** by the fuzzer's additive
+  **shadow-mode Phase 7** (gated `AI_DEEP_VERIFY_SHADOW`, default off) — it logs an
+  AI second opinion on `suspicious` records but never changes a persisted verdict.
+  See [`DEEP_VERIFY.md`](./DEEP_VERIFY.md) and [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md)
+  §Phase 7. Manual script: `scripts/deep_verify_live_check.py`. Two known seams
+  (auth-context, minimal endpoint catalog) are tracked in
+  [`TECH_DEBT.md`](./TECH_DEBT.md) D18.
 - When something "doesn't persist," suspect the **stale-SQLite-schema** trap
   documented in [`DATA_MODEL.md`](./DATA_MODEL.md) and [`DEVELOPMENT.md`](./DEVELOPMENT.md).

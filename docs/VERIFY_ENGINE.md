@@ -1,6 +1,6 @@
 # VERIFY ENGINE — Differential Fuzzing & Auth Custody
 
-> File: `backend/app/services/fuzzer.py` (~1400 lines, the core of the product).
+> File: `backend/app/services/fuzzer.py` (~1600 lines, the core of the product).
 > This engine takes a persisted `VulnerabilityFinding` + its `automation_payloads`
 > and actively replays mutated requests against the live target, then uses a
 > **differential oracle** to decide whether each payload exposed a real
@@ -36,7 +36,13 @@ Phase 3  Build ONE shared AuthCustodyController; register in _ACTIVE_CUSTODY[fid
 Phase 4  Compute baselines concurrently (gated by a shared Semaphore)
 Phase 5  Fan out one _execute_single_fuzz coroutine per (finding, payload)
 Phase 6  Send sentinel → wait for writer to drain → deregister custody
+Phase 7  (SHADOW, additive, read-only) — only if AI_DEEP_VERIFY_SHADOW=True;
+           otherwise an immediate no-op (see §Phase 7 below)
 ```
+
+> Phases 1–6, `_execute_single_fuzz`, and `_differential_verdict` are the
+> byte-for-byte stable verdict path (the 73-test path). Phase 7 is purely additive
+> and runs only after the batch above has fully completed.
 
 ### Concurrency rule (the most important invariant)
 - Network I/O is **parallel**: all `_execute_single_fuzz` coroutines run under a
@@ -50,6 +56,14 @@ Phase 6  Send sentinel → wait for writer to drain → deregister custody
   never share one `AsyncSession` across concurrent tasks. That is the bug class
   this whole design exists to prevent (SQLAlchemy async sessions are not
   concurrency-safe; SQLite has a single writer).
+
+> **Step 9 generalization.** This single-writer pattern was promoted to an
+> **app-wide `WriterService`** (`services/proxy_pipeline.py`), started in the
+> lifespan and shared with the proxy radar. When it is running the fuzzer
+> **forwards** its persistence jobs to it instead of starting its own
+> `_db_writer_consumer`, so there is globally **one** SQLite writer for the whole
+> process; the local consumer remains as an ephemeral fallback (e.g. isolated unit
+> tests). The invariant above is unchanged — see [`ARCHITECTURE.md`](./ARCHITECTURE.md) §5.
 
 ---
 
@@ -199,3 +213,41 @@ untested → (engine runs) → verified | suspicious | failed
 Poll `GET /hunter/verify/{finding_id}/results`; records are ordered by
 `payload_index`. The job completes when all payloads have rows and no custody
 diagnostic is present.
+
+---
+
+## Phase 7 — AI deep verifier in SHADOW MODE (read-only, additive)
+
+An **AI-in-the-loop deep verifier** now exists alongside the rule-based oracle
+(`services/deep_verifier.py`). It is integrated into `execute_parallel_fuzzing` as
+**Phase 7** but is strictly **observational** in this first cut:
+
+- **Gated** by `AI_DEEP_VERIFY_SHADOW` (default `False`). When off, Phase 7 is an
+  immediate no-op and the engine behaves exactly as documented in Phases 1–6.
+- When on, after the batch's records are persisted, it queries this run's records
+  with `verification_status == "suspicious"` and, for each, runs
+  `execute_deep_verification` against the same target — a two-turn write-then-read
+  loop (Gemini) that can request ONE follow-up HTTP request.
+- It **only logs** the AI's verdict (`[FUZZER · SHADOW] … AI_shadow_verdict=… NOT
+  applied (shadow, observe-only)`). It **does not** overwrite `verification_status`
+  or `diff_details`, change what the user sees, or affect the writer path. Any
+  failure is logged and swallowed (it can never break a batch).
+- To actually call Gemini, `AI_DEEP_VERIFY_ENABLED` must **also** be `True` (the
+  verifier respects its own gate).
+
+Why it exists: the rule oracle stalls at `suspicious` on **silent** cases (opaque
+`200 {"status":"ok"}` writes — Rule 2's ≤5% length-deviation branch) because it
+cannot observe a side effect from a single response. The deep verifier's
+write-then-read can. Today this is measured (see
+[`../vulnerable_target/benchmark/RESULTS.md`](../vulnerable_target/benchmark/RESULTS.md))
+but **not** used to decide verdicts — see [`TECH_DEBT.md`](./TECH_DEBT.md) D19.
+
+Two seams, both currently minimal: the **auth-context** seam (live custody
+credential, else the finding's auth header) and the **endpoint-catalog** seam
+(no real endpoint discovery yet — TECH_DEBT D18).
+
+## Related: `deep_verifier.py`
+
+[`DEEP_VERIFY.md`](./DEEP_VERIFY.md) documents `services/deep_verifier.py` (not
+called from `POST /hunter/verify/*`; invoked read-only by the fuzzer's Phase 7
+only when `AI_DEEP_VERIFY_SHADOW=True`; both AI gates default `False`).

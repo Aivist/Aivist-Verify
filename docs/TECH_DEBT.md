@@ -5,9 +5,9 @@
 > what was already addressed and don't re-litigate it.
 >
 > Honesty note: this list reflects what is visible in the current source. It is
-> not a guarantee that nothing else is wrong — areas with **no automated test
-> coverage** (the API layer and the Nuclei pipeline) are the most likely place
-> for undiscovered issues.
+> not a guarantee that nothing else is wrong — the **Nuclei subprocess pipeline**
+> (real binary, JSONL reader thread, Phase 3 batch enrichment) still has **no
+> dedicated automated tests**; API routes have partial mock-based coverage (D7).
 
 ---
 
@@ -18,24 +18,21 @@
 | R1 | **Hunter → Verify link was broken** | Step D: `models/scan.py`, `fuzzer.py`, `hunter.py`, `schemas/hunter.py` | `analyze` produced payloads that could never reach `verify`. Fixed by typed JSON columns + `POST /hunter/findings`. **Verified end-to-end** (real server + real local target + real DB): analyze → save → verify → 6 `FuzzingRecord`s with verdicts. |
 | R2 | **`pruner` non-determinism (`PYTHONHASHSEED`)** | `services/pruner.py` | Keyword scoring depended on frozenset iteration order. Now counts all distinct keywords; locked by regression tests in `test_pruner.py`. Suite passes under random seeds. |
 | R3 | **Tech-debt cleanup sweep (D1/D3/D4/D6/D7/D8/D9 + hardcoding N1–N7)** | see each item below | Done in two commits: **Stage A** (config/hardcoding/hygiene: D4, D8, N1–N7) and **Stage B** (D9, D3, D6, D1, D7). All 66 tests pass. Remaining open: **D2** (auth, intentionally deferred for local use) and **D5** (frontend consolidation, tracked as a separate task). |
+| R4 | **Step 9 — Passive Traffic Ingestion Proxy Radar + unified WriterService** | `models/scan.py` (`CapturedFlow`), `config.py`, `services/proxy_pipeline.py`, `services/proxy_manager.py`, `proxy/radar_addon.py`, `schemas/proxy.py`, `api/v1/hunter.py` (`/proxy/*`), `main.py`, `pruner.py` (shared helpers), `preview_dashboard.html` | The single-writer pattern was generalized out of the fuzzer into an **app-wide `WriterService`** (started in the lifespan); the fuzzer forwards to it when running and falls back to an ephemeral per-batch consumer otherwise — **globally ≤1 SQLite writer**. mitmdump runs out-of-process, ships in-scope flows via a loopback POST to a hidden internal-ingest endpoint, Tier-2 enriches + persists + SSE-streams. **All 66 prior tests still pass + 7 new (`test_step9_proxy.py`) = 73.** **Verified end-to-end** (real mitmdump + real DB): browser→proxy→ingest→queue→writer→`captured_flows`; ingest→SSE→client; captured flow→analyze→findings→verify→`FuzzingRecord`→results; plus clean process-tree kill on stop. |
 
 ---
 
 ## 🔴 High severity / fix before any real use
 
 ### D1 — No database migrations (schema drift trap)
-- **✅ RESOLVED (Stage B):** added `_verify_schema_integrity` to the `main.py`
-  lifespan. After `create_all`, it diffs each ORM table's expected columns
-  against live `PRAGMA table_info` and raises a clear, actionable startup error
-  (delete DB / migrate) instead of failing deep in an INSERT. Does NOT
-  auto-migrate — Alembic is still the right long-term move if schemas churn.
-- **Where:** `main.py` lifespan uses `Base.metadata.create_all` only; no Alembic.
-- **Problem:** `create_all` never alters existing tables. Any model change leaves
-  old DBs missing columns → runtime `OperationalError`. This already bit Step D
-  ([`DATA_MODEL.md`](./DATA_MODEL.md) §Migrations).
-- **Direction:** add Alembic, **or** at minimum a startup self-check that diffs
-  `PRAGMA table_info` vs the ORM and emits a clear "recreate/migrate" error
-  instead of failing deep in an insert.
+- **Status:** partially mitigated (Stage B); Alembic still open.
+- **Where:** `main.py` lifespan — `create_all` + `_verify_schema_integrity`; no Alembic.
+- **Was:** `create_all` never alters existing tables → old DBs missing new columns →
+  deep `OperationalError` at INSERT (bit Step D; see [`DATA_MODEL.md`](./DATA_MODEL.md)).
+- **Now:** startup self-check diffs ORM columns vs `PRAGMA table_info` and refuses
+  to boot with a clear error naming missing columns.
+- **Still open:** no automatic migration — dev must recreate the DB, point at a fresh
+  file via `DATABASE_URL`, or hand-apply `ALTER TABLE`. Add Alembic if schemas churn.
 
 ### D2 — No authentication / authorization
 - **Where:** every endpoint in `api/v1/*`.
@@ -46,32 +43,22 @@
   token before any shared or hosted deployment.
 
 ### D3 — `analyze` can hang on the external Gemini call
-- **✅ RESOLVED (Stage B):** both Gemini call sites
-  (`hunter._invoke_gemini_logic_hunt` + `nuclei.generate_gemini_remediation_patch`)
-  are now wrapped in `asyncio.wait_for(..., timeout=settings.GEMINI_REQUEST_TIMEOUT_SECONDS)`
-  (default 60s, configurable). On timeout each returns a fast degraded fallback
-  instead of blocking the caller.
-- **Where:** `hunter.py` `_invoke_gemini_logic_hunt` (and `nuclei.py` patch gen).
-- **Problem:** the SDK call has no explicit timeout; observed real-world 503s and
-  multi-second/timeout hangs. The endpoint catches errors but can still block the
-  caller for a long time.
-- **Direction:** wrap Gemini calls in `asyncio.wait_for` with a budget; surface a
-  fast degraded response on timeout.
+- **✅ RESOLVED (Stage B).**
+- **Where:** `hunter.py` `_invoke_gemini_logic_hunt`, `nuclei.py`
+  `generate_gemini_remediation_patch`.
+- **Fix:** both wrapped in `asyncio.wait_for(...,
+  timeout=settings.GEMINI_REQUEST_TIMEOUT_SECONDS)` (default 60s). Timeout → fast
+  degraded fallback string; caller no longer blocks indefinitely.
 
 ---
 
 ## 🟠 Medium severity
 
 ### D4 — `FindingDetails.scan_id` typed as non-optional `str`
-- **✅ RESOLVED (Stage A):** `scan_id` is now `Optional[str] = None` and a
-  `source: Optional[str]` field was added to `FindingDetails`; the scan endpoint
-  populates it.
-- **Where:** `schemas/scan.py` `FindingDetails.scan_id: str`.
-- **Problem:** Hunter findings have `scan_id = NULL`. The scan-scoped endpoint
-  filters by `scan_id` so it never serializes a Hunter row today, but **any
-  future endpoint that returns a Hunter finding through `FindingDetails` will
-  raise a validation error.** Latent landmine.
-- **Direction:** make it `Optional[str]`, and add a `source` field to the schema.
+- **✅ RESOLVED (Stage A).**
+- **Where:** `schemas/scan.py` `FindingDetails`.
+- **Fix:** `scan_id: Optional[str] = None` and `source: Optional[str]` added; scan
+  findings endpoint populates both.
 
 ### D5 — Two divergent frontends
 - **Where:** `preview_dashboard.html` (canonical, light, wired) vs `frontend/`
@@ -81,54 +68,46 @@
   canonical HTML into it with a real build. Don't leave both as "the frontend."
 
 ### D6 — `severity` column misused for Hunter findings
-- **✅ RESOLVED (Stage B):** `persist_hunter_finding` now stores a real severity
-  (`"INFO"`) and preserves the vulnerability *type* in `template_id`
-  (e.g. `"logic-hunter:BOLA"`) and in the `automation_payloads` JSON. Severity
-  filtering/sorting is no longer polluted by type strings.
-- **Where:** `hunter.py` `persist_hunter_finding` sets `severity =
-  payloads[0].type.upper()` (e.g. `"BOLA"`).
-- **Problem:** `severity` semantically means CRITICAL/HIGH/… but for Hunter rows
-  it holds a vulnerability *type*. Mixing semantics by `source` will confuse any
-  severity-based filtering/sorting/UI.
-- **Direction:** store a real severity (or `INFO`) and keep the type in the
-  payload; or add a dedicated `vuln_type` column.
+- **✅ RESOLVED (Stage B).**
+- **Where:** `hunter.py` `persist_hunter_finding`.
+- **Was:** Hunter rows stored vuln *type* in `severity` (e.g. `"BOLA"`), polluting
+  severity-based filters.
+- **Now:** `severity="INFO"`; type lives in `template_id` (e.g. `"logic-hunter:BOLA"`)
+  and in `automation_payloads[].type`.
 
 ### D7 — No test coverage for the API layer or Nuclei pipeline
-- **✅ RESOLVED (Stage B):** added `backend/tests/test_api_endpoints.py` — 10
-  FastAPI `TestClient` tests over an isolated per-test SQLite DB with Gemini +
-  nuclei + background fuzzing mocked. Covers analyze (success + 422), findings
-  persist (201 + 422 paths), verify/batch 404s, and scan start/status (202 + 404).
-- **Where:** `backend/tests/` covers pruner, custody, Step D extraction only.
-- **Problem:** `api/v1/scan.py`, `api/v1/hunter.py`, and `services/nuclei.py`
-  have **no automated tests**. Regressions there are invisible.
-- **Direction:** add FastAPI `TestClient` tests (analyze/findings/verify/results,
-  HAR ingest, batch validation 400/404) and a mocked-subprocess nuclei test.
+- **Status:** partially resolved (Stage B + Step 9) — API smoke tests + proxy
+  radar tests added; Nuclei pipeline still bare.
+- **Where:** `backend/tests/test_api_endpoints.py` (API smoke); `test_step9_proxy.py`
+  (proxy radar, Step 9); plus pruner, custody, Step D extraction in other files.
+  Total suite: **73 tests**.
+- **Covered:** FastAPI `TestClient` over isolated per-test SQLite with Gemini,
+  nuclei subprocess, and background fuzzing mocked — analyze (200 + 422), findings
+  persist (201 + 422), verify/batch 404s, scan start/status (202 + 404), health check.
+  **Step 9:** WriterService serialization, SSEHub fan-out + overflow, ingest
+  backpressure, Tier-2 enrichment, ProxyManager state machine + token, internal-ingest
+  loopback/token/oversize guards.
+- **Still open:** HAR ingest, batch 400 mixed-host, verify results polling, real
+  Nuclei subprocess / JSONL reader / Phase 3 enrichment loop — add mocked-subprocess
+  nuclei tests when touching that code.
 
 ### D8 — `requirements.txt` gaps
-- **✅ RESOLVED (Stage A):** pinned `sqlalchemy`/`aiosqlite`/`google-genai`/
-  `python-multipart` to tested versions, added `backend/requirements-dev.txt`
-  (pytest), and annotated `python-jose`/`passlib` as reserved-for-D2 (still
-  unused). Kept rather than removed so the future auth work has them ready.
-- **Where:** `backend/requirements.txt`.
-- **Problems:** ships unused `python-jose`/`passlib`; omits `pytest`
-  (needed to run the suite); some pins are loose (`sqlalchemy>=2.0`, `aiosqlite`,
-  `google-genai` unpinned).
-- **Direction:** prune unused deps, add a dev-requirements (pytest), pin
-  `aiosqlite`/`google-genai`/`sqlalchemy` to tested versions.
+- **✅ RESOLVED (Stage A).**
+- **Where:** `backend/requirements.txt`, `backend/requirements-dev.txt`.
+- **Fix:** pinned `sqlalchemy`/`aiosqlite`/`google-genai`/`python-multipart`;
+  pytest moved to `requirements-dev.txt`; `python-jose`/`passlib` kept annotated
+  as reserved-for-D2 (still unused).
 
 ---
 
 ## 🟡 Low severity / hygiene
 
 ### D9 — `datetime.datetime.utcnow()` is deprecated
-- **✅ RESOLVED (Stage B):** added a single `utcnow()` helper in `models/scan.py`
-  and swept all call sites (`models/scan.py`, `fuzzer.py`, `nuclei.py`,
-  `api/v1/scan.py`) to use it; removed now-unused `import datetime`s. Kept the
-  values **naive UTC** on purpose (columns are not `timezone=True`) so stored
-  timestamps and all existing comparisons remain byte-identical.
-- **Where:** ~11 call sites across `models/scan.py`, `fuzzer.py`, `nuclei.py`,
-  `api/v1/scan.py`.
-- **Problem:** deprecated in Python 3.12+ (returns naive UTC). Works on 3.11.
+- **✅ RESOLVED (Stage B).**
+- **Where:** `utcnow()` helper in `models/scan.py`; call sites in `models/scan.py`,
+  `fuzzer.py`, `nuclei.py`, `api/v1/scan.py`.
+- **Fix:** replaced deprecated `datetime.utcnow()` while keeping **naive UTC**
+  values (columns are not `timezone=True`).
 
 ### D10 — Single-table inheritance without polymorphic mapping
 - **Where:** `vulnerability_findings.source` is set manually by each producer.
@@ -154,14 +133,90 @@
 - **Status:** intentional for self-signed pentest targets. **Not a bug** — just
   be aware it disables cert validation globally for outbound calls.
 
+### D14 — Proxy radar Tier-1 drops out-of-scope / static traffic (Step 9)
+- **Where:** `proxy/radar_addon.py` (Tier-1 inline filter).
+- **Status:** intentional. The radar only captures in-scope **dynamic** flows;
+  static assets and out-of-scope hosts are vetoed in the mitmdump hook so the proxy
+  adds no latency and never records third-party traffic. The `captured_flows.in_scope`
+  flag exists for any future "capture-but-inert" mode.
+- **Direction:** if you ever need full passive capture, relax the addon veto and
+  rely on `in_scope`/`exposure_score` for filtering at read time.
+
+### D15 — HTTPS interception requires trusting the mitmproxy CA (Step 9)
+- **Where:** `proxy_manager.py` (CA discovery), `GET /hunter/proxy/cert`.
+- **Status:** expected. The CA is generated **on first proxy start**, so `/proxy/cert`
+  returns 404 until then, and the operator must import/trust it in the browser/OS to
+  decrypt HTTPS. No bug; just an onboarding step.
+
+### D16 — Dependency pins forced by mitmproxy (Step 9)
+- **Where:** `backend/requirements.txt` — `httpcore==1.0.7`, `bcrypt==4.0.1`.
+- **Status:** deliberate constraint coupling (see [`DEVELOPMENT.md`](./DEVELOPMENT.md) §1).
+  `mitmproxy 11.0.2` needs `h11<0.15` (→ `httpcore==1.0.7`); `passlib 1.7.4`'s import
+  probe crashes on `bcrypt>=4.1` (→ `bcrypt==4.0.1`).
+- **Direction:** revisit both pins **together** whenever upgrading mitmproxy / httpx /
+  passlib, and re-run the full suite. Note `passlib`/`python-jose` are still only
+  vendored for the future D2 auth work.
+
+### D17 — Internal-ingest guard assumes no trusted fronting proxy (Step 9)
+- **Where:** `api/v1/hunter.py` `_client_is_loopback` + `/proxy/internal-ingest`.
+- **Status:** the guard uses the **real TCP peer** and deliberately ignores
+  `X-Forwarded-For` (attacker-controlled in local mode), plus a per-session token,
+  failing closed as 404. Correct for the current localhost deployment.
+- **Direction:** if the app is ever placed behind a real reverse proxy that rewrites
+  the client IP, this loopback check must be re-derived from a trusted forwarded
+  header — do **not** simply start honoring XFF.
+
+### D18 — Endpoint / attack-surface discovery is not solved
+- **Where:** the whole Hunter→Verify intake, and `fuzzer._shadow_endpoint_catalog`
+  (the shadow verifier's endpoint list).
+- **Status:** the system has **no automated endpoint/attack-surface discovery**. It
+  relies entirely on **operator-supplied traffic** — a pasted raw HTTP request, an
+  imported HAR, or a flow captured by the proxy radar — to know which endpoints
+  exist. The shadow deep verifier's `available_endpoints` catalog is currently
+  **minimal**: just the finding's own path plus an obvious GET read-back of the same
+  resource (`_shadow_endpoint_catalog`). That is enough for a same-resource
+  write-then-read but **not** for cases whose confirming read-back lives at a
+  different path; the model may then request a wrong/absent path (observed: a 404 on
+  a guessed `/api/users/{id}` in an early run).
+- **Direction:** feed a real API surface (OpenAPI/Swagger import, aggregated
+  HAR/proxy-capture inventory, or crawl) into both the Hunter intake and the deep
+  verifier's `available_endpoints`. Until then, document the catalog as a known seam.
+
+### D19 — AI deep verifier is shadow-only, not authoritative
+- **Where:** `services/deep_verifier.py` + `fuzzer._run_shadow_deep_verification`
+  (Phase 7); flags `AI_DEEP_VERIFY_ENABLED` / `AI_DEEP_VERIFY_SHADOW` in `config.py`
+  (both default `False`).
+- **Status:** the AI-in-the-loop write-then-read verifier runs **read-only**. In
+  shadow mode it re-checks `suspicious` records and **only logs** its verdict
+  (`AI_shadow_verdict=… NOT applied (shadow, observe-only)`); it does **not**
+  overwrite `verification_status`/`diff_details` or change what the user sees, and
+  it never affects a batch (failures are swallowed). It is therefore **not yet
+  authoritative** — the persisted verdict is still the rule oracle's, which stalls at
+  `suspicious` on silent cases (opaque `200 {"status":"ok"}` writes). Accuracy so far
+  is recorded in `vulnerable_target/benchmark/RESULTS.md` (n=9, 8/8 AI correct, 0
+  FP/FN) but that is **measurement, not promotion**.
+- **Direction:** once shadow data is trusted at scale, decide a promotion policy
+  (e.g. let the AI verdict resolve only the rule oracle's `suspicious` band, with the
+  full evidence trail retained for audit). Do not promote before D18 is addressed —
+  the verifier's reliability depends on being handed the right read-back endpoint.
+
 ---
 
 ## Suggested priority order for the next agent
-> D1, D3, D4, D6, D7, D8, D9 are now **resolved** (see ✅ notes above). What's left:
-1. **D5** (frontend consolidation) — pick one frontend; the canonical light
-   `preview_dashboard.html` is the product, `frontend/` (Vite, dark, mock) is not.
-   Tracked as a separate dedicated task (white/light "清新" theme).
-2. **D2** (auth) — required before any non-localhost / shared exposure. The
-   `API_HOST` knob + security notes are in place; `python-jose`/`passlib` are
-   already vendored for this.
-3. Everything else (D10–D13) is intentional/low-priority — see notes above.
+> Current focus: sharpen the differentiator and PROVE it. All commercialization /
+> scaling work is deferred until a benchmark justifies it. D1 (startup guard), D3,
+> D4, D6, D8, D9 are done; Step 9 (R4) is done & E2E-verified; D7 is partial.
+
+### Active line (work on these now)
+1. **Differential verification engine** — deepen the oracle's precision and cover
+   more broken-access-control classes. This is the core moat.
+2. **Benchmark vs agent-style PoC validation** — on a public vulnerable target,
+   quantify this engine's false-positive / reproducibility rate against
+   agent-driven PoC tools. This is the only evidence for the "can it be sold" question.
+3. **D5 (frontend consolidation)** — keep `preview_dashboard.html`, retire `frontend/`.
+
+### Deferred — NOT in the active line (unlock condition: the benchmark above proves commercialization is worth it)
+- **D2 (auth)**, multi-tenancy, **D1 (Alembic migrations)**, hosted/enterprise deployment.
+  Product/scaling concerns, unrelated to the "portfolio piece + validation" goal.
+  Do not spend effort here until the benchmark data justifies it.
+- Everything else (D10–D17, incl. Step 9 items) is intentional/low-priority — see notes above.
