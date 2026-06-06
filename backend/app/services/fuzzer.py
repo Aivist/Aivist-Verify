@@ -1172,24 +1172,53 @@ def _shadow_auth_context(
     return {}
 
 
-def _shadow_endpoint_catalog(parsed_request: dict) -> List[str]:
+def _shadow_endpoint_catalog(
+    parsed_request: dict, catalog_source: Optional[Dict[str, Any]] = None
+) -> List[str]:
     """
     Endpoint-catalog seam for shadow mode.
 
-    KNOWN LIMITATION (pending real endpoint discovery): we do NOT yet have a true
-    API surface (OpenAPI / HAR / proxy capture) to hand the verifier. As a minimal
-    placeholder we expose only the finding's own path plus an obvious GET read-back
-    of the same resource path, so a silent-write case still has a read-back option.
-    This is intentionally narrow and should be replaced once endpoint discovery exists.
+    DEFAULT (catalog_source is None): BYTE-IDENTICAL to the original placeholder —
+    the finding's own path plus an obvious GET read-back of the same resource path.
+    This preserves zero-regression behavior whenever no real API surface is wired:
+    when no source is provided, the discovery code path below is never touched.
+
+    WHEN catalog_source IS EXPLICITLY PROVIDED (a descriptor consumed by
+    endpoint_catalog.build_catalog, e.g. {"kind": "openapi", "spec": <openapi dict>}),
+    the real discovered surface (D18) is used instead, MERGED with the placeholder so
+    the finding's own path / same-resource read-back is ALWAYS still offered even if
+    the spec happens to omit it. Any catalog-source error fails safe back to the
+    placeholder — the shadow pass must never be weakened or broken by a bad source.
     """
+    # --- Original placeholder (unchanged logic) ---
     path = (parsed_request or {}).get("path", "") or ""
     method = str((parsed_request or {}).get("method", "GET") or "GET").upper()
-    catalog: List[str] = []
+    placeholder: List[str] = []
     if path:
-        catalog.append(f"{method} {path}")
+        placeholder.append(f"{method} {path}")
         if method != "GET":
-            catalog.append(f"GET {path}")  # obvious read-back of the same resource
-    return catalog
+            placeholder.append(f"GET {path}")  # obvious read-back of the same resource
+
+    # --- Zero-regression gate: no source -> exactly today's behavior ---
+    if not catalog_source:
+        return placeholder
+
+    # --- Real endpoint surface (explicitly provided; lazy import keeps the default
+    #     path free of any new import-time dependency) ---
+    try:
+        from backend.app.services.endpoint_catalog import build_catalog
+        real = build_catalog(catalog_source)
+    except Exception as e:
+        logger.warning(
+            "[FUZZER · SHADOW] endpoint catalog source unusable (%s); "
+            "falling back to placeholder.", e
+        )
+        return placeholder
+
+    # Merge real surface with the placeholder, dedupe, and order deterministically
+    # (by path, then method) so the verifier prompt stays reproducible.
+    merged = set(real) | set(placeholder)
+    return sorted(merged, key=lambda e: (e.partition(" ")[2], e.partition(" ")[0]))
 
 
 async def _run_shadow_deep_verification(
@@ -1230,6 +1259,14 @@ async def _run_shadow_deep_verification(
 
         logger.info(f"[FUZZER · SHADOW] Shadow-verifying {len(rows)} suspicious record(s) (read-only).")
 
+        # Optional settings-pointed spec source (integration seam (a)). Absent by
+        # default -> catalog_source stays None -> _shadow_endpoint_catalog returns
+        # the byte-identical placeholder (zero regression). When configured, the
+        # real endpoint surface is handed to the verifier. Live fetch is optional
+        # and intentionally not performed here.
+        _spec = getattr(settings, "AI_DEEP_VERIFY_OPENAPI_SPEC", None)
+        catalog_source = {"kind": "openapi", "spec": _spec} if _spec else None
+
         for rec in rows:
             # Each record is independent; one failure must not stop the others.
             try:
@@ -1248,7 +1285,7 @@ async def _run_shadow_deep_verification(
                     base_url=job.base_url,
                     approved_host=(custody.approved_host or None) if custody is not None else None,
                     auth_context=_shadow_auth_context(custody, job.parsed_request),
-                    available_endpoints=_shadow_endpoint_catalog(job.parsed_request),
+                    available_endpoints=_shadow_endpoint_catalog(job.parsed_request, catalog_source),
                 )
 
                 logger.info(
