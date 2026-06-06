@@ -19,6 +19,7 @@
 | R2 | **`pruner` non-determinism (`PYTHONHASHSEED`)** | `services/pruner.py` | Keyword scoring depended on frozenset iteration order. Now counts all distinct keywords; locked by regression tests in `test_pruner.py`. Suite passes under random seeds. |
 | R3 | **Tech-debt cleanup sweep (D1/D3/D4/D6/D7/D8/D9 + hardcoding N1–N7)** | see each item below | Done in two commits: **Stage A** (config/hardcoding/hygiene: D4, D8, N1–N7) and **Stage B** (D9, D3, D6, D1, D7). All 66 tests pass. Remaining open: **D2** (auth, intentionally deferred for local use) and **D5** (frontend consolidation, tracked as a separate task). |
 | R4 | **Step 9 — Passive Traffic Ingestion Proxy Radar + unified WriterService** | `models/scan.py` (`CapturedFlow`), `config.py`, `services/proxy_pipeline.py`, `services/proxy_manager.py`, `proxy/radar_addon.py`, `schemas/proxy.py`, `api/v1/hunter.py` (`/proxy/*`), `main.py`, `pruner.py` (shared helpers), `preview_dashboard.html` | The single-writer pattern was generalized out of the fuzzer into an **app-wide `WriterService`** (started in the lifespan); the fuzzer forwards to it when running and falls back to an ephemeral per-batch consumer otherwise — **globally ≤1 SQLite writer**. mitmdump runs out-of-process, ships in-scope flows via a loopback POST to a hidden internal-ingest endpoint, Tier-2 enriches + persists + SSE-streams. **All 66 prior tests still pass + 7 new (`test_step9_proxy.py`) = 73.** **Verified end-to-end** (real mitmdump + real DB): browser→proxy→ingest→queue→writer→`captured_flows`; ingest→SSE→client; captured flow→analyze→findings→verify→`FuzzingRecord`→results; plus clean process-tree kill on stop. |
+| R5 | **Verdict-correctness measurement groundwork** | `docs/audit/verdict_coverage_audit.md`, `backend/tests/test_verdict_oracle.py`, `scripts/audit/capture_target_bytes*.py`, `backend/tests/test_endpoint_catalog.py` | Audit found **0 of 73** prior tests asserted the verdict oracle was correct. Added **9 human-owned verdict tests** (offline, pure-function; incl. a false-positive killer, a weak-signal guard, and a characterization test pinning that the rule oracle cannot separate a real silent BOLA from the SAFE look-alike). **Live-byte capture** confirmed the target's real bytes match the test inputs AND that `test_vulns.py` / `RESULTS.md` ground truth holds. Plus **6 catalog tests** (D18 Phase 1). Suite 73→88. Commits `292497e`, `6832922`, `2b3d4b9`. |
 
 ---
 
@@ -169,15 +170,24 @@
 ### D18 — Endpoint / attack-surface discovery is not solved
 - **Where:** the whole Hunter→Verify intake, and `fuzzer._shadow_endpoint_catalog`
   (the shadow verifier's endpoint list).
-- **Status:** the system has **no automated endpoint/attack-surface discovery**. It
-  relies entirely on **operator-supplied traffic** — a pasted raw HTTP request, an
-  imported HAR, or a flow captured by the proxy radar — to know which endpoints
-  exist. The shadow deep verifier's `available_endpoints` catalog is currently
-  **minimal**: just the finding's own path plus an obvious GET read-back of the same
-  resource (`_shadow_endpoint_catalog`). That is enough for a same-resource
-  write-then-read but **not** for cases whose confirming read-back lives at a
-  different path; the model may then request a wrong/absent path (observed: a 404 on
-  a guessed `/api/users/{id}` in an early run).
+- **Status:** **Phase 1 done (commit `2b3d4b9`); discovery + cross-path value still
+  open.** A real endpoint catalog now feeds the shadow verifier: `endpoint_catalog.py`
+  (pure OpenAPI→`["METHOD /path"]` adapter + HAR stub + dispatch) is wired into
+  `_shadow_endpoint_catalog` via an optional `catalog_source`. With **no source
+  configured the output is byte-identical to the old placeholder (zero regression)**;
+  the real 15-endpoint surface is used only when a spec source is explicitly provided.
+  6 human-owned tests (`test_endpoint_catalog.py`) cover this; the B1/B2 pair is the
+  allowed-to-fail proof (placeholder has 0 cross-resource endpoints; real catalog
+  reaches them, incl. `GET /api/invoices/{invoice_id}`). Suite 82→88.
+  - **Still open — automated attack-surface DISCOVERY:** the catalog is *fed* an
+    OpenAPI/HAR source (operator-supplied). The system still does **not discover**
+    endpoints on its own. This is the larger half of D18.
+  - **Still open — cross-path value NOT yet proven:** on the current target every
+    write-type finding's confirming read-back is the **same path** as the write, so
+    the placeholder already sufficed (P0 proved this). The catalog's cross-resource
+    reach is demonstrated **structurally** (test B2) but has **not** yet been shown to
+    change a verdict in a real "write-at-A / confirm-at-B" case — because no such hole
+    exists on this target. Proving it requires Phase 2 (below).
 - **Direction:** feed a real API surface (OpenAPI/Swagger import, aggregated
   HAR/proxy-capture inventory, or crawl) into both the Hunter intake and the deep
   verifier's `available_endpoints`. Until then, document the catalog as a known seam.
@@ -195,10 +205,33 @@
   `suspicious` on silent cases (opaque `200 {"status":"ok"}` writes). Accuracy so far
   is recorded in `vulnerable_target/benchmark/RESULTS.md` (n=9, 8/8 AI correct, 0
   FP/FN) but that is **measurement, not promotion**.
+- **Update (commit `6832922`, P0):** the shadow verifier has now been run through the
+  **real integrated pipeline** (`execute_parallel_fuzzing` → Phase 7), not just the
+  isolated component. On two byte-identical `suspicious` cases — PROFILE (real silent
+  BOLA) and AVATAR (secure look-alike) — the AI shadow verdict was `verified` and
+  `failed` respectively, each on a real write-then-read read-back, **with no false
+  positive and the persisted verdict unchanged**. This is the first real-pipeline
+  evidence (the n=9 benchmark used isolated/manual drivers). It remains **measurement,
+  not promotion**: still shadow-only, still not authoritative, still gated behind D18.
+  The accuracy seen so far is **context-fed, on a simple target with easy same-path
+  read-backs** — not a general accuracy claim.
 - **Direction:** once shadow data is trusted at scale, decide a promotion policy
   (e.g. let the AI verdict resolve only the rule oracle's `suspicious` band, with the
   full evidence trail retained for audit). Do not promote before D18 is addressed —
   the verifier's reliability depends on being handed the right read-back endpoint.
+
+### D20 — D18 cross-path value is unproven on the current target (Phase 2)
+- **Where:** `vulnerable_target/` (needs a new hole) + the D18 catalog seam.
+- **Status:** the current target has no "write at path A, confirm at path B" hole, so
+  the catalog's real payoff (handing the verifier a read-back at a *different* path
+  the placeholder could never synthesize) is untested. The observed 404-on-a-guessed
+  path from an early run is not reproducible here for lack of such a case.
+- **Direction:** add a maintainer-owned cross-path hole to the target, confirm its
+  ground truth with **verbatim captured bytes** (independent of the engine), then
+  re-run the shadow path to show the catalog hands the correct cross-path read-back
+  and the verdict is right. **Ground truth is human-owned**: the agent may implement
+  the target code to the maintainer's spec but must not design the hole or its
+  expected behavior, and the behavior must be byte-verified before use as a test case.
 
 ---
 
