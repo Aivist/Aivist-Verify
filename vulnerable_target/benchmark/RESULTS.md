@@ -266,6 +266,30 @@ including declining to flag the SECURE look-alike (no false positive).
 
 ---
 
+## Phase-2 cross-path additions (STUBS — verdicts NOT YET MEASURED)
+
+> These two cases were added in D18 Phase 2. Their ground truth is byte-verified
+> (capture `scripts/audit/capture_phase2_crosspath.py`, GT-A..GT-E), but the verifier
+> has **not** been run against them yet. No rule-oracle or AI verdict is recorded here
+> until Phase-2 verification is done.
+
+### Case X-CROSS — REAL cross-path BOLA (display-name)
+- **Endpoint / method:** `POST /api/users/{user_id}/display-name` (confirm via cross-path
+  `GET /api/audit-log`; there is **no** same-path GET)
+- **Vulnerability class:** cross-path BOLA / object-level write
+- **Ground truth:** **REAL**
+- **verdicts: NOT YET MEASURED (Phase-2 verification pending)**
+
+### Case X-SAFE — SECURE cross-path control (nickname)
+- **Endpoint / method:** `POST /api/users/{user_id}/nickname` (confirm via cross-path
+  `GET /api/audit-log`; there is **no** same-path GET)
+- **Vulnerability class:** cross-path BOLA look-alike, ownership enforced; cross-user
+  write silently dropped, no audit row
+- **Ground truth:** **NOT vulnerable (SECURE control)**
+- **verdicts: NOT YET MEASURED (Phase-2 verification pending)**
+
+---
+
 ## Provenance
 
 - Rule-based oracle (A, B): driven through the real, unmodified

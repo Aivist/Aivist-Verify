@@ -60,6 +60,16 @@ object id equals the owner's user id (so `/api/invoices/2` is Bob's):
 | bob   | `INV-2002`, 9875.40, **large** | `Bob Confidential` | `Remember to buy eggs` | `dark` |
 | carol | `INV-3003`, 120.00, small      | `Carol Memo`     | `Remember to buy tea_` | `system` |
 
+Each user also owns one **identity** (for the D18 Phase-2 cross-path cases) with a
+writable `display_name` and `nickname`. There is deliberately **no GET** for either
+field — the only read-back is the cross-path `GET /api/audit-log`:
+
+| user  | identity `display_name` | identity `nickname` |
+|-------|-------------------------|---------------------|
+| alice | `alice_dn`              | `alice_nick`        |
+| bob   | `bob_dn`               | `bob_nick`          |
+| carol | `carol_dn`             | `carol_nick`        |
+
 The token maps 1:1 to a user, and the user carries a `role`, so the token
 transitively **encodes which user (and thus their role)** — no crypto, this is a
 target. Log in to retrieve a token (static, so this is mostly a formality):
@@ -324,6 +334,76 @@ The value **changed** on read-back → **vulnerable**.
 
 ---
 
+## Phase-2 cross-path additions (X-* cases)
+
+These two cases break the same-path assumption: the write lands on one path, but the
+**only** way to observe it is a **different** path — `GET /api/audit-log` — never a
+same-path GET. (There is intentionally no GET for display-name or nickname.) An
+append-only audit row is written **only when a write actually lands**, so the
+presence/absence of a row on the audit path is the ground truth.
+
+### X-CROSS — REAL cross-path BOLA (display-name)
+
+`POST /api/users/{user_id}/display-name` updates the identity `display_name` with
+**no ownership check** (REAL vuln) and returns the same opaque `200 {"status":"ok"}`
+as the other silent writes. The twist: there is **no GET for display-name** — the
+cross-user write is observable **only via a DIFFERENT path**, `GET /api/audit-log`.
+A landed write appends an audit row. Planted: **REAL**.
+
+```bash
+# 1. Alice OVERWRITES Bob's display_name (user_id=2) with HER token. Opaque response.
+curl -s -i -X POST http://127.0.0.1:8001/api/users/2/display-name \
+  -H 'Authorization: Bearer alice-token-aaaa' \
+  -H 'Content-Type: application/json' \
+  -d '{"display_name":"PWNED_DN"}'
+# -> HTTP/1.1 200 OK ... {"status":"ok"}
+
+# 2. Confirm via the CROSS-PATH read-back (a different path). The write LANDED, so an
+#    audit row for user_id=2 is present.
+curl -s http://127.0.0.1:8001/api/audit-log -H 'Authorization: Bearer alice-token-aaaa'
+# -> {"events":[{"id":1,"event":"display_name.update","user_id":2,"new_value":"PWNED_DN"}]}
+```
+
+Because the cross-user write produced an audit row on a **different** path, the
+correct verdict is **vulnerable** — and a same-path-GET-only placeholder could never
+have found the confirmation.
+
+### X-SAFE — SECURE cross-path control (nickname)
+
+`POST /api/users/{user_id}/nickname` returns the same opaque `200 {"status":"ok"}`
+but ownership **is** enforced: a cross-user write is **silently dropped** (no error,
+still 200) and appends **nothing** to the audit log. Only an owner's write lands and
+audits. Like display-name, there is **no GET for nickname** — confirmation is
+cross-path via the audit log. Planted: **NOT vulnerable**.
+
+```bash
+# 1. Alice ATTEMPTS to overwrite Bob's nickname (user_id=2) with HER token. SAME 200 ok.
+curl -s -i -X POST http://127.0.0.1:8001/api/users/2/nickname \
+  -H 'Authorization: Bearer alice-token-aaaa' \
+  -H 'Content-Type: application/json' \
+  -d '{"nickname":"PWNED_NICK"}'
+# -> HTTP/1.1 200 OK ... {"status":"ok"}   (looks identical to X-CROSS!)
+
+# 2. Cross-path read-back: NO row for this attempt — the write was dropped.
+curl -s http://127.0.0.1:8001/api/audit-log -H 'Authorization: Bearer alice-token-aaaa'
+# -> {"events":[]}   (nothing appended for the dropped cross-user write)
+
+# 3. Sanity: the owner CAN update + it audits. Bob updates his own nickname.
+curl -s -i -X POST http://127.0.0.1:8001/api/users/2/nickname \
+  -H 'Authorization: Bearer bob-token-bbbb' \
+  -H 'Content-Type: application/json' \
+  -d '{"nickname":"bob_nick2"}'
+# -> HTTP/1.1 200 OK ... {"status":"ok"}
+curl -s http://127.0.0.1:8001/api/audit-log -H 'Authorization: Bearer bob-token-bbbb'
+# -> {"events":[{"id":1,"event":"nickname.update","user_id":2,"new_value":"bob_nick2"}]}
+```
+
+Because Alice's cross-user write produced **no** audit row (it was dropped) while the
+owner's write does, the correct verdict is **NOT vulnerable** — despite the identical
+`200 {"status":"ok"}`.
+
+---
+
 ## Planted-truth summary (ground truth / answer key)
 
 | case   | endpoint                              | planted truth          | how to confirm                                  |
@@ -337,6 +417,8 @@ The value **changed** on read-back → **vulnerable**.
 | T-TRAP | `GET /api/documents/{id}`             | **NOT vulnerable** (soft-200 denial) | body is `{"error":"forbidden"}`, no content |
 | T-WEAK | `GET /api/notes/{id}`                 | **REAL** (weak-signal IDOR) | Alice reads Bob's note; bodies near-identical |
 | T-SILENT2 | `POST /api/users/{id}/theme`       | **REAL** (silent BOLA) | write-then-read: theme changed                |
+| X-CROSS | `POST /api/users/{id}/display-name` | **REAL** (cross-path BOLA) | cross-path: `GET /api/audit-log` shows the landed write (no same-path GET) |
+| X-SAFE | `POST /api/users/{id}/nickname`     | **NOT vulnerable** (cross-path secured trap) | cross-path: `GET /api/audit-log` shows NO row for the dropped cross-user write |
 
 ---
 

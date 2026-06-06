@@ -22,6 +22,8 @@
 #   * T-TRAP     — soft-200 denial        : GET  /api/documents/{document_id} (SECURE; 200 + error body)
 #   * T-WEAK     — weak-signal IDOR       : GET  /api/notes/{note_id}         (REAL, faint signal)
 #   * T-SILENT2  — silent BOLA (theme)    : POST /api/users/{user_id}/theme   (REAL)
+#   * X-CROSS    — cross-path BOLA        : POST /api/users/{user_id}/display-name (REAL; confirm via GET /api/audit-log, NO same-path GET)
+#   * X-SAFE     — cross-path SAFE control: POST /api/users/{user_id}/nickname     (SECURE; cross-user write dropped, no audit row)
 #
 # Run:
 #   python -m uvicorn vulnerable_target.main:app --reload --port 8001
@@ -94,6 +96,7 @@ class User(Base):
     document = relationship("Document", back_populates="owner", uselist=False)
     note = relationship("Note", back_populates="owner", uselist=False)
     theme = relationship("Theme", back_populates="owner", uselist=False)
+    identity = relationship("Identity", back_populates="owner", uselist=False)
 
 
 class Order(Base):
@@ -195,6 +198,33 @@ class Theme(Base):
     owner = relationship("User", back_populates="theme")
 
 
+class Identity(Base):
+    """Identity holds two writable fields behind the D18 Phase-2 CROSS-PATH cases:
+    display_name (X-CROSS, REAL) and nickname (X-SAFE, SECURE control). There is
+    deliberately NO same-path GET for either field — the ONLY way to observe whether
+    a write landed is the cross-path GET /api/audit-log on a DIFFERENT path."""
+    __tablename__ = "identities"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    display_name = Column(String(128), nullable=False)
+    nickname = Column(String(128), nullable=False)
+
+    owner = relationship("User", back_populates="identity")
+
+
+class AuditEvent(Base):
+    """Append-only audit log. A row is appended ONLY when a write actually lands; a
+    silently-dropped (secure) cross-user write appends nothing. The presence or
+    absence of a row here is the cross-path ground truth for X-CROSS / X-SAFE."""
+    __tablename__ = "audit_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event = Column(String(64), nullable=False)
+    user_id = Column(Integer, nullable=False)
+    new_value = Column(String(256), nullable=False)
+
+
 # ------------------------------------------------------------------------------
 # Seed data — Alice (id=1, user) and Bob (id=2, user) are normal users; Carol
 # (id=3, admin) is the privileged account used by the Vuln C test case. Each user
@@ -219,6 +249,8 @@ SEED_USERS = [
         "note": {"text": "Remember to buy milk"},
         # T-SILENT2: theme behind the silent BOLA.
         "theme": {"theme": "light"},
+        # D18 Phase 2: identity behind X-CROSS (display-name) + X-SAFE (nickname).
+        "identity": {"display_name": "alice_dn", "nickname": "alice_nick"},
     },
     {
         "id": 2,
@@ -248,6 +280,7 @@ SEED_USERS = [
         # T-WEAK: same length/shape as Alice's note (only the last word differs).
         "note": {"text": "Remember to buy eggs"},
         "theme": {"theme": "dark"},
+        "identity": {"display_name": "bob_dn", "nickname": "bob_nick"},
     },
     {
         "id": 3,
@@ -262,6 +295,7 @@ SEED_USERS = [
         "document": {"title": "Carol Memo", "content": "Carol admin notes: rotate keys."},
         "note": {"text": "Remember to buy tea_"},
         "theme": {"theme": "system"},
+        "identity": {"display_name": "carol_dn", "nickname": "carol_nick"},
     },
 ]
 
@@ -281,6 +315,7 @@ async def _seed(session: AsyncSession) -> None:
         session.add(Document(id=u["id"], owner_id=u["id"], **u["document"]))
         session.add(Note(id=u["id"], owner_id=u["id"], **u["note"]))
         session.add(Theme(owner_id=u["id"], **u["theme"]))
+        session.add(Identity(owner_id=u["id"], **u["identity"]))
     await session.commit()
     logger.info("Seeded users: %s", ", ".join(u["username"] for u in SEED_USERS))
 
@@ -429,6 +464,14 @@ class ThemeUpdateRequest(BaseModel):
 class ThemeResponse(BaseModel):
     user_id: int
     theme: str
+
+
+class DisplayNameUpdateRequest(BaseModel):
+    display_name: str = Field(..., min_length=1, max_length=128)
+
+
+class NicknameUpdateRequest(BaseModel):
+    nickname: str = Field(..., min_length=1, max_length=128)
 
 
 # ------------------------------------------------------------------------------
@@ -760,6 +803,94 @@ async def read_theme(
     return ThemeResponse(user_id=user_id, theme=theme.theme)
 
 
+# ------------------------------------------------------------------------------
+# X-CROSS — REAL CROSS-PATH BOLA (display-name).
+#
+# POST /api/users/{user_id}/display-name updates the identity display name with NO
+# ownership check (REAL vuln) and returns the SAME opaque 200 {"status":"ok"} as the
+# other silent writes. CRITICAL: there is NO GET for display-name — the cross-user
+# write is observable ONLY via the cross-path GET /api/audit-log (a DIFFERENT path),
+# something a same-resource-GET placeholder could never synthesize. A landed write
+# appends an audit row.
+# ------------------------------------------------------------------------------
+@app.post("/api/users/{user_id}/display-name", tags=["identity"])
+async def update_display_name(
+    payload: DisplayNameUpdateRequest,
+    user_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    identity = (
+        await db.execute(select(Identity).where(Identity.owner_id == user_id))
+    ).scalars().first()
+
+    # VULNERABLE: no check that user_id == current_user.id. The write lands for
+    # whatever {user_id} was requested; a landed write appends an audit row.
+    if identity is not None:
+        identity.display_name = payload.display_name
+        db.add(AuditEvent(
+            event="display_name.update", user_id=user_id, new_value=payload.display_name
+        ))
+        await db.flush()
+
+    # Opaque, constant response — gives nothing away about whose name changed.
+    return {"status": "ok"}
+
+
+# ------------------------------------------------------------------------------
+# X-SAFE — SECURE CROSS-PATH control (nickname).
+#
+# POST /api/users/{user_id}/nickname returns the SAME opaque 200 {"status":"ok"} but
+# ownership IS enforced: a cross-user write is SILENTLY DROPPED (no error, still 200)
+# and appends NOTHING to the audit log; only an owner's write lands + audits. Like
+# display-name, there is NO GET for nickname — confirmation is cross-path via the
+# audit log. The missing 403 on a cross-user attempt is the trap. Correct verdict:
+# NOT vulnerable.
+# ------------------------------------------------------------------------------
+@app.post("/api/users/{user_id}/nickname", tags=["identity"])
+async def update_nickname(
+    payload: NicknameUpdateRequest,
+    user_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # SECURE: ownership IS enforced. Only the owner's own nickname is ever written,
+    # and only a landed write appends an audit row. A cross-user attempt falls
+    # through with NO write and NO audit entry — but the SAME opaque 200 {"status":
+    # "ok"}, never a 403.
+    if user_id == current_user.id:
+        identity = (
+            await db.execute(select(Identity).where(Identity.owner_id == user_id))
+        ).scalars().first()
+        if identity is not None:
+            identity.nickname = payload.nickname
+            db.add(AuditEvent(
+                event="nickname.update", user_id=user_id, new_value=payload.nickname
+            ))
+            await db.flush()
+
+    return {"status": "ok"}
+
+
+# ------------------------------------------------------------------------------
+# Cross-path read-back. GET /api/audit-log returns the append-only audit trail (auth
+# required; any authenticated user). This is the ONLY observation point for the
+# display-name / nickname writes above — a DIFFERENT path from the write.
+# ------------------------------------------------------------------------------
+@app.get("/api/audit-log", tags=["audit"])
+async def get_audit_log(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = (
+        await db.execute(select(AuditEvent).order_by(AuditEvent.id))
+    ).scalars().all()
+    return {"events": [
+        {"id": e.id, "event": e.event, "user_id": e.user_id, "new_value": e.new_value}
+        for e in rows
+    ]}
+
+
 @app.get("/", tags=["meta"])
 async def root():
     return {
@@ -780,6 +911,9 @@ async def root():
             "GET /api/notes/{note_id}           (T-WEAK: weak-signal IDOR)",
             "POST /api/users/{user_id}/theme    (T-SILENT2: silent BOLA)",
             "GET /api/users/{user_id}/theme     (read-back oracle for T-SILENT2)",
+            "POST /api/users/{user_id}/display-name (X-CROSS: REAL cross-path BOLA)",
+            "POST /api/users/{user_id}/nickname     (X-SAFE: SECURE cross-path control)",
+            "GET /api/audit-log                 (cross-path read-back for display-name/nickname)",
         ],
     }
 
