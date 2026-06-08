@@ -8,7 +8,7 @@
 # input through the function under test and assert the GIVEN values. If an
 # assertion fails, that is a SIGNAL to report — not something to fix here.
 #
-# KEY A — catalog_from_openapi(app.openapi()) correctness (exact 15-entry surface).
+# KEY A — catalog_from_openapi(app.openapi()) correctness (exact 18-entry surface).
 # KEY B — cross-resource reach (teeth): the placeholder _shadow_endpoint_catalog
 #         offers only the finding's own path; the real catalog reaches other paths.
 # ==============================================================================
@@ -31,12 +31,15 @@ from backend.app.services.fuzzer import _shadow_endpoint_catalog
 EXPECTED_CATALOG = {
     "GET /",
     "GET /api/admin/users",
+    "GET /api/audit-log",
     "GET /api/documents/{document_id}",
     "GET /api/invoices/{invoice_id}",
     "GET /api/notes/{note_id}",
     "GET /api/orders/{order_id}",
     "GET /api/users/{user_id}/avatar",
     "POST /api/users/{user_id}/avatar",
+    "POST /api/users/{user_id}/display-name",
+    "POST /api/users/{user_id}/nickname",
     "GET /api/users/{user_id}/profile",
     "POST /api/users/{user_id}/profile",
     "GET /api/users/{user_id}/settings",
@@ -66,7 +69,7 @@ def _path_of(entry: str) -> str:
 def test_A1_exact_set_equality_and_count():
     catalog = catalog_from_openapi(app.openapi())
     assert set(catalog) == EXPECTED_CATALOG
-    assert len(catalog) == 15
+    assert len(catalog) == 18
 
 
 def test_A2_well_formed_no_dupes_no_metadata():
