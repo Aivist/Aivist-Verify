@@ -1,9 +1,11 @@
 # ARCHITECTURE — Anti-Gravity AI Penetration Testing Platform
 
 > Audience: a developer/agent taking over this codebase. This document is the
-> entry point. It describes what the system is, how the pieces fit together, the
-> runtime/concurrency model, and the security posture. Every claim here is
-> grounded in the current source tree (see file references).
+> **engineering** entry point — it describes what the system is, how the pieces fit
+> together, the runtime/concurrency model, and the security posture. For the
+> **strategy/direction** entry point (thesis, non-goals, where it's going) start at
+> [`ROADMAP.md`](../ROADMAP.md). Every claim here is grounded in the current source
+> tree (see file references).
 >
 > Companion docs:
 > - [`DATA_MODEL.md`](./DATA_MODEL.md) — database schema & ORM
@@ -99,10 +101,11 @@ anti gravity/
 │  │     ├─ fuzzer.py             # differential fuzzing engine + auth custody (the core)
 │  │     ├─ proxy_pipeline.py     # Step 9: unified WriterService + SSEHub + ingest pipeline
 │  │     ├─ proxy_manager.py      # Step 9: mitmdump process state machine + OS-agnostic tree kill
-│  │     └─ deep_verifier.py      # AI write-then-read verifier (shadow-mode Phase 7; not API-wired)
+│  │     ├─ deep_verifier.py      # AI write-then-read verifier (shadow-mode Phase 7; not API-wired)
+│  │     └─ endpoint_catalog.py   # D18: OpenAPI/HAR → bare "METHOD /path" catalog for the deep verifier
 │  ├─ scripts/
 │  │  └─ deep_verify_live_check.py  # Manual Gemini+target check (not pytest)
-│  └─ tests/                      # pytest (73): test_pruner, test_step8_custody,
+│  └─ tests/                      # pytest (112): test_pruner, test_step8_custody,
 │                                 # test_step_d_hunter_link, test_api_endpoints, test_step9_proxy
 ├─ vulnerable_target/            # Standalone ground-truth target (:8001), own DB, 14 pytest cases
 │  ├─ main.py
@@ -145,8 +148,16 @@ POST /hunter/auth/dry-run       → test an Identity Provider Anchor (re-auth) b
 > `AI_DEEP_VERIFY_SHADOW` (default off; needs `AI_DEEP_VERIFY_ENABLED` too for a
 > live Gemini call), it re-checks `suspicious` records with a two-turn
 > write-then-read and **only logs** its verdict — it never changes the persisted
-> verdict or what the user sees. See [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md)
-> §Phase 7 and [`DEEP_VERIFY.md`](./DEEP_VERIFY.md).
+> verdict or what the user sees. Unlike the rule oracle (`_differential_verdict`,
+> **3-value**: `verified`/`suspicious`/`failed`, unchanged), the AI verifier is
+> **4-value**: it adds `inconclusive` for a genuine evidence gap. A deterministic
+> structural **cross-resource guard** (B-2.2, `_apply_cross_resource_guard` /
+> `CROSS_RESOURCE_OVERRIDE_REASON`) downgrades a `verified`/`failed` that rests on a
+> follow-up read-back of a *different* path to `inconclusive`; the result preserves
+> the model's raw verdict and any override (`ai_verdict_raw` + `guard_override`,
+> with `ai_verdict` being the final post-guard value). See
+> [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md) §Phase 7 and
+> [`DEEP_VERIFY.md`](./DEEP_VERIFY.md).
 
 ### 4c. Proxy Radar (Step 9 — passive capture)
 ```
@@ -285,8 +296,12 @@ agent must treat the following as deliberate-but-dangerous:
   **shadow-mode Phase 7** (gated `AI_DEEP_VERIFY_SHADOW`, default off) — it logs an
   AI second opinion on `suspicious` records but never changes a persisted verdict.
   See [`DEEP_VERIFY.md`](./DEEP_VERIFY.md) and [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md)
-  §Phase 7. Manual script: `scripts/deep_verify_live_check.py`. Two known seams
-  (auth-context, minimal endpoint catalog) are tracked in
-  [`TECH_DEBT.md`](./TECH_DEBT.md) D18.
+  §Phase 7. Manual script: `scripts/deep_verify_live_check.py`. **Endpoint
+  discovery** is seeded by `services/endpoint_catalog.py` (`catalog_from_openapi`
+  → bare `"METHOD /path"`; `catalog_from_har` is a stub); the shadow pass reads its
+  spec from `settings.AI_DEEP_VERIFY_OPENAPI_SPEC` (via `getattr` — *not* a declared
+  config field), else falls back to a same-resource placeholder. The benchmark attack
+  surface is the 18-endpoint `vulnerable_target/` app. Two known seams (auth-context,
+  endpoint catalog/spec wiring) are tracked in [`TECH_DEBT.md`](./TECH_DEBT.md) D18.
 - When something "doesn't persist," suspect the **stale-SQLite-schema** trap
   documented in [`DATA_MODEL.md`](./DATA_MODEL.md) and [`DEVELOPMENT.md`](./DEVELOPMENT.md).

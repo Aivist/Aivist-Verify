@@ -49,8 +49,11 @@ Pipeline (`ingest_har_traffic` / `ingest_har_file_upload` in `hunter.py`):
 ### The pruner (`services/pruner.py`)
 `calculate_exposure_score(parsed_request) -> float` in `[0.0, 1.0]`:
 
-- **Hard veto → 0.0** for static-asset extensions (`.js`, `.css`, `.png`, …) and
-  telemetry routes (`/analytics/`, `google-analytics`, `doubleclick`, …).
+- **Hard veto → 0.0** for static-asset extensions (`.css`, `.js`, `.png`, `.jpg`,
+  `.jpeg`, `.gif`, `.ico`, `.woff`, `.woff2`, `.svg`, `.map`, `.html`, `.ttf`,
+  `.eot`, `.mp4`, `.webm`, `.mp3`, `.pdf`, …) and telemetry routes (the complete
+  `_TELEMETRY_ROUTES` set: `/analytics/`, `/metrics/`, `/telemetry/`, `/beacon/`,
+  `/_track/`, `google-analytics`, `doubleclick`).
 - **Method weight:** POST/PUT/PATCH = 0.4, DELETE = 0.3, GET+params = 0.2,
   bare GET = 0.1.
 - **Sensitive-keyword bonus:** +0.1 for each *distinct* keyword from
@@ -59,7 +62,7 @@ Pipeline (`ingest_har_traffic` / `ingest_har_file_upload` in `hunter.py`):
   transfer`) found across query keys + body keys (recursive) + path segments,
   capped at `_MAX_PARAM_BONUS = 0.4`.
 - **Context bonus:** API content-type (`application/json`, `application/graphql`)
-  and API path markers (`/api/`, `/v1/`, `/graphql`, …) add small amounts.
+  and API path markers (`/api/`, `/v1/`, `/v2/`, `/v3/`, `/graphql`, …) add small amounts.
 - Final score clamped to `[0, 1]`.
 
 > **Determinism (regression-fixed):** keyword counting collects *all* distinct
@@ -96,8 +99,11 @@ returned as a structured response).
    - Uses `response_mime_type="application/json"`, `temperature=0.4`, model =
      `settings.GEMINI_PRO_MODEL`.
    - Expects JSON `{ "report_markdown": str, "automation_payloads": [...] }`.
-   - **Graceful degradation:** no API key, SDK missing, bad JSON, or any API
-     error all return a Chinese "degraded" `report_markdown` with
+   - **Timeout budget:** the call is wrapped in
+     `asyncio.wait_for(..., timeout=settings.GEMINI_REQUEST_TIMEOUT_SECONDS)`, so a
+     slow/hung upstream can't block `analyze` indefinitely (D3).
+   - **Graceful degradation:** no API key, SDK missing, **request timeout**, bad
+     JSON, or any API error all return a Chinese "degraded" `report_markdown` with
      `automation_payloads: []` (status still `success`). The endpoint stays 200.
 3. **Validate payloads:** each raw payload is coerced into `AutomationPayload`;
    malformed ones are skipped with a warning.
@@ -126,8 +132,10 @@ Hunter→Verify gap.**
    priority is explicit `target_url`, else the `Host` header inside
    `parsed_data` (assumed `https://`). If neither yields a host → **422**.
 2. Build a `VulnerabilityFinding` with:
-   - `source="hunter"`, `scan_id=None`, `template_id="logic-hunter"`
-   - `severity` synthesized from the first payload's `type` (upper-cased)
+   - `source="hunter"`, `scan_id=None`, `template_id=f"logic-hunter:{type}"`
+     (e.g. `logic-hunter:BOLA`; the first payload's `type`)
+   - `severity="INFO"` (a real severity level; the vuln *type* is preserved in
+     `template_id` + the payload JSON, not in `severity` — D6)
    - `matched_at = base_url`
    - `ai_patch = report_markdown`
    - `parsed_request`, `automation_payloads`, `auth_refresh_request` → the new
@@ -160,3 +168,5 @@ Request/response: `HunterPersistRequest` / `HunterPersistResponse` in
 
 How the credential is consumed during fuzzing is described in
 [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md) (Auth Custody).
+
+[`DEEP_VERIFY.md`](./DEEP_VERIFY.md) documents `deep_verifier.py` (no HTTP route in this pipeline).

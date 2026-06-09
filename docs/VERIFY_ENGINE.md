@@ -41,7 +41,7 @@ Phase 7  (SHADOW, additive, read-only) — only if AI_DEEP_VERIFY_SHADOW=True;
 ```
 
 > Phases 1–6, `_execute_single_fuzz`, and `_differential_verdict` are the
-> byte-for-byte stable verdict path (the 73-test path). Phase 7 is purely additive
+> byte-for-byte stable verdict path (the 112-test path). Phase 7 is purely additive
 > and runs only after the batch above has fully completed.
 
 ### Concurrency rule (the most important invariant)
@@ -228,12 +228,27 @@ An **AI-in-the-loop deep verifier** now exists alongside the rule-based oracle
   with `verification_status == "suspicious"` and, for each, runs
   `execute_deep_verification` against the same target — a two-turn write-then-read
   loop (Gemini) that can request ONE follow-up HTTP request.
-- It **only logs** the AI's verdict (`[FUZZER · SHADOW] … AI_shadow_verdict=… NOT
-  applied (shadow, observe-only)`). It **does not** overwrite `verification_status`
+- It **only logs** the AI's **final** verdict — `result.ai_verdict`, i.e. the
+  post-guard value (see below) — via `[FUZZER · SHADOW] … AI_shadow_verdict=… NOT
+  applied (shadow, observe-only)`. It **does not** overwrite `verification_status`
   or `diff_details`, change what the user sees, or affect the writer path. Any
   failure is logged and swallowed (it can never break a batch).
 - To actually call Gemini, `AI_DEEP_VERIFY_ENABLED` must **also** be `True` (the
   verifier respects its own gate).
+
+**Verdict vocabulary (rule oracle = 3 values, AI verifier = 4 values).** The rule
+oracle emits `verified` / `suspicious` / `failed`; the AI verifier emits **four**,
+adding `inconclusive`. It applies a **decisive-evidence / same-resource standard**:
+an opaque action status (e.g. `200 {"status":"ok"}`) is never decisive by itself, and
+a verdict is `verified` / `failed` only when a follow-up read-back reflects the **same**
+attacked resource/path (a read-back of a *different* endpoint exposing a same-named
+field is not decisive → `inconclusive`). A deterministic **B-2.2 cross-resource guard**
+(`_apply_cross_resource_guard` in `deep_verifier.py`) enforces this in code: it
+downgrades a `verified` / `failed` to `inconclusive` when the follow-up path differs
+from the attack path. The result carries both verdicts for transparency — `ai_verdict`
+(final, post-guard), `ai_verdict_raw` (the model's pre-guard verdict), and
+`guard_override` (the reason, or `None`). The shadow pass logs the **final guarded**
+verdict and **still never changes the persisted verdict**.
 
 Why it exists: the rule oracle stalls at `suspicious` on **silent** cases (opaque
 `200 {"status":"ok"}` writes — Rule 2's ≤5% length-deviation branch) because it
@@ -242,9 +257,15 @@ write-then-read can. Today this is measured (see
 [`../vulnerable_target/benchmark/RESULTS.md`](../vulnerable_target/benchmark/RESULTS.md))
 but **not** used to decide verdicts — see [`TECH_DEBT.md`](./TECH_DEBT.md) D19.
 
-Two seams, both currently minimal: the **auth-context** seam (live custody
-credential, else the finding's auth header) and the **endpoint-catalog** seam
-(no real endpoint discovery yet — TECH_DEBT D18).
+Two seams feed it: the **auth-context** seam (live custody credential, else the
+finding's auth header) and the **endpoint-catalog** seam. Real endpoint discovery now
+exists — `services/endpoint_catalog.py`'s `catalog_from_openapi` derives a catalog from
+an OpenAPI spec (bare `METHOD /path` entries; it discards summary/description/
+operationId, and the HAR adapter is a `NotImplementedError` stub). `_shadow_endpoint_catalog`
+**merges** that real surface with the placeholder when a spec source is provided (read
+from `settings.AI_DEEP_VERIFY_OPENAPI_SPEC` via `getattr` — a runtime-only seam, not a
+declared config field), else falls back byte-identically to the placeholder. See
+TECH_DEBT D18.
 
 ## Related: `deep_verifier.py`
 

@@ -434,7 +434,8 @@ rm vulnerable_target/vulnerable_target.db   # next start re-seeds Alice, Bob & C
 pytest vulnerable_target/test_vulns.py -v
 ```
 
-The suite proves every case:
+The suite (`test_vulns.py`, **14 tests**) automates the login + sanity checks and
+the **five core cases only — A, B, C, D, and the SAFE control**:
 - **Vuln A** — Alice's token reads Bob's order (single-shot diff).
 - **Vuln B** — Alice overwrites Bob's name; follow-up GET confirms the change;
   the silent-BOLA POST response is byte-identical across self vs. cross writes.
@@ -443,3 +444,10 @@ The suite proves every case:
 - **SAFE control** — Alice's cross-user avatar write is **NOT** observable via
   read-back (value unchanged) despite the identical `200 {"status":"ok"}`, while
   the legitimate owner's write *does* land.
+
+It does **not** automate the benchmark-only cases — **T-REAL / T-TRAP / T-WEAK /
+T-SILENT2** (Phase-1) or **X-CROSS / X-SAFE** (Phase-2 cross-path). Those remain
+documented ground truth (the answer-key table above), exercised via the
+[verification benchmark](./benchmark/README.md) (`RESULTS.md`), the manual `curl`
+walkthroughs above, and the offline oracle/guard unit tests in `backend/tests/`
+(`test_verdict_oracle.py`, `test_d18_b22_guard.py`) — **not** by `test_vulns.py`.

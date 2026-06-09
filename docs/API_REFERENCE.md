@@ -5,6 +5,12 @@
 > Schemas: `backend/app/schemas/scan.py` and `backend/app/schemas/hunter.py`.
 >
 > ⚠️ **No authentication on any endpoint.** Keep the server bound to localhost.
+>
+> **Note:** `services/deep_verifier.py` is not exposed over HTTP. Its AI verdict
+> vocabulary now includes `inconclusive` (alongside `verified`/`failed`/`suspicious`),
+> and results carry `ai_verdict_raw` + `guard_override`; the optional
+> `AI_DEEP_VERIFY_OPENAPI_SPEC` seam is read via `getattr` (not a declared Settings
+> field). See [`DEEP_VERIFY.md`](./DEEP_VERIFY.md).
 
 ## Diagnostics
 
@@ -16,7 +22,7 @@ nuclei_configured_path, database_url_configured, logging_level } }`.
 
 ## Nuclei Scanner — `/api/v1/scan` (router in `api/v1/scan.py`)
 
-### `POST /scan/start` → 202
+### `POST /scan/start` → 202 / 422 / 500
 Start an async Nuclei scan.
 ```json
 // request (ScanRequest)
@@ -28,14 +34,18 @@ Start an async Nuclei scan.
 - `cookie` optional; rejects CRLF (header-injection guard).
 - Side effect: persists `ScanTask(status="running")`, enqueues
   `execute_nuclei_scan_async` on BackgroundTasks.
+- **422** if `target_url` or `cookie` fails Pydantic validation.
+- **500** if DB persist or task enqueue fails (rare; surfaces as HTTP error detail).
 
-### `GET /scan/{scan_id}` → 200 / 404
+### `GET /scan/{scan_id}` → 200 / 404 / 500
 Poll status. Returns `ScanTaskState { scan_id, target_url, status, updated_at }`.
 `status` ∈ `pending|running|completed|failed`.
+- **500** on an unexpected DB error (`"Database inquiry failed"`).
 
-### `GET /scan/{scan_id}/findings` → 200 / 404
+### `GET /scan/{scan_id}/findings` → 200 / 404 / 500
 List findings for a scan (`List[FindingDetails]`), ordered by id. 404 if the
 scan id doesn't exist.
+- **500** on an unexpected DB error (`"Database inquiry failed"`).
 > Only returns rows whose `scan_id` matches — i.e. **Nuclei findings only**.
 > Hunter findings (`scan_id=NULL`) never appear here.
 
@@ -43,7 +53,7 @@ scan id doesn't exist.
 
 ## AI Logic Hunter — `/api/v1/hunter` (router in `api/v1/hunter.py`)
 
-### `POST /hunter/analyze` → 200 (never 500)
+### `POST /hunter/analyze` → 200 / 422 (handler never 500)
 Parse raw HTTP + Gemini logic analysis.
 ```json
 // request (HunterAnalyzeRequest)
@@ -55,7 +65,9 @@ Parse raw HTTP + Gemini logic analysis.
   "automation_payloads": [ { "phase","type","location","target_param","payload_string","expected_match" } ],
   "error_message": null }
 ```
-- `raw_traffic` min length 10, must be non-whitespace.
+- `raw_traffic` min length 10, must be non-whitespace → **422** if too short/blank
+  (Pydantic, before handler runs).
+- Handler never returns **500**; parse failures return `status:"error"` in the body.
 - If Gemini is unavailable, `status` stays `success`, `report_markdown` carries a
   degraded notice, `automation_payloads` is `[]`.
 
@@ -71,9 +83,11 @@ Persist an analysis as a fuzzable finding.
 // response (HunterPersistResponse)
 { "status": "success", "finding_id": 1, "message": "… Trigger via POST /verify/1." }
 ```
-- **422** if no host can be derived (no `target_url` and no `Host` header).
+- **422** if no host can be derived (no `target_url` and no `Host` header), or if
+  `automation_payloads` is empty (`min_length=1`).
 - Creates `VulnerabilityFinding(source="hunter", scan_id=NULL,
-  template_id="logic-hunter")`.
+  template_id="logic-hunter:<type>"` (e.g. `logic-hunter:BOLA`)`, severity="INFO")`
+  — the vuln type is kept in `template_id` + the payload JSON, not in `severity` (D6).
 
 ### `POST /hunter/verify/{finding_id}` → 202 / 404
 Trigger single-target differential fuzzing.
@@ -89,7 +103,7 @@ List `FuzzingRecord` rows for a finding (`List[FuzzingRecordSchema]`), ordered b
 ```json
 { "id": "uuid", "finding_id": 1, "payload_index": 0,
   "sent_request": "...", "received_response": "...",
-  "verification_status": "verified|suspicious|failed|running",
+  "verification_status": "untested|verified|suspicious|failed|running",  // default "untested"
   "diff_details": { "length_deviation_ratio","status_code_baseline","status_code_test","similarity_ratio","analysis_notes", ... },
   "created_at": "iso8601" }
 ```
@@ -139,10 +153,89 @@ Same as above but via multipart upload (OOM-safe streaming).
 
 ---
 
+## Proxy Radar — `/api/v1/hunter/proxy` (Step 9; router in `api/v1/hunter.py`)
+
+Passive traffic capture via a supervised `mitmdump` subprocess. Schemas in
+`backend/app/schemas/proxy.py`.
+
+### `POST /hunter/proxy/start` → 200
+Spawn + supervise the interception proxy under an operator-supplied scope.
+```json
+// request (ProxyStartRequest)
+{ "scope": ["app.example.com"],   // approved host allow-list (Tier-1); [] = no host filter
+  "listen_port": 8888 }           // optional; overrides PROXY_LISTEN_PORT for this run
+// response (ProxyControlResponse)
+{ "state": "RUNNING|FAILED|...", "listen_port": 8888, "pid": 12345,
+  "scope": ["app.example.com"], "message": "Radar started. Point your browser proxy at 127.0.0.1 …" }
+```
+- Idempotent-ish: returns the current `state`. Point the browser proxy at
+  `127.0.0.1:<listen_port>`; for HTTPS, trust the CA from `/proxy/cert`.
+
+### `POST /hunter/proxy/stop` → 200
+Graceful stop + **OS-agnostic process-tree kill** (`taskkill /F /T` on Windows,
+process-group signals on Unix). Returns `ProxyControlResponse` with the resulting
+`state` (e.g. `STOPPED`).
+
+### `GET /hunter/proxy/status` → 200
+Process state + ingest/stream telemetry.
+```json
+// response (ProxyStatusResponse)
+{ "state": "RUNNING", "pid": 12345, "listen_port": 8888, "uptime_seconds": 42.0,
+  "dropped_flows": 0, "sse_clients": 1, "queue_depth": 0,
+  "scope": ["app.example.com"], "ca_cert_available": true, "message": null }
+```
+
+### `GET /hunter/proxy/stream` → 200 (SSE) / 503
+`text/event-stream` live fan-out of captured flows. Each client gets a bounded
+queue; on disconnect the generator's `finally` deregisters it
+(`CancelledError`-safe — no leak). Emits `: heartbeat` comments on idle.
+- **503** if `PROXY_SSE_MAX_CLIENTS` is already reached.
+- Event frames: `event: flow\ndata: {…ProxyFlowProjection-ish…}\n\n`.
+
+### `GET /hunter/proxy/flows` → 200
+List recently captured flows, most recent first.
+```json
+// query: ?limit=100   (clamped to 1..500)
+// response: List[ProxyFlowProjection]
+[ { "id":"uuid","flow_id":"…","captured_at":"iso8601","method":"GET",
+    "host":"app.example.com","path":"/api/orders","url":"https://…/api/orders",
+    "response_status":200,"exposure_score":0.82,"is_login_candidate":false,
+    "in_scope":true,"promoted_finding_id":null } ]
+```
+
+### `GET /hunter/proxy/cert` → 200 / 404
+Stream the locally-generated mitmproxy CA cert
+(`application/x-x509-ca-cert`) for HTTPS interception.
+- **404** until the radar has started once (the CA is generated on first run).
+
+### `POST /hunter/proxy/internal-ingest` → 202 / 404 / 413 / 422 / 503  (INTERNAL)
+> **Not in OpenAPI** (`include_in_schema=False`). Receives captured flows from the
+> mitmdump addon only. Documented here for completeness — **never call it
+> directly**.
+- **404** (fail-closed, doesn't confirm the route) unless **both**: the real TCP
+  peer is loopback (`127.0.0.1`/`::1`; `X-Forwarded-For` is deliberately ignored)
+  **and** `X-Ingest-Token` constant-time-matches the per-session token minted at
+  `/proxy/start`.
+- **413** if the body exceeds `PROXY_INGEST_MAX_BYTES`.
+- **422** on a malformed `ProxyIngestFlow`.
+- **503** when the ingest queue is saturated (`PROXY_INGEST_QUEUE_MAX`) — signals
+  the addon to apply backpressure.
+
+---
+
 ## Status-code conventions
-- `202 Accepted` — long job queued (scan start, verify, batch).
-- `200 OK` — analyze/HAR/dry-run/results (analyze & HAR never 500; failures come
-  back as `status:"error"` in the body).
-- `404` — unknown scan/finding id.
-- `422` — validation (Pydantic) or no derivable host on `/hunter/findings`.
+- `202 Accepted` — long job queued (scan start, verify, batch) or flow accepted
+  into the proxy ingest queue.
+- `200 OK` — analyze/HAR/dry-run/results + all `/proxy/*` control & read endpoints
+  (analyze & HAR handlers never 500; logical failures come back as `status:"error"`).
+- `404` — unknown scan/finding id; CA not yet generated (`/proxy/cert`); or a
+  fail-closed reject on the internal-ingest guard (loopback/token).
+- `413` — oversize internal-ingest body (`PROXY_INGEST_MAX_BYTES`).
+- `422` — Pydantic validation (e.g. short `raw_traffic`, empty `automation_payloads`,
+  invalid scan request, malformed proxy flow) or no derivable host on `/hunter/findings`.
 - `400` — mixed-host / out-of-scope batch.
+- `503` — proxy SSE client cap reached (`/proxy/stream`) or ingest queue saturated
+  (`/proxy/internal-ingest` backpressure).
+- `500` — unhandled failure on `/scan/start` (DB or dispatcher error), or an
+  unexpected DB error on `GET /scan/{scan_id}` and `GET /scan/{scan_id}/findings`
+  (`"Database inquiry failed"`).

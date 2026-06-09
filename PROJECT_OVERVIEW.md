@@ -3,6 +3,8 @@
 > 本文面向**项目验收 / 合伙评估**。目标：不了解代码的人读完即可判断「这是什么、有什么、到什么程度、能不能落地」。
 > 原则：**如实陈述,不夸大、不隐瞒**。带 ✅/🟡/⚪ 的成熟度标记和「已知限制」一节都是真实现状。
 > 基准：本文与当前代码一致(最近一次提交)。代码为准——如发现不符,以代码为准并请更新本文。
+>
+> **阅读顺序**:[`ROADMAP.md`](./ROADMAP.md)(为什么 / 去哪:战略与非目标)→ **本文**(现状快照 + 运行/验收清单)→ [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)(怎么实现)→ 组件文档([`docs/VERIFY_ENGINE.md`](./docs/VERIFY_ENGINE.md) / [`docs/DEEP_VERIFY.md`](./docs/DEEP_VERIFY.md) 等)→ [`docs/TECH_DEBT.md`](./docs/TECH_DEBT.md)(已知缺口)。
 
 ---
 
@@ -21,7 +23,7 @@
 | 形态 | **单租户、本地运行的原型(prototype)**,功能链路完整,尚未上线/未做多用户化 |
 | 核心链路 | Hunter→验证 全链路 **已端到端跑通**(真实服务 + 真实本地靶机 + 真实数据库,详见 §7) |
 | 鉴权 | **暂无任何鉴权**(刻意延后,仅限本地/可信网络使用,见 §8 / D2) |
-| 测试 | **73 个自动化测试全绿**(pytest),覆盖核心服务 + API 层 + 被动代理雷达 |
+| 测试 | **112 个自动化测试全绿**(pytest),覆盖核心服务 + API 层 + 被动代理雷达 |
 | 前端 | 主用单文件仪表盘已联通后端;另有一个遗留的 Vite 前端(mock 数据,非产品基线) |
 | 版本管理 | 已纳入 git,有 3 个清晰快照;密钥/数据库已隔离出版本库 |
 
@@ -96,7 +98,8 @@ anti gravity/
 │  │  ├─ proxy/radar_addon.py     # mitmdump 插件(独立解释器,Tier-1 过滤 + 环回上报)
 │  │  └─ services/                # nuclei.py / traffic_parser.py / pruner.py / fuzzer.py(核心)
 │  │                              # + proxy_manager.py(进程状态机) / proxy_pipeline.py(队列+SSE+统一写者)
-│  └─ tests/                      # pytest（73 个）
+│  │                              # + deep_verifier.py(AI 深度验证,影子 Phase 7) / endpoint_catalog.py(D18 端点目录)
+│  └─ tests/                      # pytest（112 个）
 ├─ docs/                          # 工程内部文档（架构/数据模型/各管线/API/技术债）
 └─ frontend/                      # 遗留 Vite 前端（mock，非基线）
 ```
@@ -125,7 +128,7 @@ anti gravity/
 - ✅ **真并行批量**:`POST /hunter/verify/batch` 在**单一共享 auth 托管**下并发验证多个端点(并发上限可配 1–20)。
 - ⚪ **单主机限制**:批量仅允许同一主机;混合主机/越界目标会被拒绝(刻意的安全约束,见 §8 / D11)。
 - ✅ **身份锚点试运行**:`POST /hunter/auth/dry-run` 上线批量前先验证登录锚点是否能拿到新凭证(不落库)。
-- ⚪ **AI 深度验证（影子模式 / Phase 7，只读观测）**:新增独立组件 `services/deep_verifier.py`——两轮式 AI-in-the-loop「写后读」(Gemini),用于解决规则预言机在"沉默型"越权(写接口恒返回 `200 {"status":"ok"}`)上只能停在 `suspicious` 的盲区。已作为**纯增量、只读**的 Phase 7 接入 `execute_parallel_fuzzing`:批次结束后对 `suspicious` 记录复核,**仅写日志**(`AI_shadow_verdict=…`),**不改写** `verification_status`/`diff_details`、不影响用户所见、失败即吞。受两个默认关闭的开关门控:`AI_DEEP_VERIFY_ENABLED` 与 `AI_DEEP_VERIFY_SHADOW`(两者都为 True 才会真正调用 Gemini)。两处已知接缝(auth 上下文、最小端点目录)见 `docs/TECH_DEBT.md` D18;尚未作为权威判定见 D19。准确率基准见 `vulnerable_target/benchmark/RESULTS.md`(n=9,AI 8/8 正确,0 误报/漏报)。
+- ⚪ **AI 深度验证（影子模式 / Phase 7，只读观测）**:新增独立组件 `services/deep_verifier.py`——两轮式 AI-in-the-loop「写后读」(Gemini),用于解决规则预言机在"沉默型"越权(写接口恒返回 `200 {"status":"ok"}`)上只能停在 `suspicious` 的盲区。其判定为**四值**(`verified`/`failed`/`inconclusive`/`suspicious`),比规则预言机 `_differential_verdict` 的**三值**(`verified`/`suspicious`/`failed`,保持不变)多出 `inconclusive`——证据不足(如跨资源回读未反映被攻击对象)时如实给出。另有确定性**结构化跨资源守卫**(B-2.2,`_apply_cross_resource_guard`):当 `verified`/`failed` 依赖的回读路径与攻击路径不同,降级为 `inconclusive`;结果同时保留模型原始判定与改写痕迹(`ai_verdict_raw` + `guard_override`,`ai_verdict` 为守卫后的最终值)。已作为**纯增量、只读**的 Phase 7 接入 `execute_parallel_fuzzing`:批次结束后对 `suspicious` 记录复核,**仅写日志**(`AI_shadow_verdict=…`),**不改写** `verification_status`/`diff_details`、不影响用户所见、失败即吞。受两个默认关闭的开关门控:`AI_DEEP_VERIFY_ENABLED` 与 `AI_DEEP_VERIFY_SHADOW`(两者都为 True 才会真正调用 Gemini)。端点目录由 `services/endpoint_catalog.py`(`catalog_from_openapi` → 裸 `"METHOD /path"` 列表,丢弃 summary/description)提供,spec 来源走 `settings.AI_DEEP_VERIFY_OPENAPI_SPEC`(`getattr` 读取,并非已声明配置项),未配置时回退到同资源占位目录。两处已知接缝(auth 上下文、端点目录/spec 接线)见 `docs/TECH_DEBT.md` D18;尚未作为权威判定见 D19。准确率基准见 `vulnerable_target/benchmark/RESULTS.md`(共 11 个用例:AI 同路径置信判定 **8/8** 正确,2 个跨路径达"完整性下限"判 `inconclusive`,**0 误报 / 0 漏报**)。
 
 ### D. 被动流量摄取 · 代理雷达(Step 9)
 - 🟡 **托管式拦截代理**:`POST /hunter/proxy/start` 启动并监督一个 `mitmdump` 子进程;浏览器把 HTTP 代理指向 `127.0.0.1`,即可被动捕获流量。`/proxy/stop` 跨平台强制清杀整个进程树(Windows `taskkill /F /T`、Unix 进程组信号),不漏端口。
@@ -183,7 +186,7 @@ anti gravity/
 
 ## 7. 质量与工程化（可验收的证据）
 
-- **自动化测试:73 个,全部通过**(本会话亲测)。覆盖:
+- **自动化测试:112 个,全部通过**(本会话亲测)。覆盖:
   - `test_pruner.py` — 剪枝评分 + 去除非确定性(随机种子下稳定);
   - `test_step8_custody.py` — auth 自愈托管 / 并行引擎;
   - `test_step_d_hunter_link.py` — Hunter→验证 数据桥接(列优先 + 旧格式回退);
@@ -242,7 +245,7 @@ python backend/run.py
 ```
 
 ### 验收清单（建议逐项打勾）
-- [ ] **测试全绿**:仓库根目录运行 `python -m pytest backend/tests -q` → 应见 `73 passed`。
+- [ ] **测试全绿**:仓库根目录运行 `python -m pytest backend/tests -q` → 应见 `112 passed`。
 - [ ] **服务健康**:`GET http://127.0.0.1:8000/` 返回 `status: online` 与诊断信息。
 - [ ] **API 文档**:`/api/docs` 能看到全部端点与请求/响应模型。
 - [ ] **逻辑狩猎链路**:在前端粘贴一段原始 HTTP 报文 → analyze 出报告与 payloads → 保存为 finding → 触发 verify → 在结果里看到带判定(verified/suspicious/failed)的验证记录。
@@ -252,20 +255,11 @@ python backend/run.py
 
 ---
 
-## 10. 路线图（按名片 / 验证优先）
+## 10. 路线图与方向
 
-> 当前唯一目标：把差异化能力打磨到可展示、可量化。
-> 商业化相关项一律暂缓，仅在对比数据证明值得后才解锁。
-
-### 主线（现在投精力）
-1. **差分验证引擎深化**：差分预言机精度、覆盖更多越权类型（BOLA/IDOR、垂直越权、Mass-Assignment、参数污染、竞态）。这是本项目的智力核心与唯一壁垒。
-2. **公开靶场对比实验**：在故意有漏洞的靶机上，量化「本引擎的确定性差分验证」vs「agent 式自由 PoC 验证」的误报率 / 复现率。这是回答“能否商业化”的唯一证据。
-3. **2 分钟全链路 demo**：抓流量 → AI 分析出 IDOR/BOLA 候选 → 差分引擎判定 verified，录屏。
-4. **前端收敛（D5）**：退役 mock 版 `frontend/`，只保留 `preview_dashboard.html` 一个。
-
-### 暂缓 —— 不在当前主线（解锁条件：上面第 2 项的对比数据证明值得商业化后才启动）
-- **鉴权（D2）**、**多租户**、**Postgres 迁移 / Alembic（D1）**、**企业部署**
-  这些是“产品 / 规模化”范畴，与“名片 / 验证”无关。在拿到对比数据前，投入到这些上的精力都是浪费。
+> **战略、非目标(non-goals)、主线方向(B-1 / D19 / scope-lock)与授权边界统一收敛到根目录 [`ROADMAP.md`](./ROADMAP.md)(唯一事实源),本文不再重复。**
+>
+> 一句话定位:当前重心是把**差分验证引擎**的差异化能力打磨到可量化、可展示(公开靶场对比 + 2 分钟全链路 demo);鉴权(D2)、多租户、Postgres 迁移 / Alembic(D1)、企业部署等"产品 / 规模化"项一律暂缓。完整论证与解锁条件见 [`ROADMAP.md`](./ROADMAP.md),已知缺口见 [`docs/TECH_DEBT.md`](./docs/TECH_DEBT.md)。
 
 ---
 

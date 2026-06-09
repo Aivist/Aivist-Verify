@@ -1,5 +1,47 @@
 # Verdict-Coverage Audit (read-only)
 
+## UPDATE 2026-06-09 — superseded in part
+
+> **This is a dated 2026-06-06 snapshot whose headline conclusions no longer hold at HEAD.**
+> The central gaps it measured have since been (partly) closed. The original analysis is
+> preserved **verbatim** below as the historical record; this banner reconciles it with the
+> current code.
+>
+> **What changed since this audit:**
+> - **Suite size:** the backend suite is now **112 tests** (was ~73 here), confirmed via
+>   `pytest --collect-only`. Four new files landed: `test_verdict_oracle.py` (9),
+>   `test_d18_b22_guard.py` (18), `test_d18_phase2_crosspath.py` (6),
+>   `test_endpoint_catalog.py` (6).
+> - **Bucket-(A) verdict-correctness coverage NOW EXISTS** — this audit's central finding is
+>   **superseded**:
+>   - `test_verdict_oracle.py` (9) **imports and asserts** `fuzzer.py::_differential_verdict`:
+>     it feeds realistic baseline/test pairs and asserts the verdict — incl. a `verified`
+>     (Rule 2 BOLA/IDOR), the `suspicious` single-shot ceiling, and a `failed` produced by the
+>     **Veto** post-rule on a soft-200 denial (`{"error":"forbidden"}`).
+>   - `test_d18_b22_guard.py` (18) is the first bucket-(A) AI-verdict-**path** coverage: it
+>     asserts `deep_verifier._apply_cross_resource_guard` directly.
+>   - Therefore the body's headlines **"(A) VERDICT-CORRECTNESS | 0"**, **"ZERO bucket-(A)
+>     tests"**, and **"no test imports `_differential_verdict`"** are **SUPERSEDED**.
+> - **AI deep verifier vocabulary expanded:** the verifier now has a 4th verdict
+>   **`inconclusive`** plus a 5-point decisive-evidence / SAME-RESOURCE standard and a
+>   deterministic **B-2.2 structural cross-resource guard** (`_apply_cross_resource_guard`,
+>   override `cross_resource_readback_not_decisive`, with the raw model verdict preserved as
+>   `ai_verdict_raw`/`guard_override`). The rule oracle `_differential_verdict` itself is
+>   **unchanged (still 3-value: `verified`/`suspicious`/`failed`)**.
+>
+> **What is STILL uncovered (confirmed by grep at HEAD — these parts of the audit still hold):**
+> - The **Escalation** post-rule (sensitive-key leak promotes `suspicious`→`verified`) — no
+>   asserting test.
+> - **Rule 1** (server-error escalation) and **Rules 3/4/5** (mass-assignment, generic
+>   divergence, status-change) — no asserting test (the new oracle tests exercise **Rule 2 +
+>   the Veto post-rule** only).
+> - The **Phase-7 shadow integration path** — still **no automated test**: no test references
+>   `_run_shadow_deep_verification`, sets `AI_DEEP_VERIFY_SHADOW`, or runs
+>   `execute_parallel_fuzzing` end-to-end. The X-CROSS/X-SAFE shadow runs are throwaway
+>   drivers (`scripts/audit/`), not part of `backend/tests/`.
+>
+> _(Historical 2026-06-06 snapshot below — preserved unchanged.)_
+
 > **Purpose:** measure whether `backend/tests/` actually *proves* the differential
 > verdict engine (`backend/app/services/fuzzer.py :: _differential_verdict`) is
 > correct. This is measurement, not repair. No code or tests were modified.

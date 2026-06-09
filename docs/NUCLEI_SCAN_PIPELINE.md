@@ -60,7 +60,9 @@ After Nuclei exits, the `ScanTask` is set to `completed` (exit 0) or `failed`
   `ai_patch IS NULL`.
 - For each, call `generate_gemini_remediation_patch(...)` (model
   `GEMINI_PRO_MODEL`, temp 0.2, Chinese security-expert system prompt producing
-  root-cause + before/after diff + mitigation), write `ai_patch` back.
+  root-cause + before/after diff + mitigation), write `ai_patch` back. Each call
+  is bounded by `asyncio.wait_for(..., GEMINI_REQUEST_TIMEOUT_SECONDS)`; a timeout
+  degrades to a Chinese fallback string instead of stalling the batch (D3).
 - Sleep `GEMINI_BATCH_COOLDOWN_SECONDS` (default 3) between calls to respect rate
   limits. Missing key / errors degrade gracefully to a Chinese fallback string.
 
@@ -75,9 +77,13 @@ After Nuclei exits, the `ScanTask` is set to `completed` (exit 0) or `failed`
 ## Gotchas for the next agent
 - The reader thread dispatches each DB write and waits up to 10s
   (`future.result(timeout=10)`). Very high finding rates serialize on this.
-- `NUCLEI_BINARY_PATH` existence is only soft-checked at startup; a missing
-  binary surfaces as a Phase-1 `FileNotFoundError` → scan marked `failed` with a
-  clear log, not a startup crash.
+- `NUCLEI_BINARY_PATH` existence is **not** checked at startup. The config
+  validator (`config.py` `validate_nuclei_path`) only enforces an absolute,
+  normalized path — it does **not** verify the file exists (despite an inline
+  comment promising a startup existence check; that check is not implemented). A
+  missing binary therefore surfaces only at **scan time** as a Phase-1
+  `FileNotFoundError` → scan marked `failed` with a clear log; the server still
+  boots normally.
 - `traffic_feed` (passive profiling input) is plumbed through the function
   signature but the `/scan/start` endpoint does not currently pass one — it's an
   extension hook (e.g. feed HAR-derived traffic for passive fingerprinting).
