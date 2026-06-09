@@ -13,16 +13,17 @@
 
 | Metric | Count |
 |---|---|
-| Total cases | 9 (A, B, C, D, SAFE, T-REAL, T-TRAP, T-WEAK, T-SILENT2) |
-| Ground truth: REAL vulnerabilities | 7 (A, B, C, D, T-REAL, T-WEAK, T-SILENT2) |
-| Ground truth: SECURE controls | 2 (SAFE, T-TRAP) |
-| **AI-in-the-loop cases evaluated** | 8 (B, C, D, SAFE, T-REAL, T-TRAP, T-WEAK, T-SILENT2) |
-| **AI correct** | 8 / 8 |
+| Total cases | 11 (A, B, C, D, SAFE, T-REAL, T-TRAP, T-WEAK, T-SILENT2, X-CROSS, X-SAFE) |
+| Ground truth: REAL vulnerabilities | 8 (A, B, C, D, T-REAL, T-WEAK, T-SILENT2, X-CROSS) |
+| Ground truth: SECURE controls | 3 (SAFE, T-TRAP, X-SAFE) |
+| **AI-in-the-loop cases evaluated** | 10 (B, C, D, SAFE, T-REAL, T-TRAP, T-WEAK, T-SILENT2, X-CROSS, X-SAFE) |
+| **AI confident-correct** (same-path; `verified`/`failed` matches truth) | 8 / 8 |
+| **AI integrity floor met** (cross-path; no false verdict, result = `inconclusive`) | 2 (X-CROSS, X-SAFE) — confident verdict deferred to B-1 |
 | **AI false positives** (AI = REAL on a SECURE case) | 0 |
 | **AI false negatives** (AI = SECURE/failed on a REAL case) | 0 |
 | AI cases not yet run | 1 (A) |
-| **Rule-based oracle cases measured** | 2 (A, B) |
-| Rule-based oracle correct (confirmed the truth) | 1 / 2 — A `verified` ✓; B `suspicious` ✗ (did not confirm a REAL vuln) |
+| **Rule-based oracle cases measured** | 4 (A, B, X-CROSS, X-SAFE) |
+| Rule-based oracle correct (confirmed the truth) | 1 / 4 — A `verified` ✓; B / X-CROSS / X-SAFE `suspicious` ✗ (stalled — did not confirm the truth either way) |
 | Rule-based oracle cases not yet measured | 7 (C, D, SAFE, T-REAL, T-TRAP, T-WEAK, T-SILENT2) |
 
 **Key finding so far:** on the "silent" write cases (B, D, SAFE) the POST response
@@ -47,6 +48,14 @@ including declining to flag the SECURE look-alike (no false positive).
 | T-TRAP    | SECURE  | not measured | `failed` (= not vulnerable) | ✅ |
 | T-WEAK    | REAL    | not measured | `verified` | ✅ |
 | T-SILENT2 | REAL    | not measured | `verified` | ✅ |
+| X-CROSS | REAL   | `suspicious` | `inconclusive` (raw model `failed`, structurally guarded) | ◐ floor only |
+| X-SAFE  | SECURE | `suspicious` | `inconclusive`                                            | ◐ floor only |
+
+> ◐ = **integrity floor met** (the system never emits a false verdict — no false-negative
+> on X-CROSS, no false-positive on X-SAFE), but a **confident** verdict (`verified`/`failed`)
+> is **not yet reached**. These two cross-path cases have no same-path GET; the decisive
+> confirmation is the cross-path write record (`GET /api/audit-log`), which the model does
+> not yet choose (0/20). Promoting `inconclusive` → `verified`/`failed` is deferred to B-1.
 
 ---
 
@@ -266,27 +275,61 @@ including declining to flag the SECURE look-alike (no false positive).
 
 ---
 
-## Phase-2 cross-path additions (STUBS — verdicts NOT YET MEASURED)
+## Phase-2 cross-path additions (MEASURED — D18 §5 fix B-2.2)
 
-> These two cases were added in D18 Phase 2. Their ground truth is byte-verified
-> (capture `scripts/audit/capture_phase2_crosspath.py`, GT-A..GT-E), but the verifier
-> has **not** been run against them yet. No rule-oracle or AI verdict is recorded here
-> until Phase-2 verification is done.
+> Ground truth byte-verified (`scripts/audit/capture_phase2_crosspath.py`, GT-A..GT-E).
+> Verdicts measured under the §5 integrity fix (prompt evidence-standard B-2/B-2.1 +
+> deterministic structural cross-resource guard B-2.2), 5 runs each, shadow/observe-only,
+> gemini-2.5-pro. Transcript: `scripts/audit/shadow_d18_fixb22_measure.out.txt`.
+>
+> **Integrity floor, not confirmation.** On these no-same-path-GET cases the system's
+> correct behaviour is to refuse a false verdict, not (yet) to confirm. Both resolve to a
+> stable `inconclusive`. Promoting them to `verified`/`failed` requires the model to find
+> and use the cross-path write record (audit-log) — deferred to B-1.
 
 ### Case X-CROSS — REAL cross-path BOLA (display-name)
 - **Endpoint / method:** `POST /api/users/{user_id}/display-name` (confirm via cross-path
   `GET /api/audit-log`; there is **no** same-path GET)
 - **Vulnerability class:** cross-path BOLA / object-level write
 - **Ground truth:** **REAL**
-- **verdicts: NOT YET MEASURED (Phase-2 verification pending)**
+- **Evidence gap:** opaque `200 {"status":"ok"}`; the written object (`Identity.display_name`)
+  has no same-path GET, so the only decisive confirmation is the cross-path write record. A
+  *different* object exposes a same-named field (`Profile.display_name`="Bob"), which invites
+  a wrong-object read.
+- **Rule-based oracle verdict:** **`suspicious`** (200, length deviation 0.00%, similarity
+  100% → stalls, as designed).
+- **AI-in-the-loop verdict:** **`inconclusive`** (stable 5/5). Requested follow-up? **Yes** —
+  all 5 chose `GET /api/users/2/profile` (a DIFFERENT resource than the attacked
+  `/display-name`); **0/5** chose the decisive `GET /api/audit-log`.
+- **Correct?:** **Integrity floor met** — never the false-negative `failed`; honest
+  `inconclusive`. **Not** `verified` (confirmation deferred to B-1).
+- **How the verdict is produced (honest):** the model's RAW judgment still false-negatives
+  this case **4/5** (`failed` @ conf 1.0 — it over-trusts the same-named `Profile.display_name`).
+  Integrity comes from the **deterministic structural guard (B-2.2), not model compliance**:
+  on each lapse run the guard downgraded `failed` → `inconclusive` because the follow-up path
+  (`/api/users/2/profile`) ≠ the attack path (`/api/users/2/display-name`). Run 3 the model
+  complied on its own (raw `inconclusive`).
+- **Measured progression (false-negative rate):** before-fix `failed`×5 → B-2 `failed`×5 →
+  B-2.1 `failed`×1 / `inconclusive`×4 → **B-2.2 `inconclusive`×5**.
 
 ### Case X-SAFE — SECURE cross-path control (nickname)
 - **Endpoint / method:** `POST /api/users/{user_id}/nickname` (confirm via cross-path
   `GET /api/audit-log`; there is **no** same-path GET)
-- **Vulnerability class:** cross-path BOLA look-alike, ownership enforced; cross-user
-  write silently dropped, no audit row
+- **Vulnerability class:** cross-path BOLA look-alike, ownership enforced; cross-user write
+  silently dropped, no audit row
 - **Ground truth:** **NOT vulnerable (SECURE control)**
-- **verdicts: NOT YET MEASURED (Phase-2 verification pending)**
+- **Evidence gap:** identical opaque `200 {"status":"ok"}` to a real BOLA; the only decisive
+  exoneration is the *absence* of a write record (inherently weaker than a positive read-back).
+- **Rule-based oracle verdict:** **`suspicious`**.
+- **AI-in-the-loop verdict:** **`inconclusive`** (stable 5/5). Requested follow-up? **Yes** —
+  `/profile`×4 and `/nickname`×1 (the same-path GET → 405); **0/5** chose `GET /api/audit-log`.
+- **Correct?:** **Integrity floor met** — never the false-positive `verified` (the pre-fix
+  failure mode); honest `inconclusive`. Not yet a confident `failed`/safe (deferred to B-1).
+- **How the verdict is produced (honest):** the prompt evidence-standard alone suffices here —
+  `Profile` has no `nickname` field, so the model honestly admits it cannot confirm. The
+  structural guard did **not** need to fire (0/5 overrides).
+- **Measured progression (false-positive rate):** before-fix `verified`×4 / `suspicious`×1 →
+  **B-2 onward `inconclusive`×5** (false positive removed by the prompt standard).
 
 ---
 
@@ -311,3 +354,14 @@ including declining to flag the SECURE look-alike (no false positive).
 - Maintainer confirmed the T-* verdicts (2026-06-05): T-TRAP judged secure specifically
   on reading the `{"error":"forbidden"}` body; T-WEAK judged REAL specifically on the
   `owner_id:2` semantics (not response size).
+- AI-in-the-loop (X-CROSS, X-SAFE): run via the same isolated `deep_verifier.py`
+  `execute_deep_verification` component under the D18 §5 integrity fix (prompt
+  evidence-standard + deterministic cross-resource guard), shadow/observe-only (never
+  persisted), 5 runs each against a freshly re-seeded target, with the real OpenAPI
+  catalog supplied as the spec source and Alice's token as `auth_context`; gemini-2.5-pro.
+  The model's one follow-up was executed live and fed back. Transcript:
+  `scripts/audit/shadow_d18_fixb22_measure.out.txt`.
+- Integrity note (X-CROSS): the model's RAW judgment still false-negatives this case 4/5
+  (`failed` @ conf 1.0); the recorded `inconclusive` comes from the deterministic structural
+  guard (it downgrades a cross-resource read-back), not model compliance — preserved in the
+  result as `ai_verdict_raw` + `guard_override`.

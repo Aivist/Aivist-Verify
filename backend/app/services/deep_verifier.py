@@ -65,7 +65,34 @@ SYSTEM_PROMPT = (
     "is to judge whether a possible broken-access-control vulnerability is real, "
     "based on observed HTTP evidence. You are rigorous and avoid both false "
     "positives and false negatives. You may gather more evidence before concluding "
-    "if the current evidence is ambiguous."
+    "if the current evidence is ambiguous.\n\n"
+    "Your verdict is one of: \"verified\", \"failed\", \"inconclusive\", or "
+    "\"suspicious\". Apply this DECISIVE-EVIDENCE STANDARD to every verdict:\n"
+    "1. An action endpoint's OWN response — above all an opaque success status such "
+    "as 200 {\"status\":\"ok\"} — is NEVER, by itself, evidence that the targeted "
+    "state did or did not change. An identical opaque success can be returned whether "
+    "the write landed, was silently ignored, or was applied to a different object.\n"
+    "2. Return \"verified\" or \"failed\" ONLY when a follow-up read-back demonstrably "
+    "reflects the SAME state the attack tried to change: it returns the exact "
+    "field/resource that was written (so you can compare it against the value the "
+    "attack sent) or is an explicit record of that specific write. \"verified\" = that "
+    "state was changed by the unauthorized actor; \"failed\" = that same state is "
+    "provably unchanged (the server enforced authorization).\n"
+    "3. If the evidence does NOT reflect the targeted state — a wrong or unrelated "
+    "object, a read-back missing the written field, or no decisive observation of the "
+    "exact thing the attack tried to change — you MUST answer \"inconclusive\". Do NOT "
+    "fall back to \"failed\", and do NOT return \"verified\" on the action status alone.\n"
+    "4. \"inconclusive\" means \"cannot confirm from the evidence gathered; a human must "
+    "decide.\" It is the honest answer ONLY in a genuine evidence gap — when you DO hold "
+    "decisive read-back evidence, commit to \"verified\" or \"failed\" rather than hedging.\n"
+    "5. SAME-RESOURCE RULE (this is what makes a read-back decisive): a read-back reflects the "
+    "targeted state ONLY if it queries the SAME resource/path the attack targeted — any HTTP "
+    "method on that same resource — or is an explicit record of that specific write. A "
+    "DIFFERENT endpoint that merely exposes a field with the SAME NAME as what you wrote is NOT "
+    "the same state: matching field names across different resources/paths do NOT make a "
+    "read-back decisive, so you MUST answer \"inconclusive\" (not \"failed\", not \"verified\"). "
+    "A read-back of the SAME resource/path you attacked remains FULLY decisive — use it to "
+    "commit to \"verified\" or \"failed\"."
 )
 
 _OPTIONS_BLOCK = """\
@@ -75,13 +102,18 @@ You may EITHER:
   (B) request exactly ONE additional HTTP request to gather more evidence before deciding.
 The follow-up (if any) will be executed against the SAME target host and fed back
 to you. You may request only ONE request, and only a relative path on this host.
+Spend it well: choose the ONE follow-up that reads back the SAME resource/path you attacked
+(any HTTP method on that same resource), or an explicit record of that specific write, so you
+can compare it against the value the attack sent. A DIFFERENT endpoint that merely exposes a
+field with the same NAME as what you wrote is NOT the same state and will NOT let you conclude
+"verified" or "failed".
 
 ## Required output
 Respond with ONLY a JSON object of EXACTLY this shape (no markdown, no extra text):
 {
   "decision": "verdict" | "request_more",
   "next_request": { "method": "...", "path": "/...", "body": {...} | null, "reason": "..." } | null,
-  "verdict": "verified" | "suspicious" | "failed" | null,
+  "verdict": "verified" | "suspicious" | "failed" | "inconclusive" | null,
   "confidence": 0.0-1.0,
   "reasoning": "..."
 }
@@ -89,8 +121,18 @@ Respond with ONLY a JSON object of EXACTLY this shape (no markdown, no extra tex
 Rules:
 - If decision is "request_more", "next_request" MUST be populated and "verdict" MUST be null.
 - If decision is "verdict", "verdict" MUST be populated and "next_request" MUST be null.
-- "verified" = the vulnerability is real/exploitable; "failed" = NOT vulnerable
-  (the server correctly enforced authorization); "suspicious" = cannot tell yet.
+- An opaque action-response status (e.g. 200 {"status":"ok"}) is NEVER, by itself, proof
+  that the targeted state did or did not change.
+- "verified" = the attacked state was demonstrably changed (a read-back of the SAME resource/
+  path you attacked, or an explicit record of that write, shows your written value).
+- "failed" = the attacked state is demonstrably unchanged (a read-back of the SAME resource/
+  path you attacked shows the server enforced authorization).
+- "inconclusive" = the evidence does not reflect the attacked state — it came from a DIFFERENT
+  resource/path than the one you attacked (even if that endpoint exposes a same-named field),
+  the written field is absent, or there was no decisive observation; you cannot confirm and a
+  human must. Do NOT downgrade it to "failed" or inflate it to "verified" on the action
+  status alone.
+- "suspicious" = still ambiguous and you have not yet spent your one follow-up.
 """
 
 _TURN2_TEMPLATE = """\
@@ -103,11 +145,18 @@ I have executed the ONE follow-up request you asked for, against the live target
 {raw_response}
 
 Now deliver your FINAL verdict. You may NOT request more information this turn.
+Apply the decisive-evidence standard: return "verified" or "failed" ONLY if this read-back
+queries the SAME resource/path you attacked (any HTTP method on that same resource), or is an
+explicit record of that specific write. A DIFFERENT endpoint that merely exposes a field with
+the same NAME as what you wrote is NOT the same state — if that is all you have (or the written
+field is absent, or nothing decisive was observed), you MUST answer "inconclusive"; do not fall
+back to "failed", and do not return "verified" on the action status alone. A read-back of the
+SAME resource/path you attacked IS decisive — use it to commit.
 Respond with ONLY a JSON object of EXACTLY this shape (no markdown, no extra text):
 {{
   "decision": "verdict",
   "next_request": null,
-  "verdict": "verified" | "suspicious" | "failed",
+  "verdict": "verified" | "suspicious" | "failed" | "inconclusive",
   "confidence": 0.0-1.0,
   "reasoning": "..."
 }}
@@ -132,9 +181,61 @@ class DeepVerificationResult:
     approved_host: str
     turns_raw: List[str] = field(default_factory=list)   # verbatim model JSON per turn
     degraded_reason: Optional[str] = None
+    # B-2.2 transparency: the model's RAW (pre-guard) verdict + any structural override.
+    ai_verdict_raw: Optional[str] = None
+    guard_override: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+# ==============================================================================
+# B-2.2 structural backstop (target-agnostic). A decisive verdict that rests on a
+# follow-up read-back of a DIFFERENT concrete resource/path than the one attacked is
+# NOT decisive. These helpers compare two path STRINGS only — they hold no knowledge
+# of this (or any) target's endpoints, fields, or objects.
+# ==============================================================================
+CROSS_RESOURCE_OVERRIDE_REASON = "cross_resource_readback_not_decisive"
+
+
+def _normalize_path(path: Optional[str]) -> str:
+    """Concrete-path comparison key: drop query + fragment, strip a trailing slash.
+
+    Content-agnostic (string only); root "/" is preserved.
+    """
+    p = path or ""
+    p = p.split("?", 1)[0].split("#", 1)[0]
+    if len(p) > 1:
+        p = p.rstrip("/")
+    return p
+
+
+def _apply_cross_resource_guard(
+    verdict: Optional[str],
+    attack_path: Optional[str],
+    follow_up_path: Optional[str],
+    follow_up_performed: bool,
+):
+    """Structural backstop. Returns (final_verdict, override_reason).
+
+    Downgrades a decisive verdict to "inconclusive" IFF it rests on a follow-up
+    read-back of a DIFFERENT concrete resource/path than the one attacked:
+        verdict in {"verified","failed"} AND a follow-up read-back was performed AND
+        normalize(follow_up_path) != normalize(attack_path)
+    Everything else is returned untouched (override_reason None):
+        - no follow-up performed (e.g. a read-type/GET BOLA confirmed by the attack
+          response itself, with no follow-up) -> unchanged;
+        - same-resource read-back (normalized paths equal) -> unchanged, decisive;
+        - verdict "suspicious" / "inconclusive" / None -> unchanged.
+    Method-agnostic and target-agnostic: compares two path strings only.
+    """
+    if verdict not in ("verified", "failed"):
+        return verdict, None
+    if not follow_up_performed:
+        return verdict, None
+    if _normalize_path(follow_up_path) == _normalize_path(attack_path):
+        return verdict, None
+    return "inconclusive", CROSS_RESOURCE_OVERRIDE_REASON
 
 
 def _redact_headers(headers: Dict[str, str]) -> Dict[str, str]:
@@ -393,9 +494,17 @@ async def execute_deep_verification(
         decision = turn1_obj.get("decision")
         next_request = turn1_obj.get("next_request") or {}
         if decision != "request_more" or not next_request.get("path"):
+            # No follow-up read-back was performed -> the structural guard never
+            # triggers here (it must NOT break a read-type/GET BOLA confirmed by the
+            # attack response itself). Recorded transparently anyway: raw == final.
+            _raw_verdict = turn1_obj.get("verdict")
+            _final_verdict, _override = _apply_cross_resource_guard(
+                _raw_verdict, attack_req.get("path", ""),
+                follow_up_path=None, follow_up_performed=False,
+            )
             return DeepVerificationResult(
                 status="completed",
-                ai_verdict=turn1_obj.get("verdict"),
+                ai_verdict=_final_verdict,
                 ai_confidence=turn1_obj.get("confidence"),
                 ai_reasoning=turn1_obj.get("reasoning", ""),
                 ai_requested_follow_up=False,
@@ -406,6 +515,8 @@ async def execute_deep_verification(
                 model=resolved_model,
                 approved_host=approved,
                 turns_raw=turns_raw,
+                ai_verdict_raw=_raw_verdict,
+                guard_override=_override,
             )
 
         # ---------------- Execute the follow-up (scope-locked) ----------------
@@ -490,9 +601,27 @@ async def execute_deep_verification(
                 degraded_reason=f"Gemini turn-2 error: {type(e).__name__}: {e}",
             )
 
+        # ---------------- B-2.2 structural guard (cross-resource read-back) -------
+        # A follow-up read-back was performed iff we actually captured a response.
+        _raw_verdict = turn2_obj.get("verdict")
+        _final_verdict, _override = _apply_cross_resource_guard(
+            _raw_verdict,
+            attack_req.get("path", ""),
+            fu_request_record.get("path"),
+            follow_up_performed=(follow_up_response is not None),
+        )
+        if _override:
+            logger.info(
+                "[DEEP-VERIFY] Structural guard: model verdict=%r downgraded to %r "
+                "(%s) — attack_path=%r follow_up_path=%r (different concrete resource).",
+                _raw_verdict, _final_verdict, _override,
+                _normalize_path(attack_req.get("path", "")),
+                _normalize_path(fu_request_record.get("path")),
+            )
+
         return DeepVerificationResult(
             status="completed",
-            ai_verdict=turn2_obj.get("verdict"),
+            ai_verdict=_final_verdict,
             ai_confidence=turn2_obj.get("confidence"),
             ai_reasoning=turn2_obj.get("reasoning", ""),
             ai_requested_follow_up=True,
@@ -503,4 +632,6 @@ async def execute_deep_verification(
             model=resolved_model,
             approved_host=approved,
             turns_raw=turns_raw,
+            ai_verdict_raw=_raw_verdict,
+            guard_override=_override,
         )
