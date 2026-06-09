@@ -331,6 +331,16 @@ including declining to flag the SECURE look-alike (no false positive).
 - **Measured progression (false-positive rate):** before-fix `verified`×4 / `suspicious`×1 →
   **B-2 onward `inconclusive`×5** (false positive removed by the prompt standard).
 
+### Reverse-guard — same-path controls (same B-2.2 run, 5 runs each)
+
+> Confirms the §5 fix did **not** weaken same-path decisiveness (`inconclusive` is not an
+> escape hatch): when the read-back IS the same resource the attack targeted, the structural
+> guard never fires and the verifier still commits to a confident verdict.
+
+- **P0-PROFILE** (REAL silent BOLA, `POST /api/users/{user_id}/profile`) → **`verified`×5**.
+- **P0-AVATAR** (SECURE look-alike, `POST /api/users/{user_id}/avatar`) → **`failed`×5**.
+- Structural-guard overrides: **0/5** each (same-resource read-back → guard never triggers).
+
 ---
 
 ## Provenance
