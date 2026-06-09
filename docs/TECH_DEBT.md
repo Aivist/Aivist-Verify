@@ -20,6 +20,7 @@
 | R3 | **Tech-debt cleanup sweep (D1/D3/D4/D6/D7/D8/D9 + hardcoding N1–N7)** | see each item below | Done in two commits: **Stage A** (config/hardcoding/hygiene: D4, D8, N1–N7) and **Stage B** (D9, D3, D6, D1, D7). All 66 tests pass. Remaining open: **D2** (auth, intentionally deferred for local use) and **D5** (frontend consolidation, tracked as a separate task). |
 | R4 | **Step 9 — Passive Traffic Ingestion Proxy Radar + unified WriterService** | `models/scan.py` (`CapturedFlow`), `config.py`, `services/proxy_pipeline.py`, `services/proxy_manager.py`, `proxy/radar_addon.py`, `schemas/proxy.py`, `api/v1/hunter.py` (`/proxy/*`), `main.py`, `pruner.py` (shared helpers), `preview_dashboard.html` | The single-writer pattern was generalized out of the fuzzer into an **app-wide `WriterService`** (started in the lifespan); the fuzzer forwards to it when running and falls back to an ephemeral per-batch consumer otherwise — **globally ≤1 SQLite writer**. mitmdump runs out-of-process, ships in-scope flows via a loopback POST to a hidden internal-ingest endpoint, Tier-2 enriches + persists + SSE-streams. **All 66 prior tests still pass + 7 new (`test_step9_proxy.py`) = 73.** **Verified end-to-end** (real mitmdump + real DB): browser→proxy→ingest→queue→writer→`captured_flows`; ingest→SSE→client; captured flow→analyze→findings→verify→`FuzzingRecord`→results; plus clean process-tree kill on stop. |
 | R5 | **Verdict-correctness measurement groundwork** | `docs/audit/verdict_coverage_audit.md`, `backend/tests/test_verdict_oracle.py`, `scripts/audit/capture_target_bytes*.py`, `backend/tests/test_endpoint_catalog.py` | Audit found **0 of 73** prior tests asserted the verdict oracle was correct. Added **9 human-owned verdict tests** (offline, pure-function; incl. a false-positive killer, a weak-signal guard, and a characterization test pinning that the rule oracle cannot separate a real silent BOLA from the SAFE look-alike). **Live-byte capture** confirmed the target's real bytes match the test inputs AND that `test_vulns.py` / `RESULTS.md` ground truth holds. Plus **6 catalog tests** (D18 Phase 1). Suite 73→88. Commits `292497e`, `6832922`, `2b3d4b9`. *(Annotation 2026-06-09: extended since — the §5 verification-integrity fix + Phase-2 cross-path work later landed; suite now 112. See D18/D19/D20.)* |
+| R6 | **D18 §5 — cross-path verification integrity fix + Phase-2 benchmark + doc truth-refresh** | `services/deep_verifier.py` (prompt standard + B-2.2 guard + `ai_verdict_raw`/`guard_override`), `backend/tests/test_d18_b22_guard.py` (18) + `test_d18_phase2_crosspath.py` (6), `vulnerable_target/` (X-CROSS/X-SAFE + `GET /api/audit-log`), `RESULTS.md`, all `docs/*` | The deep verifier gained an **`inconclusive`** verdict + a decisive-evidence / **SAME-RESOURCE** standard + a **deterministic cross-resource guard** (B-2 / B-2.1 / B-2.2; raw model verdict preserved as `ai_verdict_raw`/`guard_override`). Cross-path **X-CROSS** (REAL) / **X-SAFE** (SECURE) now exist on the target, are byte-verified, and were measured through the shadow path to a stable **integrity floor** (`inconclusive`, **0 false verdicts**; X-CROSS's raw `failed` 4/5 corrected by the guard). Same-path reverse-guards intact (P0 `verified`×5 / `failed`×5). Suite 88→**112**; all docs refreshed to match. Commits `20788e4`, `89aff11`, `b634c8d`, `80d42e7`. *(Still open as separate items: a **confident** cross-path verdict = **B-1**; promoting the AI verdict to authoritative = **D19**.)* |
 
 ---
 
@@ -168,12 +169,15 @@
   the client IP, this loopback check must be re-derived from a trusted forwarded
   header — do **not** simply start honoring XFF.
 
-### D18 — Endpoint / attack-surface discovery is not solved
+### D18 — Endpoint catalog DONE; automated *discovery* still open
 - **Where:** the whole Hunter→Verify intake, and `fuzzer._shadow_endpoint_catalog`
   (the shadow verifier's endpoint list).
-- **Status:** **Phase 1 done (commit `2b3d4b9`); Phase 2 PARTIALLY resolved — the
-  cross-path holes now EXIST, are tested, and are measured; automated discovery + a
-  confident cross-path verdict are what remain open.** A real endpoint catalog now feeds
+- **Status:** the catalog + cross-path work is **DONE — see R6** (Phase 1 OpenAPI catalog
+  adapter, `2b3d4b9`; Phase 2 cross-path hole + tests + shadow measurement). **Still open:**
+  automated *discovery* — the system does **not find endpoints on its own**; it must be *fed*
+  an OpenAPI/HAR spec (`catalog_from_har` is a `NotImplementedError` stub; the spec source is
+  the *undeclared* `AI_DEEP_VERIFY_OPENAPI_SPEC` getattr seam — D21). A **confident** cross-path
+  verdict (vs today's integrity-floor `inconclusive`) is tracked as **B-1**. A real endpoint catalog now feeds
   the shadow verifier: `endpoint_catalog.py` (pure OpenAPI→`["METHOD /path"]` adapter —
   bare `METHOD /path`, summary/description discarded — + HAR stub raising
   `NotImplementedError` + dispatch) is wired into `_shadow_endpoint_catalog` via an
@@ -209,6 +213,9 @@
 - **Where:** `services/deep_verifier.py` + `fuzzer._run_shadow_deep_verification`
   (Phase 7); flags `AI_DEEP_VERIFY_ENABLED` / `AI_DEEP_VERIFY_SHADOW` in `config.py`
   (both default `False`).
+- **TL;DR:** ✅ the "judge correctly / integrity floor" half (§5) is **DONE — see R6**;
+  ⏳ the **core of D19 — promoting** the AI verdict from observe-only/log to **authoritative**
+  — is still open (gated behind D18/B-1).
 - **Status:** the AI-in-the-loop write-then-read verifier runs **read-only**. In
   shadow mode it re-checks `suspicious` records and **only logs** its verdict
   (`AI_shadow_verdict=… NOT applied (shadow, observe-only)`); it does **not**
@@ -247,8 +254,9 @@
   full evidence trail retained for audit). Do not promote before D18 is addressed —
   the verifier's reliability depends on being handed the right read-back endpoint.
 
-### D20 — D18 cross-path value on the current target (Phase 2) — PARTIALLY RESOLVED
-- **Status: PARTIALLY RESOLVED.** The "write at path A, confirm at path B" hole now
+### D20 — D18 cross-path value on the current target (Phase 2) — ✅ RESOLVED (proof landed)
+- **Status: ✅ RESOLVED — see R6.** The cross-path proof is done; only a **confident** verdict
+  remains, tracked as **B-1** (below). The "write at path A, confirm at path B" hole now
   **exists** and is **measured**: **X-CROSS** (REAL, `POST /api/users/{id}/display-name`)
   + its **X-SAFE** secure look-alike (`POST /api/users/{id}/nickname`), each confirmable
   only via the cross-path write record `GET /api/audit-log` (no same-path GET). Ground
@@ -282,6 +290,18 @@
 - **Direction:** when wiring a real spec for production use (B-1), promote it to a declared
   `config.py` field (a path or inline spec) so it is discoverable and validated like the rest.
 
+### D22 — The Phase-7 shadow path / deep verifier has no automated test
+- **Where:** `fuzzer._run_shadow_deep_verification` (Phase 7) + `deep_verifier.execute_deep_verification`.
+- **Problem:** the suite never exercises the shadow **integration** end-to-end — no test sets
+  `AI_DEEP_VERIFY_SHADOW`, drives `execute_parallel_fuzzing` into Phase 7, or calls
+  `execute_deep_verification`. Only the **pure** structural guard `_apply_cross_resource_guard`
+  is unit-tested (`test_d18_b22_guard.py`, 18) and the rule oracle offline
+  (`test_verdict_oracle.py`, 9). The code path that actually invokes the AI verifier is proven
+  only by throwaway harnesses under `scripts/audit/` — **not** in `backend/tests/`.
+- **Direction:** add a mocked-Gemini test that drives Phase 7 (or `execute_deep_verification`)
+  so the shadow path becomes a regression asset **before** D19 promotes it (per the §6
+  discipline: a green suite proves nothing about the verifier today). Prerequisite for B-1/D19.
+
 ---
 
 ## Tracked next-line work (OPEN — see [`ROADMAP.md`](../ROADMAP.md) §4)
@@ -311,16 +331,22 @@
 
 ## Suggested priority order for the next agent
 > Current focus: sharpen the differentiator and PROVE it. All commercialization /
-> scaling work is deferred until a benchmark justifies it. D1 (startup guard), D3,
-> D4, D6, D8, D9 are done; Step 9 (R4) is done & E2E-verified; D7 is partial.
+> scaling work is deferred until a benchmark justifies it. **Done:** D1 (startup guard),
+> D3, D4, D6, D8, D9; Step 9 (R4, E2E-verified); the §5 integrity fix + D18 Phase-2 (R6).
+> **Partial:** D7. The next-line nodes are the source of truth in
+> [`ROADMAP.md`](../ROADMAP.md) §4 — mirrored below.
 
 ### Active line (work on these now)
-1. **Differential verification engine** — deepen the oracle's precision and cover
-   more broken-access-control classes. This is the core moat.
-2. **Benchmark vs agent-style PoC validation** — on a public vulnerable target,
-   quantify this engine's false-positive / reproducibility rate against
-   agent-driven PoC tools. This is the only evidence for the "can it be sold" question.
-3. **D5 (frontend consolidation)** — keep `preview_dashboard.html`, retire `frontend/`.
+1. **B-1 — confident cross-path verdict** (promote X-CROSS/X-SAFE from `inconclusive` →
+   `verified`/`failed` **without** regressing the §5 integrity floor). The core moat's next
+   proof point; needs catalog semantics + a real spec source (D21) + a guard exemption.
+2. **D22 — an automated test for the Phase-7 shadow path** (the verifier integration is
+   currently unproven by the suite; prerequisite for trusting/promoting it).
+3. **Benchmark vs agent-style PoC validation** — on a public vulnerable target, quantify
+   this engine's false-positive / reproducibility rate against agent-driven PoC tools. The
+   only evidence for the "can it be sold" question.
+4. **Scope-lock hardening** before any non-localhost target; **D5** — keep
+   `preview_dashboard.html`, retire `frontend/`.
 
 ### Deferred — NOT in the active line (unlock condition: the benchmark above proves commercialization is worth it)
 - **D2 (auth)**, multi-tenancy, **D1 (Alembic migrations)**, hosted/enterprise deployment.
