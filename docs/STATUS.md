@@ -62,14 +62,14 @@ Where each stands today:
 - **The final verdict still leans on the model reading the log.** Code *gathers* the
   evidence (deterministic); Gemini still *interprets* it (raw `verified` 5/5 here). A
   model-specific pillar — re-run the benchmark on any model swap.
-- **Gate hardened (D23 ✅ fixed):** `_write_record_content_match` used to match the attacked
-  id against *any* scalar of a record — including the record's own primary key — so a dirty
-  /accumulated log could false-match and fire the exemption on a SECURE control. The id check
-  now binds to an **owner/subject-style key** (generic vocabulary, camelCase-aware; bare
-  `id`/`pk` deliberately excluded). Strictly stricter; proven by an offline test that fails
-  against the old code. **Open mirror: D23b** — the *value* half still scans all scalars
-  (including the record's own `id`), so an attack-written value equal to a record's id can
-  satisfy the value check via the id rather than the content field.
+- **Gate hardened (D23 + D23b ✅ both fixed):** `_write_record_content_match` used to match
+  against *any* scalar of a record — including the record's own primary key — on **both** axes,
+  so a dirty/accumulated log could false-match and fire the exemption on a SECURE control.
+  Now: the **id** check binds to an **owner/subject-style key** (D23) and the **value** check
+  binds to **non-primary-key content fields** (D23b) — both by generic, camelCase-aware
+  vocabulary; bare `id`/`pk` excluded from both. Each is a strict subset of the old scalar set,
+  so the gate only got **stricter**; both are proven by offline tests that fail against the
+  pre-fix code. One narrow sibling accepted on purpose (see TECH_DEBT D23b).
 - **Shadow-only.** Still observe-only, default-off; the persisted verdict is the rule
   oracle's. Making the AI verdict authoritative is D19 (not started).
 
@@ -105,8 +105,8 @@ deployment, the nuclei keep-vs-cut decision — parked until a benchmark justifi
 1. **D21** — promote the spec source to a declared config field (currently the `getattr`
    seam), so B-1's real catalog can be wired for normal use, not just harnesses.
 2. **Broaden the proof** — beyond the single X-CROSS shape: nested-object, delete-type,
-   multi-step, noisier audit logs; and finish the gate hardening (D23 done; **D23b** — bind
-   the value match to non-primary-key content fields) so real logs can't spuriously match.
+   multi-step, noisier audit logs. (Gate hardening D23 + D23b is **done**; extend the
+   owner/subject vocabulary as real log samples appear.)
 3. **D19** — only after the above: promote the AI verdict from observe-only to
    authoritative in the real flow, with a gating policy.
 4. **Benchmark vs agent-style PoC tools** on a public target; **scope-lock hardening**

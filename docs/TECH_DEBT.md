@@ -331,20 +331,30 @@
   → no match → `inconclusive` (a false negative, but the **safe** direction). Extend the
   vocabulary as real log samples appear.
 
-### D23b — Value match still scans a record's own `id` (mirror of D23)
+### D23b — Value match scanned a record's own `id` (mirror of D23) — ✅ RESOLVED
 - **Where:** `deep_verifier._write_record_content_match` — the *value* half of the same gate.
-- **Problem:** D23 tightened the **id** check; the **value** check still scans **all** scalars,
-  including the record's own primary key. So an attack-written value that happens to equal a
-  record's `id` satisfies the value half via the id rather than via the content field.
-  Confirmed: record `{"id":1,"event":"rename","user_id":2,"new_value":"something_else"}` with
-  attacked id `2` and written value `"1"` → matches, although `new_value` is **not** what the
-  attack wrote.
-- **Impact:** lower than D23 (the subject must already be the attacked object, so a write to it
-  did occur), but it is the same class of bug on the value axis and it weakens the only
-  anti-false-positive gate.
-- **Direction:** bind the value check to **non-primary-key content fields** — exclude
-  primary-key-style keys by generic structure, same pattern as D23. Safety-gate change →
-  human-owned.
+- **Was:** D23 tightened the **id** check, but the **value** check still scanned **all** scalars,
+  including the record's own primary key. An attack-written value that happened to equal a
+  record's `id` satisfied the value half via the id rather than via the content field. Verified:
+  `{"id":1,"event":"rename","user_id":2,"new_value":"something_else"}` with attacked id `2` and
+  written value `"1"` matched — although `new_value` is **not** what the attack wrote.
+- **Now:** the value check binds to **content fields** — `_record_content_values` excludes fields
+  whose name is composed **solely** of primary-key/ordinal tokens (`_PRIMARY_KEY_KEYWORDS`:
+  id/pk/uuid/guid/rowid/identifier/seq/sequence/ordinal/index, via `_is_primary_key_field`).
+  A **qualified** name like `user_id` is *not* the record's own key and stays eligible as content,
+  so the exclusion cannot swallow a real written value. Content-value set ⊂ the old scalar set →
+  strictly **stricter**.
+- **Proof:** the mirror case returns `True` pre-D23b and `False` now
+  (`test_D23b_written_value_equal_to_records_own_id_does_not_match` + 4 more); the legitimate
+  cases stay green, including a written value that genuinely equals the attacked id when it
+  really landed in a content field.
+- **Remaining sibling (accepted, not fixed):** value candidates still include the *owner* field's
+  value, so if the attack's written value happens to equal the **attacked id itself**, the value
+  half can match via `user_id` rather than the content field. Narrow (requires written value ==
+  attacked id, and the subject is already the attacked object, so a write to it did occur).
+  Closing it would mean excluding owner fields from value candidates too — which would cause
+  **false negatives on mass-assignment writes** (where the attack legitimately writes an owner
+  field). Judged not worth that trade; revisit if real logs show it. Human-owned.
 
 ---
 
@@ -373,7 +383,7 @@
     `scripts/audit/shadow_b1step3_code_gather_measure.out.txt`), and **locked by an automated
     regression test** (`test_d18_b1_shadow_integration.py`, D22) + offline units
     (`test_d18_b1_write_record.py`).
-- **Follow-ups (separate items, not B-1 blockers):** D21 (declare the spec field), D23b (tighten
+- **Follow-ups (separate items, not B-1 blockers):** D21 (declare the spec field), D23/D23b (tighten
   the id match), broaden beyond the single X-CROSS shape, update `RESULTS.md` with the B-1 result,
   then D19 (make the verdict authoritative). See [`STATUS.md`](./STATUS.md).
 
@@ -398,9 +408,9 @@
 ### Active line (work on these now)
 1. **D21** — declare the spec source (`AI_DEEP_VERIFY_OPENAPI_SPEC`) as a real config field so
    B-1's catalog can be wired for normal use, not just harnesses.
-2. **Broaden the proof + D23b** — beyond the single X-CROSS shape (nested-object, delete-type,
-   multi-step, noisier audit logs), and finish hardening the gate (D23 done; **D23b** — bind the
-   value match to non-primary-key content fields). Update `RESULTS.md` with the B-1 result.
+2. **Broaden the proof** — beyond the single X-CROSS shape (nested-object, delete-type,
+   multi-step, noisier audit logs). Gate hardening (D23 + D23b) is **done**; extend the
+   owner/subject vocabulary as real log samples appear. Update `RESULTS.md` with the B-1 result.
 3. **D19** — only then: promote the AI verdict from observe-only to authoritative.
 4. **Benchmark vs agent-style PoC validation** — on a public vulnerable target, quantify
    this engine's false-positive / reproducibility rate. The "can it be sold" evidence.

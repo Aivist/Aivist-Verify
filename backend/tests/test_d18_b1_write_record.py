@@ -37,6 +37,7 @@ from backend.app.services.deep_verifier import (
     _write_record_content_match,
     _path_is_write_record,
     _is_owner_key,
+    _is_primary_key_field,
     _field_tokens,
     CROSS_RESOURCE_OVERRIDE_REASON,
     WRITE_RECORD_EXEMPTION_REASON,
@@ -386,3 +387,54 @@ def test_D23_field_tokens_splits_camel_and_separators():
     assert _field_tokens("userId") == {"user", "id"}
     assert _field_tokens("UserID") == {"user", "id"}
     assert _field_tokens("id") == {"id"}
+
+
+# -----------------------------------------------------------------------------
+# 5. D23b — the VALUE check binds to non-primary-key CONTENT fields (mirror of D23).
+#    A record's own `id` is never "content this attack wrote", so an attack-written
+#    value that merely equals a record's id must not satisfy the value half.
+# -----------------------------------------------------------------------------
+
+# THE D23b CASE: the record's SUBJECT is genuinely the attacked id (2) — so the D23
+# owner check passes — but the value we wrote ("1") appears ONLY as the record's own
+# primary key; new_value is something else entirely. Before the fix the value half
+# matched via that id -> exemption -> false 'verified'. It must NOT match.
+_VALUE_COLLIDES_WITH_OWN_ID = (
+    '{"events":[{"id":1,"event":"rename","user_id":2,"new_value":"something_else"}]}'
+)
+
+
+def test_D23b_written_value_equal_to_records_own_id_does_not_match():
+    assert _write_record_content_match(_VALUE_COLLIDES_WITH_OWN_ID, "2", ["1"]) is False
+
+
+def test_D23b_value_collision_stays_inconclusive_end_to_end():
+    content_match = _write_record_content_match(_VALUE_COLLIDES_WITH_OWN_ID, "2", ["1"])
+    assert content_match is False
+    final, reason = _apply_cross_resource_guard(
+        "verified", "/api/users/2/nickname", RECORD,
+        follow_up_performed=True, write_record_decisive=content_match,
+    )
+    assert final == "inconclusive"
+    assert reason == CROSS_RESOURCE_OVERRIDE_REASON
+
+
+def test_D23b_value_still_matches_via_a_real_content_field():
+    # The legitimate case must stay green: the written value IS in a content field.
+    body = '{"events":[{"id":1,"event":"rename","user_id":2,"new_value":"V"}]}'
+    assert _write_record_content_match(body, "2", ["V"]) is True
+
+
+def test_D23b_written_value_may_equal_the_attacked_id_when_really_written():
+    # Value == the attacked id is legitimate when it genuinely landed in a content
+    # field — excluding the record's own key must not swallow it.
+    body = '{"events":[{"id":9,"event":"rename","user_id":2,"new_value":"2"}]}'
+    assert _write_record_content_match(body, "2", ["2"]) is True
+
+
+def test_D23b_is_primary_key_field_only_bare_identity_keys():
+    for name in ("id", "pk", "uuid", "guid", "rowId", "seq", "sequence", "_id"):
+        assert _is_primary_key_field(name) is True, name
+    # Qualified names are NOT the record's own key — they stay eligible as content.
+    for name in ("user_id", "owner_id", "new_value", "event", "value", "display_name"):
+        assert _is_primary_key_field(name) is False, name

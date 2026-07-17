@@ -350,13 +350,6 @@ def _iter_records(obj: Any):
             yield from _iter_records(item)
 
 
-def _record_scalar_values(record: Dict[str, Any]) -> set:
-    return {
-        _scalar_str(v) for v in record.values()
-        if isinstance(v, (str, int, float, bool))
-    }
-
-
 # ------------------------------------------------------------------------------
 # D23 — the attacked-object-id check binds to an OWNER/SUBJECT-style key.
 #
@@ -422,6 +415,48 @@ def _record_owner_id_values(record: Dict[str, Any]) -> set:
     }
 
 
+# ------------------------------------------------------------------------------
+# D23b — the VALUE check binds to non-primary-key CONTENT fields (mirror of D23).
+#
+# D23 stopped the attacked id matching a record's own primary key. The same hole
+# existed on the value axis: scanning EVERY scalar meant an attack-written value that
+# merely equalled a record's own `id` satisfied the value half via that id rather than
+# via the content field the write actually landed in. A record's own primary key is
+# never "content this attack wrote", so it is excluded from the value candidates.
+#
+# Target-agnostic and structural: a field is the record's own key only when its name is
+# composed SOLELY of primary-key-ish tokens ("id", "pk", "uuid", "seq"…). A QUALIFIED
+# name like "user_id" is NOT the record's own key (it names a subject) and therefore
+# still counts as content — so this exclusion cannot swallow a real written value.
+# ------------------------------------------------------------------------------
+_PRIMARY_KEY_KEYWORDS = frozenset({
+    "id", "pk", "uuid", "guid",
+    "rowid", "row",
+    "identifier",
+    "seq", "sequence",
+    "ordinal", "index",
+})
+
+
+def _is_primary_key_field(name: Any) -> bool:
+    """True iff a field NAME is the record's OWN identity/ordinal key — i.e. its tokens
+    are composed solely of primary-key-ish words ('id', 'pk', 'uuid', 'rowId', 'seq'…).
+    A qualified name such as 'user_id' is NOT the record's own key (it names a subject),
+    so it stays eligible as content. Target-agnostic."""
+    tokens = _field_tokens(name)
+    return bool(tokens) and tokens <= _PRIMARY_KEY_KEYWORDS
+
+
+def _record_content_values(record: Dict[str, Any]) -> set:
+    """The scalar values of this record's CONTENT fields — every scalar EXCEPT the
+    record's own primary-key/ordinal field(s) (D23b). Strictly a subset of the record's
+    scalars, so the value check can only get stricter."""
+    return {
+        _scalar_str(v) for k, v in record.items()
+        if isinstance(v, (str, int, float, bool)) and not _is_primary_key_field(k)
+    }
+
+
 def _write_record_content_match(
     read_back_body: Optional[str], attacked_object_id: Optional[str], written_values: List[str]
 ) -> bool:
@@ -431,13 +466,14 @@ def _write_record_content_match(
 
     The attacked id must appear as the value of an OWNER/SUBJECT-style field of that
     record (D23) — matching it against the record's own primary key proves nothing about
-    whose object the record is about. The value check still scans the record's scalars.
+    whose object the record is about. The written value must appear in one of the record's
+    CONTENT fields (D23b) — the record's own primary key is never content this attack wrote.
 
     Safety: a baseline self-write row (different owner), a same-named field showing the
-    OLD value, or a row whose own primary key merely collides with the attacked id can
-    never satisfy this — so a secure cross-path control yields False -> no exemption ->
-    stays inconclusive. A record that names no subject at all also yields False (err
-    toward inconclusive). Non-JSON / unparsable bodies -> False (conservative).
+    OLD value, or a row whose own primary key merely collides with the attacked id (or with
+    the written value) can never satisfy this — so a secure cross-path control yields False
+    -> no exemption -> stays inconclusive. A record that names no subject at all also yields
+    False (err toward inconclusive). Non-JSON / unparsable bodies -> False (conservative).
     """
     if not read_back_body or attacked_object_id is None or not written_values:
         return False
@@ -453,7 +489,8 @@ def _write_record_content_match(
         # The attacked id must be this record's SUBJECT, not just any scalar it carries.
         if aid not in _record_owner_id_values(record):
             continue
-        if _record_scalar_values(record) & wanted_values:
+        # The written value must be in the record's CONTENT, not its own primary key.
+        if _record_content_values(record) & wanted_values:
             return True
     return False
 

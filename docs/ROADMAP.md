@@ -85,7 +85,7 @@ breadth (more vuln shapes) and promotion (D19) — not the core "can it confirm?
    write-record gathering + a structural *"write-record read is decisive"* guard exemption
    (answer key §8). **Live-measured** (`X-CROSS`→`verified` 5/5, `X-SAFE`→`inconclusive`/safe
    5/5, §5 + reverse-guards intact) and **locked by a regression test** (D22 closed). Remaining
-   is breadth only: broader vuln shapes + finish the gate hardening (TECH_DEBT D23 done, D23b). *(TECH_DEBT.md
+   is breadth only: broader vuln shapes (gate hardening D23/D23b done). *(TECH_DEBT.md
    B-1; state in STATUS.md.)*
 2. **Act.** **D19:** promote the AI verdict from observe-only/log to **authoritative** — take over
    the `suspicious` records in the real flow; decide the gating defaults. First time the product
