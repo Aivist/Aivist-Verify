@@ -55,6 +55,14 @@ AUDIT_LOG_ENTRY = "GET /api/audit-log"
 _OPENAPI_SOURCE = {"kind": "openapi", "spec": app.openapi()}
 
 
+def _offers_audit_log(catalog) -> bool:
+    """True iff the catalog offers GET /api/audit-log. Entries now LEAD with
+    'METHOD /path' and may carry a trailing '  [tags: ...; operationId: ...]'
+    annotation (B-1 Step 1), so match the leading 'METHOD /path' rather than the
+    whole string."""
+    return any(e == AUDIT_LOG_ENTRY or e.startswith(AUDIT_LOG_ENTRY + "  [") for e in catalog)
+
+
 def _opaque_ok_response() -> dict:
     """The realistic response both endpoints return for self AND cross-user writes."""
     return {
@@ -96,10 +104,10 @@ def test_K2_rule_XSAFE_pair_is_suspicious():
 @pytest.mark.parametrize("finding", [XCROSS_FINDING, XSAFE_FINDING], ids=["XCROSS", "XSAFE"])
 def test_K2_catalog_reach_no_source_excludes_audit_log(finding):
     catalog = _shadow_endpoint_catalog(finding)
-    assert AUDIT_LOG_ENTRY not in catalog
+    assert not _offers_audit_log(catalog)
 
 
 @pytest.mark.parametrize("finding", [XCROSS_FINDING, XSAFE_FINDING], ids=["XCROSS", "XSAFE"])
 def test_K2_catalog_reach_with_openapi_source_includes_audit_log(finding):
     catalog = _shadow_endpoint_catalog(finding, _OPENAPI_SOURCE)
-    assert AUDIT_LOG_ENTRY in catalog
+    assert _offers_audit_log(catalog)

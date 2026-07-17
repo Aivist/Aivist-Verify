@@ -51,6 +51,26 @@ from backend.app.services.fuzzer import (
     _host_of,
     ScopeViolationError,
 )
+# B-1: generic, target-agnostic catalog queries used to deterministically gather a
+# write-record read-back (HALF 1) — no concrete target path/field/tag is referenced.
+from backend.app.services.endpoint_catalog import (
+    has_same_path_readback,
+    select_write_record_endpoint,
+    _tokens as _catalog_tokens,
+    _WRITE_RECORD_KEYWORDS,
+)
+
+_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _is_write_method(method: Optional[str]) -> bool:
+    return str(method or "").upper() in _WRITE_METHODS
+
+
+def _path_is_write_record(path: Optional[str]) -> bool:
+    """Generic check that a CONCRETE follow-up path reads like a record/log/history
+    endpoint (same vocabulary as the catalog classifier). Target-agnostic."""
+    return bool(_catalog_tokens(path or "") & _WRITE_RECORD_KEYWORDS)
 
 logger = logging.getLogger("app.services.deep_verifier")
 
@@ -107,6 +127,18 @@ Spend it well: choose the ONE follow-up that reads back the SAME resource/path y
 can compare it against the value the attack sent. A DIFFERENT endpoint that merely exposes a
 field with the same NAME as what you wrote is NOT the same state and will NOT let you conclude
 "verified" or "failed".
+
+HOW TO CHOOSE when your attack was a WRITE (a state-changing request) and NO available endpoint
+reads back the SAME path you attacked: do not settle for an endpoint on a different object just
+because its response carries a field with the same name you wrote — a same-named field on a
+different resource is NOT decisive and will only force an "inconclusive". Instead, scan the
+available endpoints for one that is an explicit RECORD of write activity — a log, history,
+journal, events feed, or audit-style record/trail that captures actions performed — and prefer
+reading THAT. A record that lists the specific write you performed (the action on the exact
+object you targeted) is decisive: its presence shows the unauthorized write landed, its absence
+(when such writes would be recorded) shows it did not. Weigh the evidence by what it proves about
+the state you attacked, not by which response happens to echo your field name. If neither a
+same-path read-back nor such a record exists, gather what you can and answer "inconclusive".
 
 ## Required output
 Respond with ONLY a JSON object of EXACTLY this shape (no markdown, no extra text):
@@ -196,6 +228,11 @@ class DeepVerificationResult:
 # of this (or any) target's endpoints, fields, or objects.
 # ==============================================================================
 CROSS_RESOURCE_OVERRIDE_REASON = "cross_resource_readback_not_decisive"
+# B-1: a cross-path read-back is EXEMPTED from the cross-resource downgrade ONLY when the
+# code has structurally verified it is an explicit record of THIS attack's write (same
+# attacked object id + same written value, found together in a single record). The model's
+# say-so is never sufficient — see _write_record_content_match.
+WRITE_RECORD_EXEMPTION_REASON = "write_record_readback_decisive"
 
 
 def _normalize_path(path: Optional[str]) -> str:
@@ -215,19 +252,32 @@ def _apply_cross_resource_guard(
     attack_path: Optional[str],
     follow_up_path: Optional[str],
     follow_up_performed: bool,
+    write_record_decisive: bool = False,
 ):
-    """Structural backstop. Returns (final_verdict, override_reason).
+    """Structural backstop. Returns (final_verdict, decision_reason).
 
     Downgrades a decisive verdict to "inconclusive" IFF it rests on a follow-up
     read-back of a DIFFERENT concrete resource/path than the one attacked:
         verdict in {"verified","failed"} AND a follow-up read-back was performed AND
         normalize(follow_up_path) != normalize(attack_path)
-    Everything else is returned untouched (override_reason None):
+    Everything else is returned untouched (decision_reason None):
         - no follow-up performed (e.g. a read-type/GET BOLA confirmed by the attack
           response itself, with no follow-up) -> unchanged;
         - same-resource read-back (normalized paths equal) -> unchanged, decisive;
         - verdict "suspicious" / "inconclusive" / None -> unchanged.
-    Method-agnostic and target-agnostic: compares two path strings only.
+
+    B-1 WRITE-RECORD EXEMPTION (the (b) standard): a cross-path "verified" is NOT
+    downgraded when `write_record_decisive` is True — i.e. the caller has STRUCTURALLY
+    verified (in code, against the attack's own runtime params) that the cross-path
+    read-back is an explicit record containing the SAME attacked object id AND the SAME
+    value this attack wrote. That presence is decisive proof the unauthorized write
+    landed. The exemption applies ONLY to "verified" (a record's PRESENCE proves a write
+    happened; it cannot prove the negative), and ONLY when the structural content match
+    held — a write-record FLAG without the verified content match does NOT exempt (so a
+    secure cross-path control with no matching record stays "inconclusive").
+
+    Method-agnostic and target-agnostic: compares path strings; the content match is
+    computed by the caller and passed in as a boolean.
     """
     if verdict not in ("verified", "failed"):
         return verdict, None
@@ -235,7 +285,103 @@ def _apply_cross_resource_guard(
         return verdict, None
     if _normalize_path(follow_up_path) == _normalize_path(attack_path):
         return verdict, None
+    # Cross-path read-back from here on.
+    if verdict == "verified" and write_record_decisive:
+        return verdict, WRITE_RECORD_EXEMPTION_REASON
     return "inconclusive", CROSS_RESOURCE_OVERRIDE_REASON
+
+
+# ==============================================================================
+# B-1 HALF 2 — structural content match (target-agnostic). Proves a cross-path
+# read-back is an explicit record of THIS attack's write by checking, IN CODE and
+# against the attack's OWN runtime parameters, that a SINGLE record object in the
+# read-back contains BOTH the attacked object id AND a value this attack wrote.
+# Equality on scalar values (NOT substring) — so a baseline self-write row, or a
+# same-named field showing the OLD value, can never spuriously satisfy it.
+# ==============================================================================
+def _scalar_str(v: Any) -> str:
+    return str(v).strip()
+
+
+def _attacked_object_id(
+    baseline_path: Optional[str], attack_path: Optional[str], payload: Optional[Dict[str, Any]]
+) -> Optional[str]:
+    """The object id the attack targeted, from the attack's own runtime params: the path
+    segment that the mutation changed (baseline vs attack diff), else the BOLA
+    payload_string. Target-agnostic (no field/path knowledge)."""
+    b = (baseline_path or "").split("?", 1)[0].split("/")
+    a = (attack_path or "").split("?", 1)[0].split("/")
+    if len(a) == len(b):
+        diffs = [a[i] for i in range(len(a)) if a[i] != b[i]]
+        if len(diffs) == 1 and diffs[0]:
+            return _scalar_str(diffs[0])
+    ps = (payload or {}).get("payload_string")
+    return _scalar_str(ps) if ps not in (None, "") else None
+
+
+def _written_values(attack_req: Dict[str, Any]) -> List[str]:
+    """The scalar value(s) THIS attack wrote, taken from its OWN request body (runtime
+    params). Target-agnostic: whatever the engine sent, not any known field name."""
+    body = attack_req.get("body")
+    out: List[str] = []
+    parsed = body
+    if isinstance(body, str) and body.strip():
+        try:
+            parsed = json.loads(body)
+        except Exception:
+            parsed = None
+            out.append(body.strip())
+    if isinstance(parsed, dict):
+        for v in parsed.values():
+            if isinstance(v, (str, int, float, bool)):
+                out.append(_scalar_str(v))
+    return [v for v in out if v != ""]
+
+
+def _iter_records(obj: Any):
+    """Yield every dict object found anywhere in a parsed JSON structure (recursively)."""
+    if isinstance(obj, dict):
+        yield obj
+        for v in obj.values():
+            yield from _iter_records(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _iter_records(item)
+
+
+def _record_scalar_values(record: Dict[str, Any]) -> set:
+    return {
+        _scalar_str(v) for v in record.values()
+        if isinstance(v, (str, int, float, bool))
+    }
+
+
+def _write_record_content_match(
+    read_back_body: Optional[str], attacked_object_id: Optional[str], written_values: List[str]
+) -> bool:
+    """True iff some SINGLE record object in the (JSON) read-back contains BOTH the
+    attacked object id AND a value this attack wrote — equality on scalar values, not
+    substring. Decisive proof the cross-user write LANDED on the attacked object.
+
+    Safety: a baseline self-write row (different id) or a same-named field showing the
+    OLD value cannot satisfy this, so a secure cross-path control yields False -> no
+    exemption -> stays inconclusive. Non-JSON / unparsable bodies -> False (conservative).
+    """
+    if not read_back_body or attacked_object_id is None or not written_values:
+        return False
+    aid = _scalar_str(attacked_object_id)
+    wanted_values = {str(v).strip() for v in written_values if str(v).strip()}
+    if not aid or not wanted_values:
+        return False
+    try:
+        parsed = json.loads(read_back_body)
+    except Exception:
+        return False
+    for record in _iter_records(parsed):
+        vals = _record_scalar_values(record)
+        if aid in vals and (vals & wanted_values):
+            return True
+    return False
 
 
 def _redact_headers(headers: Dict[str, str]) -> Dict[str, str]:
@@ -429,6 +575,34 @@ async def execute_deep_verification(
             "response": _summarize_response(attack_result),
         }
 
+        # ---------------- B-1 HALF 1: deterministic write-record gathering ----------
+        # When the attack was a state-changing WRITE and the attacked resource has NO
+        # same-path read-back in the catalog, the CODE (not the model) will gather an
+        # explicit record/log-style read-back. The write-record endpoint is identified
+        # GENERICALLY from the catalog (record/log/history/events vocabulary) — never a
+        # hardcoded path/field/tag. If none can be found generically, det_record_path is
+        # None and we fall back to the model-driven follow-up (no fabrication).
+        attacked_object_id = _attacked_object_id(
+            baseline_req.get("path"), attack_req.get("path"), payload
+        )
+        written_values = _written_values(attack_req)
+        det_record_path: Optional[str] = None
+        if (
+            payload
+            and _is_write_method(attack_req.get("method"))
+            and not has_same_path_readback(available_endpoints or [], attack_req.get("path", ""))
+        ):
+            det_record_path = select_write_record_endpoint(
+                available_endpoints or [], attacked_object_id=attacked_object_id
+            )
+            if det_record_path:
+                logger.info(
+                    "[DEEP-VERIFY] HALF 1: write attack on %r has no same-path read-back; "
+                    "code will deterministically gather write-record read-back %r "
+                    "(generic record/log endpoint; model choice not relied upon).",
+                    attack_req.get("path"), det_record_path,
+                )
+
         # Build the evidence block (single exchange for read-only cases).
         if payload:
             evidence_block = (
@@ -490,9 +664,29 @@ async def execute_deep_verification(
                 baseline_trail, attack_trail, turns_raw,
             )
 
-        # ---------------- If verdict now, we're done ----------------
+        # ---------------- B-1 HALF 1: override the follow-up deterministically ------
+        # If the code identified a write-record read-back to gather, it takes over the
+        # follow-up regardless of what the model asked (or whether it asked at all) — we
+        # do NOT rely on the model to choose the right endpoint. The model's final verdict
+        # is still produced in turn 2 from this evidence; the guard (HALF 2) adjudicates.
         decision = turn1_obj.get("decision")
         next_request = turn1_obj.get("next_request") or {}
+        followup_is_code_gathered = False
+        if det_record_path:
+            decision = "request_more"
+            next_request = {
+                "method": "GET",
+                "path": det_record_path,
+                "body": None,
+                "reason": (
+                    "code-gathered write-record read-back (deterministic; the attacked "
+                    "resource has no same-path read-back, so the engine fetched an explicit "
+                    "record of write activity rather than relying on the model's choice)"
+                ),
+            }
+            followup_is_code_gathered = True
+
+        # ---------------- If verdict now, we're done ----------------
         if decision != "request_more" or not next_request.get("path"):
             # No follow-up read-back was performed -> the structural guard never
             # triggers here (it must NOT break a read-type/GET BOLA confirmed by the
@@ -568,6 +762,16 @@ async def execute_deep_verification(
             body_line=body_line,
             raw_response=follow_up_feedback or "(no response captured)",
         )
+        if followup_is_code_gathered:
+            # Be honest: this follow-up was selected and executed by the engine, not the
+            # model. The engine picked an explicit record-of-writes endpoint because the
+            # attacked resource has no same-path read-back.
+            turn2_msg = (
+                "NOTE: Because the resource you attacked has no same-path read-back, the "
+                "system itself selected and executed an explicit record-of-writes endpoint "
+                "as the follow-up (this was NOT your choice). Treat the verbatim result "
+                "below as that record of write activity.\n\n"
+            ) + turn2_msg
         contents.append(types.Content(role="model", parts=[types.Part(text=turn1_text)]))
         contents.append(types.Content(role="user", parts=[types.Part(text=turn2_msg)]))
 
@@ -601,19 +805,43 @@ async def execute_deep_verification(
                 degraded_reason=f"Gemini turn-2 error: {type(e).__name__}: {e}",
             )
 
-        # ---------------- B-2.2 structural guard (cross-resource read-back) -------
+        # ---------------- B-2.2 structural guard + B-1 write-record exemption -------
         # A follow-up read-back was performed iff we actually captured a response.
         _raw_verdict = turn2_obj.get("verdict")
+        # HALF 2: structurally verify (in code, against the attack's own runtime params)
+        # that the cross-path read-back is an explicit record of THIS write — same
+        # attacked object id AND same written value, together in one record. The model's
+        # say-so is NOT sufficient; only this content match exempts the downgrade.
+        _content_match = False
+        if (
+            follow_up_response is not None
+            and _path_is_write_record(fu_request_record.get("path"))
+        ):
+            _content_match = _write_record_content_match(
+                (follow_up_response or {}).get("body"),
+                attacked_object_id,
+                written_values,
+            )
         _final_verdict, _override = _apply_cross_resource_guard(
             _raw_verdict,
             attack_req.get("path", ""),
             fu_request_record.get("path"),
             follow_up_performed=(follow_up_response is not None),
+            write_record_decisive=_content_match,
         )
-        if _override:
+        if _override == WRITE_RECORD_EXEMPTION_REASON:
+            logger.info(
+                "[DEEP-VERIFY] Write-record exemption: cross-path read-back %r is a "
+                "structurally-verified record of the attack (attacked_id=%r, written_value "
+                "present) -> verdict %r kept decisive (NOT downgraded).",
+                _normalize_path(fu_request_record.get("path")),
+                attacked_object_id, _final_verdict,
+            )
+        elif _override:
             logger.info(
                 "[DEEP-VERIFY] Structural guard: model verdict=%r downgraded to %r "
-                "(%s) — attack_path=%r follow_up_path=%r (different concrete resource).",
+                "(%s) — attack_path=%r follow_up_path=%r (different concrete resource; "
+                "no verified write-record content match).",
                 _raw_verdict, _final_verdict, _override,
                 _normalize_path(attack_req.get("path", "")),
                 _normalize_path(fu_request_record.get("path")),

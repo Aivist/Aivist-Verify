@@ -1,5 +1,6 @@
 # ==============================================================================
-# Human-owned test for backend/app/services/endpoint_catalog.py  (D18 — Step 2).
+# Human-owned test for backend/app/services/endpoint_catalog.py  (D18 — Step 2;
+# refreshed for B-1 Step 1: the catalog now carries genuine OpenAPI semantics).
 #
 # THE EXPECTED VALUES ARE HUMAN-OWNED GROUND TRUTH. The maintainer fixed them and
 # they must NOT be authored, added, relaxed, or "corrected" here to make a test
@@ -8,7 +9,15 @@
 # input through the function under test and assert the GIVEN values. If an
 # assertion fails, that is a SIGNAL to report — not something to fix here.
 #
-# KEY A — catalog_from_openapi(app.openapi()) correctness (exact 18-entry surface).
+# FORMAT CHANGE (B-1 Step 1): catalog entries used to be the bare string
+# "METHOD /path". They now LEAD with "METHOD /path" and may carry a trailing
+# "  [tags: ...; operationId: ...]" annotation of the operation's GENUINE,
+# pre-existing OpenAPI metadata. The HUMAN-OWNED GROUND TRUTH is unchanged: it is
+# the SET of "METHOD /path" prefixes (extracted here via `_prefix`). EXPECTED_CATALOG
+# below is byte-identical to before — only the extraction adapts to the new format.
+#
+# KEY A — catalog_from_openapi(app.openapi()) correctness (exact 18-endpoint surface
+#         by prefix; genuine metadata faithfully surfaced, nothing invented).
 # KEY B — cross-resource reach (teeth): the placeholder _shadow_endpoint_catalog
 #         offers only the finding's own path; the real catalog reaches other paths.
 # ==============================================================================
@@ -56,9 +65,18 @@ FINDING_PATH = "/api/users/{user_id}/profile"
 _ENTRY_RE = re.compile(r"^[A-Z]+ /")
 
 
+def _prefix(entry: str) -> str:
+    """Extract the leading 'METHOD /path' from a (possibly annotated) catalog entry.
+
+    Entries now LEAD with 'METHOD /path' and may carry a trailing '  [..]' annotation;
+    the human-owned ground truth is this prefix only.
+    """
+    return entry.split("  [", 1)[0]
+
+
 def _path_of(entry: str) -> str:
-    """Extract the path portion of a 'METHOD /path' catalog entry."""
-    _, _, path = entry.partition(" ")
+    """Extract the path portion of a (possibly annotated) catalog entry."""
+    _, _, path = _prefix(entry).partition(" ")
     return path
 
 
@@ -68,21 +86,25 @@ def _path_of(entry: str) -> str:
 
 def test_A1_exact_set_equality_and_count():
     catalog = catalog_from_openapi(app.openapi())
-    assert set(catalog) == EXPECTED_CATALOG
+    # Human-owned ground truth is the SET of "METHOD /path" prefixes.
+    assert {_prefix(e) for e in catalog} == EXPECTED_CATALOG
     assert len(catalog) == 18
 
 
 def test_A2_well_formed_no_dupes_no_metadata():
     catalog = catalog_from_openapi(app.openapi())
-    # Every entry is "METHOD /path" with an uppercase method.
+    # Every entry LEADS with "METHOD /path" with an uppercase method.
     for entry in catalog:
         assert _ENTRY_RE.match(entry), f"malformed entry: {entry!r}"
-    # No duplicates.
+    # No duplicates (full entries, and the "METHOD /path" prefixes).
     assert len(catalog) == len(set(catalog))
-    # No OpenAPI metadata keys leaked in as operations.
+    assert len(catalog) == len({_prefix(e) for e in catalog})
+    # No OpenAPI metadata key was ever emitted AS an endpoint (i.e. as the method
+    # token / leading "METHOD /path"). Surfacing metadata in the trailing annotation
+    # is expected; a metadata key masquerading as an operation is not.
     for leak in ("parameters", "summary", "description", "$ref"):
         for entry in catalog:
-            assert leak not in entry.split(" ", 1)[0].lower(), f"metadata leaked: {entry!r}"
+            assert leak not in _prefix(entry).lower(), f"metadata leaked as endpoint: {entry!r}"
 
 
 def test_A3_degenerate_specs_return_empty_and_do_not_raise():
@@ -92,6 +114,42 @@ def test_A3_degenerate_specs_return_empty_and_do_not_raise():
     malformed = {"paths": {"/x": "not-a-path-item", "/y": {"get": "not-an-operation",
                                                             "summary": "meta-only"}}}
     assert catalog_from_openapi(malformed) == []
+
+
+def test_A4_surfaces_genuine_openapi_metadata_verbatim():
+    """The catalog no longer DISCARDS the operation's semantics. For every operation in
+    the real spec, the entry's annotation must reflect EXACTLY the tags + operationId the
+    spec declares (computed from the spec here — nothing invented), and must NOT contain
+    any summary/description text (deliberately not surfaced in Step 1)."""
+    spec = app.openapi()
+    catalog = catalog_from_openapi(spec)
+    by_prefix = {_prefix(e): e for e in catalog}
+
+    http_methods = {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
+    surfaced_any_metadata = False
+    for path, item in spec["paths"].items():
+        for method, op in item.items():
+            if method.lower() not in http_methods or not isinstance(op, dict):
+                continue
+            entry = by_prefix[f"{method.upper()} {path}"]
+            tags = op.get("tags") or []
+            if tags:
+                surfaced_any_metadata = True
+                assert ("tags: " + ", ".join(str(t) for t in tags)) in entry, entry
+            op_id = op.get("operationId")
+            if op_id:
+                surfaced_any_metadata = True
+                assert ("operationId: " + op_id) in entry, entry
+            # Step-1 scope: the auto-generated `summary` (e.g. "Get Audit Log") exists in
+            # the spec but is intentionally NOT surfaced; assert it never leaks in.
+            summary = op.get("summary")
+            if summary:
+                assert summary not in entry, f"summary leaked into entry: {entry!r}"
+
+    # Teeth: prove metadata is actually being carried (guards against a silent regression
+    # back to the bare "METHOD /path" format).
+    assert surfaced_any_metadata
+    assert "[tags: audit; operationId: get_audit_log_api_audit_log_get]" in by_prefix["GET /api/audit-log"]
 
 
 # -----------------------------------------------------------------------------
@@ -108,9 +166,9 @@ def test_B2_real_catalog_reaches_other_paths_incl_invoices():
     catalog = catalog_from_openapi(app.openapi())
     cross_path = [e for e in catalog if _path_of(e) != FINDING_PATH]
     assert len(cross_path) >= 1
-    assert "GET /api/invoices/{invoice_id}" in catalog
+    assert any(_prefix(e) == "GET /api/invoices/{invoice_id}" for e in catalog)
 
 
 def test_B3_real_catalog_is_superset_of_placeholder_no_regression():
     catalog = catalog_from_openapi(app.openapi())
-    assert "GET /api/users/{user_id}/profile" in catalog
+    assert any(_prefix(e) == "GET /api/users/{user_id}/profile" for e in catalog)
