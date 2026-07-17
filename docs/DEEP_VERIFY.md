@@ -51,8 +51,8 @@ Only stable, side-effect-free helpers are imported from `fuzzer.py`:
 - `mutate_request`, `_send_request`, `_reconstruct_url`, `_host_of`
 - `ScopeViolationError` for host lock enforcement
 
-No changes to the fuzzer's verdict path; the existing **112** backend tests are
-unaffected.
+No changes to the fuzzer's verdict path; the rule-oracle tests stay green (backend
+backend suite: **145 passed** — see [`STATUS.md`](./STATUS.md)).
 
 ---
 
@@ -115,6 +115,52 @@ It is applied at **both** return sites in `execute_deep_verification`. The resul
 records the outcome transparently: `ai_verdict` is the **final** (post-guard) verdict,
 `ai_verdict_raw` preserves the model's original pre-guard verdict, and `guard_override`
 holds the override reason (or `None` when the guard did not fire).
+
+---
+
+## B-1 — confident cross-path verdict (✅ DONE, committed `37769b3`)
+
+> ✅ **Status:** the machinery below is committed (`37769b3`), **live-measured** (shadow, N=5:
+> X-CROSS→`verified` 5/5, X-SAFE→`inconclusive`/safe 5/5, reverse-guards intact —
+> `scripts/audit/shadow_b1step3_code_gather_measure.out.txt`), and **locked by an automated
+> regression test** — `test_d18_b1_shadow_integration.py` runs the real
+> `execute_deep_verification` with a mocked Gemini and pins X-CROSS→`verified` /
+> X-SAFE→never-`verified` (closes D22) — plus offline units (`test_d18_b1_write_record.py`).
+> **Caveats:** proven on **one vuln shape only**; the final verdict still depends on the model
+> reading the log correctly (a model-specific pillar — re-test on any model swap); and the
+> content-match has a latent id-collision edge (TECH_DEBT **D23**). See [`STATUS.md`](./STATUS.md)
+> and [`TECH_DEBT.md`](./TECH_DEBT.md) B-1.
+
+The integrity floor (B-2.2) refuses a false verdict on a cross-path write but stops
+at `inconclusive` — it cannot yet *confirm*. B-1 aims to let the verifier confirm a
+cross-path write whose only evidence is an explicit **write record** (audit log /
+history / events feed), without weakening the floor. Three pieces, all
+target-agnostic (no concrete path/field/tag is hardcoded):
+
+1. **Catalog semantics** (`endpoint_catalog._format_entry`) — each entry now carries
+   the operation's genuine `tags` + `operationId` (when the spec declares them), so a
+   record-style endpoint is recognizable as such. Nothing is invented.
+2. **Deterministic write-record gathering — HALF 1** (`deep_verifier`,
+   `select_write_record_endpoint` / `has_same_path_readback`): when the attack is a
+   write (`POST/PUT/PATCH/DELETE`) and the attacked resource has **no same-path
+   read-back** in the catalog, the *code* — not the model — picks a record/log-style
+   endpoint from the catalog (generic `_WRITE_RECORD_KEYWORDS` vocabulary) and forces
+   it as the single follow-up. If none exists, it does **not** fabricate one → the
+   flow stays `inconclusive`.
+3. **Write-record exemption — HALF 2** (`_write_record_content_match` +
+   `_apply_cross_resource_guard(..., write_record_decisive=True)`): a cross-path
+   `verified` is normally downgraded by B-2.2. It is **exempted only when** the code
+   structurally verifies — against the attack's own runtime params — that a **single
+   record** in the read-back contains **both** the attacked object id **and** a value
+   this attack wrote (scalar equality, not substring). That presence is decisive proof
+   the unauthorized write landed. The exemption applies **only** to `verified` (a
+   record's presence proves a write happened; its absence cannot prove the negative),
+   so a secure cross-path control (X-SAFE, no matching record) still stays
+   `inconclusive`. Override reason: `WRITE_RECORD_EXEMPTION_REASON =
+   "write_record_readback_decisive"`.
+
+The model's say-so is never sufficient for the exemption — only the in-code content
+match is. This is what keeps the X-SAFE trap from re-opening the integrity hole.
 
 ---
 
@@ -182,10 +228,11 @@ unchanged. Two seams feed it, both currently minimal:
   placeholder (the finding's own path + a same-resource GET read-back) when a spec
   source is provided — read from `settings.AI_DEEP_VERIFY_OPENAPI_SPEC` via `getattr`
   (a runtime-only seam, **not** a declared `config.py` field); with no source it falls
-  back byte-identically to the placeholder. The catalog entries are bare `METHOD /path`
-  strings (no summary/description/operationId), so the model still gets no endpoint
-  *semantics* — which is exactly the next lever (B-1). See
-  [`TECH_DEBT.md`](./TECH_DEBT.md) D18.
+  back byte-identically to the placeholder. Each catalog entry **leads with
+  `METHOD /path`** and, when the spec declares them, now **carries the operation's
+  genuine `tags` and `operationId`** (nothing invented — see the B-1 section below),
+  so the model can tell what an endpoint *is* (e.g. that an audit/log endpoint is a
+  record of writes). See [`TECH_DEBT.md`](./TECH_DEBT.md) D18 / D21.
 
 ---
 
@@ -211,8 +258,8 @@ python -m uvicorn vulnerable_target.main:app --port 8001
 python backend/scripts/deep_verify_live_check.py
 ```
 
-Per `deep_verify_live_check.py` header: not under `backend/tests/` (does not
-change the 112-test count).
+Per `deep_verify_live_check.py` header: not under `backend/tests/` (it is not part
+of the pytest count).
 
 ---
 

@@ -8,10 +8,11 @@
 > current code.
 >
 > **What changed since this audit:**
-> - **Suite size:** the backend suite is now **112 tests** (was ~73 here), confirmed via
->   `pytest --collect-only`. Four new files landed: `test_verdict_oracle.py` (9),
->   `test_d18_b22_guard.py` (18), `test_d18_phase2_crosspath.py` (6),
->   `test_endpoint_catalog.py` (6).
+> - **Suite size:** the backend suite grew from ~73 (here) to **145**. Files that landed
+>   since this audit: `test_verdict_oracle.py` (9), `test_d18_b22_guard.py` (18),
+>   `test_d18_phase2_crosspath.py`, `test_endpoint_catalog.py`, `test_d18_b1_write_record.py`,
+>   and `test_d18_b1_shadow_integration.py` (the B-1 shadow-path regression test, D22). See
+>   [`../STATUS.md`](../STATUS.md).
 > - **Bucket-(A) verdict-correctness coverage NOW EXISTS** — this audit's central finding is
 >   **superseded**:
 >   - `test_verdict_oracle.py` (9) **imports and asserts** `fuzzer.py::_differential_verdict`:
@@ -35,10 +36,11 @@
 > - **Rule 1** (server-error escalation) and **Rules 3/4/5** (mass-assignment, generic
 >   divergence, status-change) — no asserting test (the new oracle tests exercise **Rule 2 +
 >   the Veto post-rule** only).
-> - The **Phase-7 shadow integration path** — still **no automated test**: no test references
->   `_run_shadow_deep_verification`, sets `AI_DEEP_VERIFY_SHADOW`, or runs
->   `execute_parallel_fuzzing` end-to-end. The X-CROSS/X-SAFE shadow runs are throwaway
->   drivers (`scripts/audit/`), not part of `backend/tests/`.
+> - The **deep verifier integration** — now has an automated test (**D22 closed**,
+>   `test_d18_b1_shadow_integration.py`): it runs the real `execute_deep_verification` end-to-end
+>   with a mocked Gemini and pins X-CROSS→`verified` / X-SAFE→never-`verified`. Still untested:
+>   the `_run_shadow_deep_verification` **wrapper** and `execute_parallel_fuzzing` Phase-7 entry
+>   (the test drives `execute_deep_verification` directly).
 >
 > _(Historical 2026-06-06 snapshot below — preserved unchanged.)_
 

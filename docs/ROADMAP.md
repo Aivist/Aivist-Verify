@@ -5,9 +5,9 @@
 > update this file. Future nodes (human or AI): read this before proposing direction.
 >
 > **Reading order for the doc set:** this file (why / where) → [`PROJECT_OVERVIEW.md`](./PROJECT_OVERVIEW.md)
-> (what exists now + run/verify) → [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) (how it's built)
-> → component docs ([`docs/VERIFY_ENGINE.md`](./docs/VERIFY_ENGINE.md), [`docs/DEEP_VERIFY.md`](./docs/DEEP_VERIFY.md), …)
-> → [`docs/TECH_DEBT.md`](./docs/TECH_DEBT.md) (known gaps & priorities).
+> (what exists now + run/verify) → [`ARCHITECTURE.md`](./ARCHITECTURE.md) (how it's built)
+> → component docs ([`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md), [`DEEP_VERIFY.md`](./DEEP_VERIFY.md), …)
+> → [`TECH_DEBT.md`](./TECH_DEBT.md) (known gaps & priorities).
 
 ## 1. What this is (the thesis)
 
@@ -62,22 +62,31 @@ verdict, stable `inconclusive` — achieved by a prompt evidence-standard + a de
 structural cross-resource guard (B-2.2). The verifier's **raw judgment still false-negatives**
 the hard cross-path case; the **guard, not model compliance, holds the line**.
 
-**Not yet:** it does not yet *confirm* cross-path bugs (only `inconclusive`); it does not *act*
-(shadow-only); it has **no automated test** for the Phase-7 shadow path.
+**Now confirmed (B-1, committed `37769b3`):** it *does* confirm the hard cross-path case —
+catalog semantics + deterministic code-side write-record gathering + a structural guard
+exemption. **Live-measured** (shadow, N=5): X-CROSS→`verified` 5/5, X-SAFE→`inconclusive`/safe
+5/5, no false verdict, reverse-guards intact — and **locked by an automated regression test**
+(`test_d18_b1_shadow_integration.py`, D22 closed).
 
-**Bottom line:** the right thing is being built, but the moat is **not yet proven on the hard
-case**. B-1 is the proof point.
+**Not yet:** it does not yet *act* (shadow-only — the persisted verdict is still the rule
+oracle's; making the AI verdict authoritative is D19); and it is proven on **one vuln shape**.
+
+**Bottom line:** the moat's hard-case proof point (B-1) **is met and committed**. What's left is
+breadth (more vuln shapes) and promotion (D19) — not the core "can it confirm?" question.
 
 > Detailed current snapshot (maturity, API summary, run/verify checklist) lives in
-> [`PROJECT_OVERVIEW.md`](./PROJECT_OVERVIEW.md); known gaps in [`docs/TECH_DEBT.md`](./docs/TECH_DEBT.md).
+> [`PROJECT_OVERVIEW.md`](./PROJECT_OVERVIEW.md); known gaps in [`TECH_DEBT.md`](./TECH_DEBT.md);
+> the live current-state snapshot in [`STATUS.md`](./STATUS.md).
 
 ## 4. The main line (3 nodes — B-1, D19, scope-lock; not separate tracks)
 
-1. **Judge correctly.** §5 (done): integrity floor — never a false verdict. **B-1 (next):** make it
-   actually *confirm* cross-path bugs — carry OpenAPI semantics into the catalog + wire a real spec
-   source into Phase 7 + extend the B-2.2 guard with a structural *"write-record read is decisive"*
-   exemption (answer key §8). Goal: promote `X-CROSS`/`X-SAFE` from `inconclusive` →
-   `verified`/`failed` **without regressing §5 or the reverse-guards**. *(Track in TECH_DEBT.md.)*
+1. **Judge correctly.** §5 (done): integrity floor — never a false verdict. **B-1 (✅ done,
+   committed `37769b3`):** it *confirms* cross-path bugs — catalog semantics + deterministic
+   write-record gathering + a structural *"write-record read is decisive"* guard exemption
+   (answer key §8). **Live-measured** (`X-CROSS`→`verified` 5/5, `X-SAFE`→`inconclusive`/safe
+   5/5, §5 + reverse-guards intact) and **locked by a regression test** (D22 closed). Remaining
+   is breadth only: broader vuln shapes + tighten the id match (TECH_DEBT D23). *(TECH_DEBT.md
+   B-1; state in STATUS.md.)*
 2. **Act.** **D19:** promote the AI verdict from observe-only/log to **authoritative** — take over
    the `suspicious` records in the real flow; decide the gating defaults. First time the product
    "does the job." *(TECH_DEBT.md D19.)*
@@ -89,10 +98,11 @@ case**. B-1 is the proof point.
    (substring / protocol-relative / userinfo tricks); and add runtime out-of-scope probes (don't
    trust config alone). *(Relates to TECH_DEBT.md D2 — no-auth.)*
 
-> **Prove the shadow path (proposed prerequisite for B-1/D19):** there is currently **no automated
-> test** for the Phase-7 shadow path; add one so the verifier's integration is a regression asset,
-> not a manual harness. Fits the §6 discipline "a green test proves nothing unless something was
-> allowed to fail."
+> **Prove the shadow path (✅ done, D22, `37769b3`):** the verifier's integration is now a
+> regression asset, not a manual harness — `test_d18_b1_shadow_integration.py` runs the real
+> `execute_deep_verification` with a mocked Gemini and pins X-CROSS→`verified` /
+> X-SAFE→never-`verified`. Fits the §6 discipline "a green test proves nothing unless something
+> was allowed to fail" (the X-SAFE safety assertion is the allowed-to-fail line).
 
 **Later / optional:** cost & latency budget; model-degradation handling; the nuclei keep-vs-cut decision.
 
@@ -111,9 +121,7 @@ authorization the central constraint, not an afterthought:
   systems you own.** It is not a "point it at any program and farm bounties" tool, and used that
   way it will get you banned or worse.
 
-## 6. Disciplines (carry into every step)
-
-Human owns answer keys (sourced outside the target); verdicts judged on verbatim bytes; the AI
-never grades its own work; no claim trusted without being verified against code; small, reversible,
+## 6. Disciplines (carry into every step) 
+no claim trusted without being verified against code; small, reversible,
 zero-regression steps; every override logged transparently (raw verdict preserved). **A green test
 proves nothing unless something was allowed to fail.**

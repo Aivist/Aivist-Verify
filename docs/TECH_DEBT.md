@@ -82,8 +82,9 @@
   radar tests added; Nuclei pipeline still bare.
 - **Where:** `backend/tests/test_api_endpoints.py` (API smoke); `test_step9_proxy.py`
   (proxy radar, Step 9); plus pruner, custody, Step D extraction in other files.
-  Total suite: **112 tests** (the +39 over the old 73 are the verdict-oracle, B-2.2
-  guard, cross-path, and catalog tests added for D18/D19 — see those items).
+  Total backend suite: **145 tests** (grew from an old 73 via the verdict-oracle, B-2.2
+  guard, cross-path, catalog, and B-1 write-record + shadow-integration tests). See
+  [`STATUS.md`](./STATUS.md).
 - **Covered:** FastAPI `TestClient` over isolated per-test SQLite with Gemini,
   nuclei subprocess, and background fuzzing mocked — analyze (200 + 422), findings
   persist (201 + 422), verify/batch 404s, scan start/status (202 + 404), health check.
@@ -177,13 +178,15 @@
   automated *discovery* — the system does **not find endpoints on its own**; it must be *fed*
   an OpenAPI/HAR spec (`catalog_from_har` is a `NotImplementedError` stub; the spec source is
   the *undeclared* `AI_DEEP_VERIFY_OPENAPI_SPEC` getattr seam — D21). A **confident** cross-path
-  verdict (vs today's integrity-floor `inconclusive`) is tracked as **B-1**. A real endpoint catalog now feeds
-  the shadow verifier: `endpoint_catalog.py` (pure OpenAPI→`["METHOD /path"]` adapter —
-  bare `METHOD /path`, summary/description discarded — + HAR stub raising
-  `NotImplementedError` + dispatch) is wired into `_shadow_endpoint_catalog` via an
-  optional `catalog_source`. With **no source configured the output is byte-identical to
-  the old placeholder (zero regression)**; the real 18-endpoint surface is used only when
-  a spec source is explicitly provided. 6 human-owned tests (`test_endpoint_catalog.py`)
+  verdict (vs the HEAD integrity-floor `inconclusive`) is tracked as **B-1** (now done and
+  live-measured and committed `37769b3` — see below). A real endpoint catalog now feeds
+  the shadow verifier: `endpoint_catalog.py` (pure OpenAPI→catalog adapter — each entry
+  leads with `METHOD /path` and now **carries the operation's genuine `tags`/`operationId`**
+  when the spec declares them, `summary`/`description` deliberately not surfaced — + HAR
+  stub raising `NotImplementedError` + dispatch) is wired into `_shadow_endpoint_catalog`
+  via an optional `catalog_source`. With **no source configured the output is byte-identical
+  to the old placeholder (zero regression)**; the real 18-endpoint surface is used only when
+  a spec source is explicitly provided. Human-owned tests (`test_endpoint_catalog.py`)
   cover this; the B1/B2 pair is the allowed-to-fail proof (placeholder has 0 cross-resource
   endpoints; real catalog reaches them, incl. `GET /api/invoices/{invoice_id}`).
   - **Phase 2 landed — cross-path holes proven + measured:** the target now carries a
@@ -197,14 +200,17 @@
     `test_d18_b22_guard.py` (18) asserts the B-2.2 structural guard. Both cases were
     **measured** through the shadow path (5 runs each, `RESULTS.md`) and resolve to an
     **integrity-floor `inconclusive`** — no false verdict either way (X-CROSS's raw model
-    verdict was `failed` 4/5, downgraded by the guard; see D19). Suite now **112**.
+    verdict was `failed` 4/5, downgraded by the guard; see D19). Suite at that commit: **112**.
   - **Still open — automated attack-surface DISCOVERY:** the catalog is *fed* an
     OpenAPI/HAR source (operator-supplied). The system still does **not discover**
     endpoints on its own. This is the larger half of D18.
-  - **Still open — a CONFIDENT cross-path verdict (B-1):** the cross-path payoff is proven
-    *structurally* and held to the integrity floor (`inconclusive`), but promoting it to a
-    confident `verified`/`failed` needs the model to actually **choose** the decisive
-    cross-path read-back (`GET /api/audit-log`, currently chosen 0/20). Tracked as **B-1**.
+  - **✅ DONE (committed `37769b3`) — a CONFIDENT cross-path verdict (B-1):** rather
+    than wait for the model to *choose* the decisive `GET /api/audit-log` (it chose it 0/20
+    unaided), the code gathers it deterministically and exempts the resulting `verified` from
+    the B-2.2 downgrade only after a structural content match. **Live-measured: X-CROSS→
+    `verified` 5/5, X-SAFE→`inconclusive` 5/5 (no false positive), reverse-guards intact**, and
+    **locked by an automated regression test** (`test_d18_b1_shadow_integration.py`, D22). See
+    the **B-1** entry under "Tracked next-line work" and [`STATUS.md`](./STATUS.md).
 - **Direction:** feed a real API surface (OpenAPI/Swagger import, aggregated
   HAR/proxy-capture inventory, or crawl) into both the Hunter intake and the deep
   verifier's `available_endpoints`. Until then, document the catalog as a known seam.
@@ -265,11 +271,13 @@
   (`test_d18_phase2_crosspath.py`, `test_d18_b22_guard.py`, `test_endpoint_catalog.py`),
   and the **shadow path was run** (`RESULTS.md`): the real catalog hands the verifier the
   cross-path read-back the placeholder never could.
-- **Still open — a confident cross-path verdict:** the measured result is the **integrity
-  floor** (`inconclusive` on both, no false verdict), **not** a confident `verified`/`failed`.
-  The model does not yet choose the decisive `GET /api/audit-log` (0/20). Tracked as **B-1**.
+- **Confident cross-path verdict — achieved and committed (B-1, `37769b3`):** previously the
+  measured result was the **integrity floor** (`inconclusive` on both) because the model never
+  chose the decisive `GET /api/audit-log` unaided (0/20). B-1 fixes this by having the **code**
+  gather the read-back: live-measured **X-CROSS→`verified` 5/5, X-SAFE→`inconclusive`/safe 5/5**,
+  now locked by a regression test. See the **B-1** entry and [`STATUS.md`](./STATUS.md).
 - **Where:** `vulnerable_target/` (X-CROSS/X-SAFE) + the D18 catalog seam.
-- **Direction:** the plan below is **done except the confident verdict (B-1)** — add a
+- **Direction:** the plan below is **done, and B-1 has now confirmed the cross-path case** — add a
   maintainer-owned cross-path hole to the target, confirm its ground truth with **verbatim
   captured bytes** (independent of the engine), then re-run the shadow path to show the
   catalog hands the correct cross-path read-back and the verdict is right. **Ground truth is
@@ -290,33 +298,65 @@
 - **Direction:** when wiring a real spec for production use (B-1), promote it to a declared
   `config.py` field (a path or inline spec) so it is discoverable and validated like the rest.
 
-### D22 — The Phase-7 shadow path / deep verifier has no automated test
-- **Where:** `fuzzer._run_shadow_deep_verification` (Phase 7) + `deep_verifier.execute_deep_verification`.
-- **Problem:** the suite never exercises the shadow **integration** end-to-end — no test sets
-  `AI_DEEP_VERIFY_SHADOW`, drives `execute_parallel_fuzzing` into Phase 7, or calls
-  `execute_deep_verification`. Only the **pure** structural guard `_apply_cross_resource_guard`
-  is unit-tested (`test_d18_b22_guard.py`, 18) and the rule oracle offline
-  (`test_verdict_oracle.py`, 9). The code path that actually invokes the AI verifier is proven
-  only by throwaway harnesses under `scripts/audit/` — **not** in `backend/tests/`.
-- **Direction:** add a mocked-Gemini test that drives Phase 7 (or `execute_deep_verification`)
-  so the shadow path becomes a regression asset **before** D19 promotes it (per the §6
-  discipline: a green suite proves nothing about the verifier today). Prerequisite for B-1/D19.
+### D22 — Phase-7 shadow path had no automated test — ✅ RESOLVED (`37769b3`)
+- **Where:** `deep_verifier.execute_deep_verification`.
+- **Was:** the suite never exercised the shadow **integration** end-to-end; the code path that
+  invokes the AI verifier was proven only by throwaway harnesses under `scripts/audit/`.
+- **Now:** `backend/tests/test_d18_b1_shadow_integration.py` runs the **real**
+  `execute_deep_verification` end-to-end with a **mocked Gemini** (no live API, no token cost),
+  asserting the B-1 outcomes as a CI asset: X-CROSS→`verified`, X-SAFE→`inconclusive` even when
+  the model wrongly says `verified` (the safety line), HALF 2 never fabricates `verified`, and
+  same-path cases untouched. Suite 140→**145** green.
+- **Still bare:** the real Nuclei subprocess pipeline (D7) and the `_run_shadow_deep_verification`
+  Phase-7 *wrapper* itself (the integration test drives `execute_deep_verification` directly, not
+  via `execute_parallel_fuzzing`) — add if that wrapper changes.
+
+### D23 — Content match treats a record's own `id` as a match candidate (latent edge)
+- **Where:** `deep_verifier._write_record_content_match` (the B-1 HALF-2 safety gate).
+- **Problem:** the match scans **all** scalar values of a record, including the record's own
+  primary-key `id`. So a *second* audit row whose event-`id` numerically equals the attacked
+  object id — while also carrying a value this attack wrote — can spuriously satisfy the match
+  (verified via a coincidental `id` collision). Confirmed empirically on a 2-row X-SAFE audit
+  body where the 2nd row has `id==2` and `user_id==1`.
+- **Impact today: none.** The real per-finding flow gives X-SAFE a single `id=1` row, so the
+  collision does not occur; the committed regression test + live N=5 measurement are safe.
+  This is a robustness sharp edge for **noisier/accumulated real audit logs**, not a current hole.
+- **Direction:** tighten the match from "any scalar equality" to a **semantic owner/subject key**
+  (match the attacked id against `user_id`/`owner`-style fields, not the record's own `id`). This
+  is a **safety-gate change → human-owned** (do not weaken/adjust it casually); pairs naturally
+  with "broaden the proof" (D18 / STATUS "broaden the proof"). Prerequisite before pointing at
+  real targets with real audit logs.
 
 ---
 
-## Tracked next-line work (OPEN — see [`ROADMAP.md`](../ROADMAP.md) §4)
+## Tracked next-line work (OPEN — see [`ROADMAP.md`](./ROADMAP.md) §4)
 
 > Not severity items — the roadmap's main-line nodes, recorded here because ROADMAP.md
 > says to track them in this file. Concise on purpose; ROADMAP.md is the source of truth.
 
-### B-1 (OPEN) — confident cross-path verdict
-- **What:** make the verifier actually *confirm* cross-path bugs (promote X-CROSS/X-SAFE
-  from `inconclusive` → `verified`/`failed`) **without regressing the §5 integrity floor**:
-  carry OpenAPI semantics into the catalog (today it discards summary/description), wire a
-  **real spec source** into Phase 7 (see D21), and extend the B-2.2 guard with a structural
-  *"write-record read is decisive"* exemption so the cross-path audit-log read-back counts.
-- **Why open:** the model currently never chooses the decisive `GET /api/audit-log` (0/20),
-  so the system holds at the integrity floor (D18/D20).
+### B-1 (✅ DONE — committed `37769b3`) — confident cross-path verdict
+- **What:** make the verifier actually *confirm* cross-path bugs (promote X-CROSS from
+  `inconclusive` → `verified`) **without regressing the §5 integrity floor**. Achieved.
+- **Landed & committed (`37769b3`):**
+  1. **Catalog semantics** — `endpoint_catalog._format_entry` carries the operation's genuine
+     `tags`/`operationId` (was: bare `METHOD /path`).
+  2. **Deterministic write-record gathering (HALF 1)** — when the attack is a write with no
+     same-path read-back, the *code* (not the model) selects a record/log endpoint from the
+     catalog and forces it as the follow-up (`select_write_record_endpoint` /
+     `has_same_path_readback`), sidestepping the model never choosing it unaided (0/20).
+  3. **Write-record exemption (HALF 2)** — `_write_record_content_match` +
+     `_apply_cross_resource_guard(write_record_decisive=…)`: a cross-path `verified` is
+     exempted from the B-2.2 downgrade **only** when a single record structurally contains
+     the attacked object id **and** a value this attack wrote (scalar equality). `verified`
+     only; a secure control (X-SAFE) with no matching record stays `inconclusive`.
+  - **Live-measured** (shadow, N=5, gemini-2.5-pro): X-CROSS→`verified` 5/5,
+    X-SAFE→`inconclusive` 5/5 (no false positive), reverse-guards intact (transcript
+    `scripts/audit/shadow_b1step3_code_gather_measure.out.txt`), and **locked by an automated
+    regression test** (`test_d18_b1_shadow_integration.py`, D22) + offline units
+    (`test_d18_b1_write_record.py`).
+- **Follow-ups (separate items, not B-1 blockers):** D21 (declare the spec field), D23 (tighten
+  the id match), broaden beyond the single X-CROSS shape, update `RESULTS.md` with the B-1 result,
+  then D19 (make the verdict authoritative). See [`STATUS.md`](./STATUS.md).
 
 ### Scope-lock hardening (OPEN) — prerequisite for real targets
 - **What:** consolidate the duplicated host-scope checks — the fuzzer's `_send_request` /
@@ -332,20 +372,20 @@
 ## Suggested priority order for the next agent
 > Current focus: sharpen the differentiator and PROVE it. All commercialization /
 > scaling work is deferred until a benchmark justifies it. **Done:** D1 (startup guard),
-> D3, D4, D6, D8, D9; Step 9 (R4, E2E-verified); the §5 integrity fix + D18 Phase-2 (R6).
-> **Partial:** D7. The next-line nodes are the source of truth in
-> [`ROADMAP.md`](../ROADMAP.md) §4 — mirrored below.
+> D3, D4, D6, D8, D9; Step 9 (R4, E2E-verified); the §5 integrity fix + D18 Phase-2 (R6);
+> **B-1 (`37769b3`)** and its **D22** regression test. **Partial:** D7. The next-line nodes
+> are the source of truth in [`ROADMAP.md`](./ROADMAP.md) §4 — mirrored below.
 
 ### Active line (work on these now)
-1. **B-1 — confident cross-path verdict** (promote X-CROSS/X-SAFE from `inconclusive` →
-   `verified`/`failed` **without** regressing the §5 integrity floor). The core moat's next
-   proof point; needs catalog semantics + a real spec source (D21) + a guard exemption.
-2. **D22 — an automated test for the Phase-7 shadow path** (the verifier integration is
-   currently unproven by the suite; prerequisite for trusting/promoting it).
-3. **Benchmark vs agent-style PoC validation** — on a public vulnerable target, quantify
-   this engine's false-positive / reproducibility rate against agent-driven PoC tools. The
-   only evidence for the "can it be sold" question.
-4. **Scope-lock hardening** before any non-localhost target; **D5** — keep
+1. **D21** — declare the spec source (`AI_DEEP_VERIFY_OPENAPI_SPEC`) as a real config field so
+   B-1's catalog can be wired for normal use, not just harnesses.
+2. **Broaden the proof + D23** — beyond the single X-CROSS shape (nested-object, delete-type,
+   multi-step, noisier audit logs), and tighten the id match (D23, human-owned) so real logs
+   can't spuriously match. Update `RESULTS.md` with the B-1 result.
+3. **D19** — only then: promote the AI verdict from observe-only to authoritative.
+4. **Benchmark vs agent-style PoC validation** — on a public vulnerable target, quantify
+   this engine's false-positive / reproducibility rate. The "can it be sold" evidence.
+5. **Scope-lock hardening** before any non-localhost target; **D5** — keep
    `preview_dashboard.html`, retire `frontend/`.
 
 ### Deferred — NOT in the active line (unlock condition: the benchmark above proves commercialization is worth it)

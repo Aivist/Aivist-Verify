@@ -102,7 +102,7 @@ importable):
 ```powershell
 python -m pytest backend/tests -q
 ```
-Current suite: **112 tests**
+Current suite: **145 tests**. See [`STATUS.md`](./STATUS.md).
 - `test_pruner.py` — exposure scoring + determinism regression tests
 - `test_step8_custody.py` — auth custody / parallel engine
 - `test_step_d_hunter_link.py` — Step D extraction (column-first + legacy fallback)
@@ -111,12 +111,14 @@ Current suite: **112 tests**
 - `test_step9_proxy.py` — proxy radar: WriterService serialization, SSEHub fan-out +
   overflow, ingest backpressure, Tier-2 enrichment, ProxyManager state machine + token,
   internal-ingest loopback/token/oversize guards
-- `test_endpoint_catalog.py` — endpoint catalog surface (Phase-7 shadow input)
+- `test_endpoint_catalog.py` — endpoint catalog surface + write-record queries (Phase-7 shadow input)
 - `test_verdict_oracle.py` — rule-oracle verdict-correctness
 - `test_d18_phase2_crosspath.py` — cross-path deep-verify (offline)
 - `test_d18_b22_guard.py` — B-2.2 cross-resource guard
+- `test_d18_b1_write_record.py` — B-1 write-record gathering + guard exemption (offline units)
+- `test_d18_b1_shadow_integration.py` — B-1 shadow path: real `execute_deep_verification` end-to-end with mocked Gemini (D22)
 
-**Separate suite (ground-truth target, not counted in the 112):**
+**Separate suite (ground-truth target, not counted in the backend total):**
 
 ```powershell
 python -m pytest vulnerable_target/test_vulns.py -v
@@ -215,7 +217,7 @@ python -m uvicorn vulnerable_target.main:app --reload --port 8001
 
 ## 11. Deep verifier manual check (optional, needs Gemini)
 
-Not part of the 112-test backend suite. Requires target on `:8001` + `GEMINI_API_KEY`:
+Not part of the backend pytest suite. Requires target on `:8001` + `GEMINI_API_KEY`:
 
 ```powershell
 python backend/scripts/deep_verify_live_check.py

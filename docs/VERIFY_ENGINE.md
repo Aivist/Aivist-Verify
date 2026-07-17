@@ -41,8 +41,8 @@ Phase 7  (SHADOW, additive, read-only) — only if AI_DEEP_VERIFY_SHADOW=True;
 ```
 
 > Phases 1–6, `_execute_single_fuzz`, and `_differential_verdict` are the
-> byte-for-byte stable verdict path (the 112-test path). Phase 7 is purely additive
-> and runs only after the batch above has fully completed.
+> byte-for-byte stable verdict path (the committed rule-oracle path). Phase 7 is
+> purely additive and runs only after the batch above has fully completed.
 
 ### Concurrency rule (the most important invariant)
 - Network I/O is **parallel**: all `_execute_single_fuzz` coroutines run under a
@@ -260,12 +260,15 @@ but **not** used to decide verdicts — see [`TECH_DEBT.md`](./TECH_DEBT.md) D19
 Two seams feed it: the **auth-context** seam (live custody credential, else the
 finding's auth header) and the **endpoint-catalog** seam. Real endpoint discovery now
 exists — `services/endpoint_catalog.py`'s `catalog_from_openapi` derives a catalog from
-an OpenAPI spec (bare `METHOD /path` entries; it discards summary/description/
-operationId, and the HAR adapter is a `NotImplementedError` stub). `_shadow_endpoint_catalog`
-**merges** that real surface with the placeholder when a spec source is provided (read
-from `settings.AI_DEEP_VERIFY_OPENAPI_SPEC` via `getattr` — a runtime-only seam, not a
-declared config field), else falls back byte-identically to the placeholder. See
-TECH_DEBT D18.
+an OpenAPI spec. Each entry **leads with `METHOD /path`** and now **carries the
+operation's genuine `tags` + `operationId`** when the spec declares them (nothing
+invented; `summary`/`description` are deliberately not surfaced, and the HAR adapter is
+a `NotImplementedError` stub). `_shadow_endpoint_catalog` **merges** that real surface
+with the placeholder when a spec source is provided (read from
+`settings.AI_DEEP_VERIFY_OPENAPI_SPEC` via `getattr` — a runtime-only seam, not a
+declared config field), else falls back byte-identically to the placeholder. Carrying
+semantics is the enabling half of **B-1** (see [`DEEP_VERIFY.md`](./DEEP_VERIFY.md) and
+[`TECH_DEBT.md`](./TECH_DEBT.md) D18/B-1).
 
 ## Related: `deep_verifier.py`
 
