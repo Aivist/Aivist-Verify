@@ -128,7 +128,8 @@ holds the override reason (or `None` when the guard did not fire).
 > X-SAFE→never-`verified` (closes D22) — plus offline units (`test_d18_b1_write_record.py`).
 > **Caveats:** proven on **one vuln shape only**; the final verdict still depends on the model
 > reading the log correctly (a model-specific pillar — re-test on any model swap); and the
-> content-match has a latent id-collision edge (TECH_DEBT **D23**). See [`STATUS.md`](./STATUS.md)
+> content-match's id check is now bound to an owner/subject key (TECH_DEBT **D23**, fixed), with
+> the mirror value-side edge tracked as **D23b**. See [`STATUS.md`](./STATUS.md)
 > and [`TECH_DEBT.md`](./TECH_DEBT.md) B-1.
 
 The integrity floor (B-2.2) refuses a false verdict on a cross-path write but stops

@@ -311,21 +311,40 @@
   Phase-7 *wrapper* itself (the integration test drives `execute_deep_verification` directly, not
   via `execute_parallel_fuzzing`) — add if that wrapper changes.
 
-### D23 — Content match treats a record's own `id` as a match candidate (latent edge)
+### D23 — Content match matched the attacked id against a record's own `id` — ✅ RESOLVED
 - **Where:** `deep_verifier._write_record_content_match` (the B-1 HALF-2 safety gate).
-- **Problem:** the match scans **all** scalar values of a record, including the record's own
-  primary-key `id`. So a *second* audit row whose event-`id` numerically equals the attacked
-  object id — while also carrying a value this attack wrote — can spuriously satisfy the match
-  (verified via a coincidental `id` collision). Confirmed empirically on a 2-row X-SAFE audit
-  body where the 2nd row has `id==2` and `user_id==1`.
-- **Impact today: none.** The real per-finding flow gives X-SAFE a single `id=1` row, so the
-  collision does not occur; the committed regression test + live N=5 measurement are safe.
-  This is a robustness sharp edge for **noisier/accumulated real audit logs**, not a current hole.
-- **Direction:** tighten the match from "any scalar equality" to a **semantic owner/subject key**
-  (match the attacked id against `user_id`/`owner`-style fields, not the record's own `id`). This
-  is a **safety-gate change → human-owned** (do not weaken/adjust it casually); pairs naturally
-  with "broaden the proof" (D18 / STATUS "broaden the proof"). Prerequisite before pointing at
-  real targets with real audit logs.
+- **Was:** the match scanned **all** scalar values of a record, including the record's own
+  primary-key `id`. A *second* audit row whose `id` numerically equalled the attacked object id
+  — while carrying a value this attack wrote — spuriously satisfied the match, firing the
+  exemption on a SECURE control (**X-SAFE false positive**). Confirmed empirically: on a 2-row
+  X-SAFE body (2nd row `id==2`, `user_id==1`) the old predicate returned **True**.
+- **Now:** the attacked-id check binds to an **owner/subject-style key** —
+  `_OWNER_KEY_KEYWORDS` (generic vocabulary: user/owner/subject/account/actor/tenant/…, the
+  same sanctioned pattern as `_WRITE_RECORD_KEYWORDS`) + `_field_tokens` (camelCase-aware, so
+  `user_id`/`userId`/`UserID` all tokenize alike) + `_record_owner_id_values`. Bare `id`/`pk`
+  are deliberately **absent** from the vocabulary — that exclusion *is* the fix. The owner-value
+  set is a strict subset of the old scalar set, so the gate can only get **stricter**.
+- **Proof:** the collision case returns `True` on the old code and `False` now
+  (`test_D23_record_own_id_colliding_with_attacked_id_does_not_match` + 8 more), genericity
+  proven on foreign logs naming their subject `ownerId`/`account_id`/`subjectId`/`actor`.
+- **Known trade-off:** a record naming its subject outside the vocabulary yields no owner value
+  → no match → `inconclusive` (a false negative, but the **safe** direction). Extend the
+  vocabulary as real log samples appear.
+
+### D23b — Value match still scans a record's own `id` (mirror of D23)
+- **Where:** `deep_verifier._write_record_content_match` — the *value* half of the same gate.
+- **Problem:** D23 tightened the **id** check; the **value** check still scans **all** scalars,
+  including the record's own primary key. So an attack-written value that happens to equal a
+  record's `id` satisfies the value half via the id rather than via the content field.
+  Confirmed: record `{"id":1,"event":"rename","user_id":2,"new_value":"something_else"}` with
+  attacked id `2` and written value `"1"` → matches, although `new_value` is **not** what the
+  attack wrote.
+- **Impact:** lower than D23 (the subject must already be the attacked object, so a write to it
+  did occur), but it is the same class of bug on the value axis and it weakens the only
+  anti-false-positive gate.
+- **Direction:** bind the value check to **non-primary-key content fields** — exclude
+  primary-key-style keys by generic structure, same pattern as D23. Safety-gate change →
+  human-owned.
 
 ---
 
@@ -354,7 +373,7 @@
     `scripts/audit/shadow_b1step3_code_gather_measure.out.txt`), and **locked by an automated
     regression test** (`test_d18_b1_shadow_integration.py`, D22) + offline units
     (`test_d18_b1_write_record.py`).
-- **Follow-ups (separate items, not B-1 blockers):** D21 (declare the spec field), D23 (tighten
+- **Follow-ups (separate items, not B-1 blockers):** D21 (declare the spec field), D23b (tighten
   the id match), broaden beyond the single X-CROSS shape, update `RESULTS.md` with the B-1 result,
   then D19 (make the verdict authoritative). See [`STATUS.md`](./STATUS.md).
 
@@ -379,9 +398,9 @@
 ### Active line (work on these now)
 1. **D21** — declare the spec source (`AI_DEEP_VERIFY_OPENAPI_SPEC`) as a real config field so
    B-1's catalog can be wired for normal use, not just harnesses.
-2. **Broaden the proof + D23** — beyond the single X-CROSS shape (nested-object, delete-type,
-   multi-step, noisier audit logs), and tighten the id match (D23, human-owned) so real logs
-   can't spuriously match. Update `RESULTS.md` with the B-1 result.
+2. **Broaden the proof + D23b** — beyond the single X-CROSS shape (nested-object, delete-type,
+   multi-step, noisier audit logs), and finish hardening the gate (D23 done; **D23b** — bind the
+   value match to non-primary-key content fields). Update `RESULTS.md` with the B-1 result.
 3. **D19** — only then: promote the AI verdict from observe-only to authoritative.
 4. **Benchmark vs agent-style PoC validation** — on a public vulnerable target, quantify
    this engine's false-positive / reproducibility rate. The "can it be sold" evidence.

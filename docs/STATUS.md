@@ -62,12 +62,14 @@ Where each stands today:
 - **The final verdict still leans on the model reading the log.** Code *gathers* the
   evidence (deterministic); Gemini still *interprets* it (raw `verified` 5/5 here). A
   model-specific pillar — re-run the benchmark on any model swap.
-- **Known sharp edge (tracked, TECH_DEBT D23):** `_write_record_content_match` treats a
-  record's own primary-key `id` as a match candidate, so a *second* audit row whose
-  event-`id` equals the attacked object id could spuriously match. It does **not** bite
-  the real per-finding flow (X-SAFE has a single `id=1` row), but it should be tightened
-  to a semantic owner/subject key. **Not** changed here (a safety-gate change is
-  human-owned; see D23).
+- **Gate hardened (D23 ✅ fixed):** `_write_record_content_match` used to match the attacked
+  id against *any* scalar of a record — including the record's own primary key — so a dirty
+  /accumulated log could false-match and fire the exemption on a SECURE control. The id check
+  now binds to an **owner/subject-style key** (generic vocabulary, camelCase-aware; bare
+  `id`/`pk` deliberately excluded). Strictly stricter; proven by an offline test that fails
+  against the old code. **Open mirror: D23b** — the *value* half still scans all scalars
+  (including the record's own `id`), so an attack-written value equal to a record's id can
+  satisfy the value check via the id rather than the content field.
 - **Shadow-only.** Still observe-only, default-off; the persisted verdict is the rule
   oracle's. Making the AI verdict authoritative is D19 (not started).
 
@@ -103,8 +105,8 @@ deployment, the nuclei keep-vs-cut decision — parked until a benchmark justifi
 1. **D21** — promote the spec source to a declared config field (currently the `getattr`
    seam), so B-1's real catalog can be wired for normal use, not just harnesses.
 2. **Broaden the proof** — beyond the single X-CROSS shape: nested-object, delete-type,
-   multi-step, noisier audit logs; and tighten the id match (D23) to a semantic
-   owner/subject key so real logs can't spuriously match.
+   multi-step, noisier audit logs; and finish the gate hardening (D23 done; **D23b** — bind
+   the value match to non-primary-key content fields) so real logs can't spuriously match.
 3. **D19** — only after the above: promote the AI verdict from observe-only to
    authoritative in the real flow, with a gating policy.
 4. **Benchmark vs agent-style PoC tools** on a public target; **scope-lock hardening**

@@ -33,6 +33,7 @@
 # network. NOT wired into any API endpoint or existing flow — integration later.
 # ==============================================================================
 
+import re
 import json
 import asyncio
 import logging
@@ -356,16 +357,87 @@ def _record_scalar_values(record: Dict[str, Any]) -> set:
     }
 
 
+# ------------------------------------------------------------------------------
+# D23 — the attacked-object-id check binds to an OWNER/SUBJECT-style key.
+#
+# A record's own primary key ("id", "pk", …) says NOTHING about WHOSE object the
+# record is about. Matching the attacked id against *any* scalar therefore let a
+# dirty/accumulated log false-match: a row whose own id coincidentally equals the
+# attacked id (while belonging to a different user) would satisfy the gate and fire
+# the exemption -> FALSE POSITIVE on a secure control (X-SAFE). The attacked id is
+# now only compared against fields that NAME an owner/subject.
+#
+# Target-agnostic: this is a GENERIC vocabulary of universal API owner/subject
+# concepts — the same sanctioned pattern as endpoint_catalog._WRITE_RECORD_KEYWORDS
+# (audit/log/history/…). It is a CATEGORY, not this target's concrete field: the same
+# words identify the subject key in any API, and a record naming its subject
+# "ownerId"/"account_id"/"subjectId" works identically. Bare "id"/"pk" are
+# deliberately ABSENT — excluding them IS the fix.
+# ------------------------------------------------------------------------------
+_OWNER_KEY_KEYWORDS = frozenset({
+    "user", "users",
+    "owner", "owners",
+    "subject", "subjects",
+    "account", "accounts",
+    "actor", "actors",
+    "member", "members",
+    "customer", "customers",
+    "principal", "principals",
+    "holder", "holders",
+    "author", "authors",
+    "tenant", "tenants",
+    "object", "objects",
+    "resource", "resources",
+    "entity", "entities",
+    "target", "targets",
+    "uid",
+})
+
+# Split camelCase boundaries so "userId"/"UserID" tokenize like "user_id".
+_CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_FIELD_SPLIT_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _field_tokens(name: Any) -> set:
+    """Lower-cased whole tokens of a FIELD NAME, splitting camelCase and every
+    non-alphanumeric boundary: 'user_id' / 'userId' / 'UserID' -> {'user','id'};
+    'id' -> {'id'}. Target-agnostic."""
+    spaced = _CAMEL_BOUNDARY_RE.sub(" ", str(name or ""))
+    return {t for t in _FIELD_SPLIT_RE.split(spaced.lower()) if t}
+
+
+def _is_owner_key(name: Any) -> bool:
+    """True iff a field NAME reads like an owner/subject key by the generic vocabulary.
+    A record's own primary key ('id', 'pk') is NOT an owner key — that is the D23 fix."""
+    return bool(_field_tokens(name) & _OWNER_KEY_KEYWORDS)
+
+
+def _record_owner_id_values(record: Dict[str, Any]) -> set:
+    """The scalar values of this record's OWNER/SUBJECT-style fields ONLY — never the
+    record's own primary key. Empty when the record names no subject (-> no match ->
+    the caller stays inconclusive, the safe direction)."""
+    return {
+        _scalar_str(v) for k, v in record.items()
+        if isinstance(v, (str, int, float, bool)) and _is_owner_key(k)
+    }
+
+
 def _write_record_content_match(
     read_back_body: Optional[str], attacked_object_id: Optional[str], written_values: List[str]
 ) -> bool:
-    """True iff some SINGLE record object in the (JSON) read-back contains BOTH the
-    attacked object id AND a value this attack wrote — equality on scalar values, not
-    substring. Decisive proof the cross-user write LANDED on the attacked object.
+    """True iff some SINGLE record object in the (JSON) read-back binds the attacked
+    object id to a value this attack wrote — equality on scalar values, not substring.
+    Decisive proof the cross-user write LANDED on the attacked object.
 
-    Safety: a baseline self-write row (different id) or a same-named field showing the
-    OLD value cannot satisfy this, so a secure cross-path control yields False -> no
-    exemption -> stays inconclusive. Non-JSON / unparsable bodies -> False (conservative).
+    The attacked id must appear as the value of an OWNER/SUBJECT-style field of that
+    record (D23) — matching it against the record's own primary key proves nothing about
+    whose object the record is about. The value check still scans the record's scalars.
+
+    Safety: a baseline self-write row (different owner), a same-named field showing the
+    OLD value, or a row whose own primary key merely collides with the attacked id can
+    never satisfy this — so a secure cross-path control yields False -> no exemption ->
+    stays inconclusive. A record that names no subject at all also yields False (err
+    toward inconclusive). Non-JSON / unparsable bodies -> False (conservative).
     """
     if not read_back_body or attacked_object_id is None or not written_values:
         return False
@@ -378,8 +450,10 @@ def _write_record_content_match(
     except Exception:
         return False
     for record in _iter_records(parsed):
-        vals = _record_scalar_values(record)
-        if aid in vals and (vals & wanted_values):
+        # The attacked id must be this record's SUBJECT, not just any scalar it carries.
+        if aid not in _record_owner_id_values(record):
+            continue
+        if _record_scalar_values(record) & wanted_values:
             return True
     return False
 

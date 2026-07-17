@@ -36,6 +36,8 @@ from backend.app.services.deep_verifier import (
     _written_values,
     _write_record_content_match,
     _path_is_write_record,
+    _is_owner_key,
+    _field_tokens,
     CROSS_RESOURCE_OVERRIDE_REASON,
     WRITE_RECORD_EXEMPTION_REASON,
 )
@@ -288,3 +290,99 @@ def test_xcross_end_to_end_can_reach_verified_offline():
     )
     assert final == "verified"
     assert reason == WRITE_RECORD_EXEMPTION_REASON
+
+
+# -----------------------------------------------------------------------------
+# 4. D23 — the attacked-id check binds to an OWNER/SUBJECT key, never to a record's
+#    own primary key. A record's `id` says nothing about WHOSE object it is; matching
+#    on it let a dirty/accumulated log false-match and fire the exemption on a SECURE
+#    control (the only anti-false-positive gate). These pin the tightened behavior.
+# -----------------------------------------------------------------------------
+
+# THE D23 CASE (this is what regressed before the fix): an accumulated X-SAFE log where
+# the SECOND row's own primary key `id` == the attacked id (2), while its subject is a
+# DIFFERENT user (1). The attack's written value IS present (on that user-1 row). Before
+# the fix `aid in <all scalars>` matched via the row's own id -> exemption -> X-SAFE
+# FALSE POSITIVE. It must NOT match.
+XSAFE_AUDIT_ID_COLLISION = (
+    '{"events":['
+    '{"id":1,"event":"nickname.update","user_id":1,"new_value":"xsafe_attack_r2"},'
+    '{"id":2,"event":"nickname.update","user_id":1,"new_value":"xsafe_attack_r2"}'
+    ']}'
+)
+
+
+def test_D23_record_own_id_colliding_with_attacked_id_does_not_match():
+    # CRITICAL SAFETY: id==2 collides with the attacked id but the subject is user 1.
+    assert _write_record_content_match(
+        XSAFE_AUDIT_ID_COLLISION, "2", ["xsafe_attack_r2"]
+    ) is False
+
+
+def test_D23_collision_stays_inconclusive_end_to_end():
+    # The composed gate: no content match -> no exemption -> guard downgrades -> the
+    # secure control stays inconclusive even though the model said 'verified'.
+    content_match = _write_record_content_match(
+        XSAFE_AUDIT_ID_COLLISION, "2", ["xsafe_attack_r2"]
+    )
+    assert content_match is False
+    final, reason = _apply_cross_resource_guard(
+        "verified", "/api/users/2/nickname", RECORD,
+        follow_up_performed=True, write_record_decisive=content_match,
+    )
+    assert final == "inconclusive"
+    assert reason == CROSS_RESOURCE_OVERRIDE_REASON
+
+
+def test_D23_record_with_no_subject_field_does_not_match():
+    # No owner/subject key at all -> cannot prove whose object it is -> err inconclusive.
+    body = '{"events":[{"id":2,"event":"rename","new_value":"V"}]}'
+    assert _write_record_content_match(body, "2", ["V"]) is False
+
+
+# --- genericity: the subject key is found by generic vocabulary, not this target's
+#     literal "user_id". A foreign log naming its subject differently still works. ---
+
+def test_D23_generic_owner_key_naming_still_matches_on_foreign_log():
+    # 'ownerId' (camelCase), no "user_id", no "/api/audit-log", no target field names.
+    foreign = '{"entries":[{"seq":7,"action":"rename","ownerId":2,"value":"V"}]}'
+    assert _write_record_content_match(foreign, "2", ["V"]) is True
+
+
+def test_D23_generic_subject_key_variants_match():
+    for body in (
+        '{"log":[{"pk":9,"account_id":2,"val":"V"}]}',
+        '{"log":[{"pk":9,"subjectId":2,"val":"V"}]}',
+        '{"log":[{"pk":9,"actor":2,"val":"V"}]}',
+        '{"log":[{"pk":9,"resource_id":2,"val":"V"}]}',
+    ):
+        assert _write_record_content_match(body, "2", ["V"]) is True, body
+
+
+def test_D23_foreign_log_owner_mismatch_does_not_match():
+    # Same foreign shape, but the subject is a different owner -> no match.
+    foreign = '{"entries":[{"seq":2,"action":"rename","ownerId":1,"value":"V"}]}'
+    assert _write_record_content_match(foreign, "2", ["V"]) is False
+
+
+# --- the owner-key classifier itself (structural, whole-token, camelCase-aware) ---
+
+def test_D23_is_owner_key_excludes_primary_keys():
+    assert _is_owner_key("id") is False
+    assert _is_owner_key("pk") is False
+    assert _is_owner_key("event") is False
+    assert _is_owner_key("new_value") is False
+    assert _is_owner_key("seq") is False
+
+
+def test_D23_is_owner_key_accepts_generic_subject_names():
+    for name in ("user_id", "userId", "UserID", "owner", "ownerId", "account_id",
+                 "subjectId", "actor", "member_id", "uid", "resource_id"):
+        assert _is_owner_key(name) is True, name
+
+
+def test_D23_field_tokens_splits_camel_and_separators():
+    assert _field_tokens("user_id") == {"user", "id"}
+    assert _field_tokens("userId") == {"user", "id"}
+    assert _field_tokens("UserID") == {"user", "id"}
+    assert _field_tokens("id") == {"id"}
