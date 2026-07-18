@@ -21,6 +21,9 @@ from backend.app.services.deep_verifier import (
     _resolve_json_path,
     _anchor_evidence,
     _build_provider_config,
+    _caller_object_id,
+    _anchor_caller_identity,
+    _anchor_payload_causality,
 )
 
 
@@ -143,3 +146,125 @@ def test_provider_config_enforces_json_mode():
     assert cfg.response_mime_type == "application/json"
     assert cfg.system_instruction == "SYS"
     assert cfg.temperature == 0.4
+
+
+# =============================================================================
+# M1.2 — caller-identity + payload-causality anchoring (observe-only). BAC requires
+# caller != owner; a silent write confirmed by read-back is only PROVEN caused by this
+# attack when THIS attack's UNIQUE value appears in the read-back. Both are computed in
+# code from runtime params, never the model's say-so; they never change the verdict.
+# =============================================================================
+
+# A UNIQUE, fuzzer-style injected value (not a common enum) — this is what makes the
+# read-back a causality proof rather than a coincidence.
+_UNIQUE = "m12-7f3a9c1e-4b2d-11ee-be56-0242ac120002"
+
+# X-SILENT-VULN read-back: the cross-user write LANDED — object 2's state now carries the
+# unique injected value; owner is the victim (2).
+_VULN_STATE = json.dumps({"id": 2, "owner_id": 2, "label": _UNIQUE, "period": "2026-Q1"})
+# X-SILENT-SAFE read-back: the cross-user write was DROPPED — owner is still the victim (2)
+# but the label is UNCHANGED (the unique value is absent).
+_SAFE_STATE = json.dumps({"id": 2, "owner_id": 2, "label": "bob-original", "period": "2026-Q1"})
+# The caller's OWN object (a would-be false positive if mistaken for cross-user).
+_OWN_STATE = json.dumps({"id": 1, "owner_id": 1, "label": _UNIQUE, "period": "2026-Q1"})
+
+
+# ---- _caller_object_id: the baseline (self) segment ------------------------
+
+def test_caller_object_id_from_baseline_segment():
+    assert _caller_object_id(
+        "/api/workspaces/1/label", "/api/workspaces/2/label",
+        {"target_param": "1", "payload_string": "2"},
+    ) == "1"
+
+
+def test_caller_object_id_falls_back_to_target_param():
+    # No path diff (same path) -> fall back to the payload's target_param.
+    assert _caller_object_id("/x", "/x", {"target_param": "1", "payload_string": "2"}) == "1"
+
+
+def test_caller_object_id_none_when_unknown():
+    assert _caller_object_id("/x", "/x", {}) is None
+
+
+# ---- caller identity: read-back object is the victim's, not the caller's ----
+
+def test_caller_identity_confirmed_when_owner_is_victim():
+    # owner_id 2 == attacked, and caller 1 is not an owner value -> confirmed cross-user.
+    assert _anchor_caller_identity(_VULN_STATE, "2", "1") == "confirmed"
+    # SAFE read-back ALSO shows owner 2 (the write was dropped but the object is still Bob's)
+    # -> caller identity confirms the OBJECT is the victim's; it does NOT distinguish the leak.
+    assert _anchor_caller_identity(_SAFE_STATE, "2", "1") == "confirmed"
+
+
+def test_caller_identity_same_as_caller_is_flagged():
+    # The read-back is the CALLER's own object (owner 1 == caller) -> NOT a cross-user read.
+    assert _anchor_caller_identity(_OWN_STATE, "2", "1") == "same_as_caller"
+
+
+def test_caller_identity_type_coercion():
+    body = json.dumps({"owner_id": "2"})   # string id in the body
+    assert _anchor_caller_identity(body, "2", "1") == "confirmed"
+
+
+def test_caller_identity_owner_not_found_when_no_owner_key():
+    body = json.dumps({"id": 2, "label": _UNIQUE})   # no owner/subject-style field
+    assert _anchor_caller_identity(body, "2", "1") == "owner_not_found"
+
+
+def test_caller_identity_degrades_never_raises():
+    assert _anchor_caller_identity(None, "2", "1") == "no_read_back"
+    assert _anchor_caller_identity("not json", "2", "1") == "unparsable_read_back"
+    assert _anchor_caller_identity(_VULN_STATE, None, None) == "no_ids"
+
+
+# ---- payload causality: the UNIQUE injected value proves the write caused it ----
+
+def test_causality_confirmed_at_evidence_path():
+    # The model cited the field that changed -> the unique value is right there.
+    assert _anchor_payload_causality(_VULN_STATE, "label", [_UNIQUE]) == "confirmed_at_path"
+
+
+def test_causality_confirmed_in_body_when_path_is_elsewhere():
+    # The model cited owner_id (for object identity); the unique value is still in the body.
+    assert _anchor_payload_causality(_VULN_STATE, "owner_id", [_UNIQUE]) == "confirmed_in_body"
+
+
+def test_causality_absent_is_the_safe_false_positive_preventer():
+    # THE POINT: the write was dropped, so the unique value is NOWHERE in the read-back.
+    # Caller identity alone would 'confirm' (owner is the victim); only causality catches this.
+    assert _anchor_payload_causality(_SAFE_STATE, "label", [_UNIQUE]) == "absent"
+
+
+def test_causality_expected_value_without_unique_is_not_proof():
+    # A read-back showing an ordinary/expected value that was NOT this attack's unique payload
+    # must NOT count as causal proof — that is the coincidence trap.
+    body = json.dumps({"id": 2, "owner_id": 2, "status": "active"})
+    assert _anchor_payload_causality(body, "status", [_UNIQUE]) == "absent"
+
+
+def test_causality_ignores_a_value_that_only_equals_a_records_own_id():
+    # If the 'unique' value coincided with a record's own primary key, content-scan (D23b)
+    # excludes the id, so it is not spuriously counted as landed content.
+    body = json.dumps({"id": _UNIQUE, "owner_id": 2, "label": "unchanged"})
+    assert _anchor_payload_causality(body, "owner_id", [_UNIQUE]) == "absent"
+
+
+def test_causality_degrades_never_raises():
+    assert _anchor_payload_causality(_VULN_STATE, "label", []) == "no_payload"
+    assert _anchor_payload_causality(None, "label", [_UNIQUE]) == "no_read_back"
+    assert _anchor_payload_causality("not json", "label", [_UNIQUE]) == "unparsable_read_back"
+    for p in ("[0]", "a[b]", "...", None):
+        out = _anchor_payload_causality(_VULN_STATE, p, [_UNIQUE])
+        assert out in {"confirmed_at_path", "confirmed_in_body", "absent"}
+
+
+# ---- composition: causality is what separates VULN from SAFE ----------------
+
+def test_vuln_vs_safe_separated_only_by_causality():
+    # Both are the victim's object (caller identity confirmed on both); the LEAK is proven for
+    # VULN and refuted for SAFE purely by whether the unique payload value landed.
+    assert _anchor_caller_identity(_VULN_STATE, "2", "1") == "confirmed"
+    assert _anchor_caller_identity(_SAFE_STATE, "2", "1") == "confirmed"
+    assert _anchor_payload_causality(_VULN_STATE, "label", [_UNIQUE]) == "confirmed_at_path"
+    assert _anchor_payload_causality(_SAFE_STATE, "label", [_UNIQUE]) == "absent"

@@ -225,11 +225,20 @@ class DeepVerificationResult:
     guard_override: Optional[str] = None
     # M1.1 evidence anchoring (observe-only): the JSON path the model CITED as decisive,
     # and the CODE's structural verdict on whether that path resolves in the read-back and
-    # points at the attacked victim's runtime id. anchoring_result is one of:
+    # points at the attacked victim's runtime id (OBJECT identity). anchoring_result is one of:
     # "confirmed" | "value_mismatch" | "failed_path_not_found" | "unparsable_read_back"
     # | "no_read_back" | "no_path". Never changes ai_verdict — it corroborates it.
     ai_evidence_path: Optional[str] = None
     anchoring_result: Optional[str] = None
+    # M1.2 anchoring (observe-only, additive). Broken access control REQUIRES caller != owner
+    # AND (for a silent write) that THIS attack's unique value caused the observed state:
+    #   caller_identity_anchor  — "confirmed" | "same_as_caller" | "owner_not_found"
+    #                             | "no_read_back" | "unparsable_read_back" | "no_ids"
+    #   payload_causality_anchor — "confirmed_at_path" | "confirmed_in_body" | "absent"
+    #                             | "no_payload" | "no_read_back" | "unparsable_read_back"
+    # Both are logged and stored, NEVER used to change the verdict or gate anything.
+    caller_identity_anchor: Optional[str] = None
+    payload_causality_anchor: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -331,6 +340,24 @@ def _attacked_object_id(
             return _scalar_str(diffs[0])
     ps = (payload or {}).get("payload_string")
     return _scalar_str(ps) if ps not in (None, "") else None
+
+
+def _caller_object_id(
+    baseline_path: Optional[str], attack_path: Optional[str], payload: Optional[Dict[str, Any]]
+) -> Optional[str]:
+    """The CALLER's own object id — the BASELINE's differing path segment (self). The
+    baseline is the authorized/self request, so the segment the mutation changed carries the
+    caller's own id (e.g. baseline '/api/x/1' vs attack '/api/x/2' -> caller '1'). Mirror of
+    _attacked_object_id but returns the baseline value, else the payload's target_param.
+    Target-agnostic (no field/path knowledge)."""
+    b = (baseline_path or "").split("?", 1)[0].split("/")
+    a = (attack_path or "").split("?", 1)[0].split("/")
+    if len(a) == len(b):
+        diffs = [b[i] for i in range(len(a)) if a[i] != b[i]]
+        if len(diffs) == 1 and diffs[0]:
+            return _scalar_str(diffs[0])
+    tp = (payload or {}).get("target_param")
+    return _scalar_str(tp) if tp not in (None, "") else None
 
 
 def _written_values(attack_req: Dict[str, Any]) -> List[str]:
@@ -671,6 +698,103 @@ def _anchor_evidence(
     return "confirmed" if _scalar_str(value) == _scalar_str(attacked_object_id) else "value_mismatch"
 
 
+# ==============================================================================
+# M1.2 anchoring extensions (observe-only, additive). Broken access control REQUIRES
+# caller != owner; and a silent WRITE confirmed by read-back is only PROVEN to be caused
+# by this attack when THIS attack's UNIQUE injected value appears in the read-back (the
+# expected value being present proves nothing if it was already there). Both are computed
+# in code from the read-back + the attack's own runtime params — never the model's say-so —
+# and are LOGGED/STORED only; they do NOT change the verdict or gate anything. Target-agnostic.
+# ==============================================================================
+def _read_back_owner_values(read_back_body: Optional[str]) -> set:
+    """Union of OWNER/SUBJECT-style scalar values across every record in the (JSON) read-back,
+    using the D23 owner-key vocabulary. Empty set on none/unparsable. Never raises."""
+    if not read_back_body:
+        return set()
+    try:
+        parsed = json.loads(read_back_body)
+    except Exception:
+        return set()
+    out: set = set()
+    for rec in _iter_records(parsed):
+        out |= _record_owner_id_values(rec)
+    return out
+
+
+def _anchor_caller_identity(
+    read_back_body: Optional[str],
+    attacked_object_id: Optional[str],
+    caller_object_id: Optional[str],
+) -> str:
+    """Corroborate that the read-back object belongs to the VICTIM (the attacked id), NOT to the
+    caller (the baseline/self id) — the caller!=owner half BAC requires. Scans owner/subject-style
+    fields (D23 vocabulary), type-coerced. Returns:
+      "confirmed"       — attacked id is an owner value AND the caller id is not (victim's object);
+      "same_as_caller"  — the caller id is an owner value (the read-back is the caller's OWN
+                          object -> NOT a cross-user read; a would-be false positive);
+      "owner_not_found" — no owner/subject value, or neither runtime id is among them;
+      "no_read_back" / "unparsable_read_back" / "no_ids".
+    Observe-only; never raises, never changes the verdict."""
+    if not read_back_body:
+        return "no_read_back"
+    try:
+        json.loads(read_back_body)
+    except Exception:
+        return "unparsable_read_back"
+    if attacked_object_id is None and caller_object_id is None:
+        return "no_ids"
+    owners = _read_back_owner_values(read_back_body)   # already scalar-string values
+    if not owners:
+        return "owner_not_found"
+    caller = _scalar_str(caller_object_id) if caller_object_id is not None else None
+    attacked = _scalar_str(attacked_object_id) if attacked_object_id is not None else None
+    if caller is not None and caller in owners:
+        return "same_as_caller"
+    if attacked is not None and attacked in owners:
+        return "confirmed"
+    return "owner_not_found"
+
+
+def _anchor_payload_causality(
+    read_back_body: Optional[str],
+    evidence_path: Optional[str],
+    written_values: List[str],
+) -> str:
+    """Corroborate that THIS attack's UNIQUE injected value actually appears in the read-back
+    state — the causality proof that the write CAUSED the observed change (a read-back showing
+    the 'expected' value proves nothing if it was already that value; only the unique fuzzer
+    value does). Type-coerced; never raises. Returns:
+      "confirmed_at_path" — a written value == the scalar at the model's cited evidence_path;
+      "confirmed_in_body" — a written value appears among the read-back's CONTENT values (D23b:
+                            excludes each record's own primary key), just not (only) at the path;
+      "absent"            — no written value appears anywhere (the write did NOT land -> secure/
+                            dropped case);
+      "no_payload" / "no_read_back" / "unparsable_read_back".
+    Observe-only; never changes the verdict."""
+    wanted = {_scalar_str(v) for v in (written_values or []) if _scalar_str(v)}
+    if not wanted:
+        return "no_payload"
+    if not read_back_body:
+        return "no_read_back"
+    try:
+        parsed = json.loads(read_back_body)
+    except Exception:
+        return "unparsable_read_back"
+    # Primary: the model's cited path (per the M1.2 spec "value appears at evidence_path").
+    if evidence_path:
+        try:
+            v = _resolve_json_path(parsed, evidence_path)
+            if not isinstance(v, (dict, list)) and v is not None and _scalar_str(v) in wanted:
+                return "confirmed_at_path"
+        except (KeyError, IndexError, TypeError, ValueError):
+            pass
+    # Fallback: the value landed somewhere in the read-back CONTENT (not a record's own id).
+    for rec in _iter_records(parsed):
+        if _record_content_values(rec) & wanted:
+            return "confirmed_in_body"
+    return "absent"
+
+
 async def execute_deep_verification(
     parsed_request: Dict[str, Any],
     payload: Optional[Dict[str, Any]],
@@ -789,6 +913,9 @@ async def execute_deep_verification(
         attacked_object_id = _attacked_object_id(
             baseline_req.get("path"), attack_req.get("path"), payload
         )
+        caller_object_id = _caller_object_id(
+            baseline_req.get("path"), attack_req.get("path"), payload
+        )
         written_values = _written_values(attack_req)
         det_record_path: Optional[str] = None
         if (
@@ -896,16 +1023,19 @@ async def execute_deep_verification(
                 _raw_verdict, attack_req.get("path", ""),
                 follow_up_path=None, follow_up_performed=False,
             )
-            # M1.1 anchoring (observe-only): no follow-up was performed, so the read-back
+            # M1.1/M1.2 anchoring (observe-only): no follow-up was performed, so the read-back
             # the model judged on is the ATTACK response itself (the read-type leak case).
             _evidence_path = turn1_obj.get("evidence_path")
-            _anchor = _anchor_evidence(
-                attack_result.get("response_body"), _evidence_path, attacked_object_id
-            )
+            _anchor_body = attack_result.get("response_body")
+            _anchor = _anchor_evidence(_anchor_body, _evidence_path, attacked_object_id)
+            _caller_anchor = _anchor_caller_identity(_anchor_body, attacked_object_id, caller_object_id)
+            _causality_anchor = _anchor_payload_causality(_anchor_body, _evidence_path, written_values)
             logger.info(
-                "[DEEP-VERIFY] Evidence anchoring (turn-1 verdict): ai_verdict=%r "
-                "evidence_path=%r attacked_id=%r -> anchoring_result=%r (observe-only).",
-                _final_verdict, _evidence_path, attacked_object_id, _anchor,
+                "[DEEP-VERIFY] Evidence anchoring (turn-1 verdict): ai_verdict=%r evidence_path=%r "
+                "attacked_id=%r caller_id=%r -> object=%r caller_identity=%r payload_causality=%r "
+                "(observe-only).",
+                _final_verdict, _evidence_path, attacked_object_id, caller_object_id,
+                _anchor, _caller_anchor, _causality_anchor,
             )
             return DeepVerificationResult(
                 status="completed",
@@ -924,6 +1054,8 @@ async def execute_deep_verification(
                 guard_override=_override,
                 ai_evidence_path=_evidence_path,
                 anchoring_result=_anchor,
+                caller_identity_anchor=_caller_anchor,
+                payload_causality_anchor=_causality_anchor,
             )
 
         # ---------------- Execute the follow-up (scope-locked) ----------------
@@ -1060,7 +1192,7 @@ async def execute_deep_verification(
                 _normalize_path(fu_request_record.get("path")),
             )
 
-        # M1.1 anchoring (observe-only): the read-back the model judged on is the follow-up
+        # M1.1/M1.2 anchoring (observe-only): the read-back the model judged on is the follow-up
         # response when one was captured, else the attack response.
         _evidence_path = turn2_obj.get("evidence_path")
         _anchor_body = (
@@ -1069,10 +1201,14 @@ async def execute_deep_verification(
             else attack_result.get("response_body")
         )
         _anchor = _anchor_evidence(_anchor_body, _evidence_path, attacked_object_id)
+        _caller_anchor = _anchor_caller_identity(_anchor_body, attacked_object_id, caller_object_id)
+        _causality_anchor = _anchor_payload_causality(_anchor_body, _evidence_path, written_values)
         logger.info(
-            "[DEEP-VERIFY] Evidence anchoring (turn-2 verdict): ai_verdict=%r "
-            "evidence_path=%r attacked_id=%r -> anchoring_result=%r (observe-only).",
-            _final_verdict, _evidence_path, attacked_object_id, _anchor,
+            "[DEEP-VERIFY] Evidence anchoring (turn-2 verdict): ai_verdict=%r evidence_path=%r "
+            "attacked_id=%r caller_id=%r -> object=%r caller_identity=%r payload_causality=%r "
+            "(observe-only).",
+            _final_verdict, _evidence_path, attacked_object_id, caller_object_id,
+            _anchor, _caller_anchor, _causality_anchor,
         )
         return DeepVerificationResult(
             status="completed",
@@ -1090,5 +1226,7 @@ async def execute_deep_verification(
             ai_verdict_raw=_raw_verdict,
             guard_override=_override,
             ai_evidence_path=_evidence_path,
+            caller_identity_anchor=_caller_anchor,
+            payload_causality_anchor=_causality_anchor,
             anchoring_result=_anchor,
         )

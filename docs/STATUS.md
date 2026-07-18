@@ -145,5 +145,9 @@ deployment, the nuclei keep-vs-cut decision — parked until a benchmark justifi
 3. **M1.x** — mass-assignment, delete-type, further shapes as generalization continues.
 4. **D19** — only after generalization is proven: promote the AI verdict from observe-only to
    authoritative in the real flow, with a gating policy.
+   - **Gating constraint (from M1.2 anchoring):** the authoritative gate must be
+     **payload-causality**, not caller-identity — caller-identity `confirms` for BOTH VULN and
+     SAFE (a dropped cross-user write still leaves the object owned by the victim), so only the
+     unique-value-landed causality anchor separates a real leak from a securely-dropped write.
 5. **Scope-lock hardening** (HARD prerequisite before any real / non-lab target);
    **benchmark vs agent-style PoC tools** on a public target; retire the legacy `frontend/` (D5).
