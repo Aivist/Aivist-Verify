@@ -185,7 +185,7 @@
   when the spec declares them, `summary`/`description` deliberately not surfaced — + HAR
   stub raising `NotImplementedError` + dispatch) is wired into `_shadow_endpoint_catalog`
   via an optional `catalog_source`. With **no source configured the output is byte-identical
-  to the old placeholder (zero regression)**; the real 18-endpoint surface is used only when
+  to the old placeholder (zero regression)**; the real 22-route surface is used only when
   a spec source is explicitly provided. Human-owned tests (`test_endpoint_catalog.py`)
   cover this; the B1/B2 pair is the allowed-to-fail proof (placeholder has 0 cross-resource
   endpoints; real catalog reaches them, incl. `GET /api/invoices/{invoice_id}`).

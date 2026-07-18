@@ -11,29 +11,50 @@
 
 A single-tenant, locally-run access-control verification engine whose core is
 **built, wired into the pipeline as a read-only shadow pass, and dormant by
-default**. The integrity floor (never emit a false verdict) is proven, and the
-project's hardest milestone — a **confident cross-path verdict (B-1)** — is now
-**done, committed (`37769b3`), live-measured, AND locked by an automated regression
-test**. It is still shadow-only (not authoritative — that's D19) and proven on one
-vuln shape.
+default**. The integrity floor (never emit a false verdict) is proven. The engine now
+confirms the hard case on **two distinct vuln shapes with zero false positives** —
+**M1.0/B-1** (silent cross-path *write*, confirmed via a write-record) and **M1.1**
+(read-type *semantic-equivalence*, equal-length, confirmed by semantics + evidence
+anchoring). It is still shadow-only (not authoritative — that's **D19**) and proven on
+two shapes / one target.
 
 ## Test suite
 
 | Suite | Command (from repo root) | Result |
 |---|---|---|
-| Backend | `python -m pytest backend/tests -q` | **145 passed** |
+| Backend | `python -m pytest backend/tests -q` | **175 passed** |
 | Ground-truth target | `python -m pytest vulnerable_target -q` | **14 passed** |
 
 ## The main line (three nodes)
 
 The product's spine is three sequential nodes (see [`ROADMAP.md`](./ROADMAP.md) §4).
-Where each stands today:
+Node 1 ("judge correctly") is now organized as milestone **M1** — prove the verification
+mechanism generalizes across vuln shapes with **zero false positives**. Where each stands:
 
 | Node | Goal | State |
 |---|---|---|
-| **1. Judge correctly** | Never emit a false verdict; then *confirm* the hard cross-path bug | **DONE & committed.** Integrity floor + the confident cross-path verdict (**B-1**, `37769b3`): live-measured (X-CROSS→`verified` 5/5, X-SAFE→`inconclusive`/safe 5/5) and locked by a mock-Gemini regression test. |
-| **2. Act** (`D19`) | Promote the AI verdict from observe-only/log to **authoritative** | **Not started.** The persisted verdict is still the rule oracle's; the AI verdict is shadow-only. |
-| **3. Be safe on real targets** | Consolidate scope-lock checks + adversarial tests before any non-localhost use | **Not started.** Hard prerequisite for real targets. |
+| **1. Judge correctly (= M1)** | Never a false verdict; confirm the hard case across *shapes* | **In progress — 2 shapes done.** See the M1 breakdown below. |
+| **2. Act** (`D19`) | Promote the AI verdict from observe-only/log to **authoritative** | **Not started.** The persisted verdict is still the rule oracle's; the AI verdict is shadow-only. Gated on M1 proving generalization. |
+| **3. Be safe on real targets** | Consolidate scope-lock checks + adversarial tests before any non-localhost use | **Not started.** HARD prerequisite before any real / non-lab target. |
+
+### M1 — Verifiable benchmark & reference engine (generalize across shapes, zero FP)
+
+| Milestone | Shape / how confirmed | State |
+|---|---|---|
+| **M1.0 (B-1)** | silent cross-path **write**, confirmed via a **write-record** | **DONE, committed `37769b3`.** X-CROSS→`verified` 5/5, X-SAFE→safe 5/5; regression test locks it. |
+| **M1.1** | read-type **semantic-equivalence**, equal-length, confirmed by **semantics + evidence anchoring** | **DONE (this commit).** X-EQUIV-VULN→`verified` 5/5, X-EQUIV-SAFE→`failed` 5/5 — **0 FP**, N=5, one target. |
+| **M1.2 (next)** | cross-path **silent write** confirmed via **read-back STATE** (not a write-record) | **Not started.** The real test of whether the B-2.2 guard mis-downgrades a true `verified`, and a map of the black-box confirmation boundary. *(A "forced-follow-up read" shape was analyzed and rejected as a pseudo-problem — reads are self-decisive or not a leak; do not pursue it.)* |
+| **M1.x (later)** | mass-assignment, delete-type, and further shapes | Not started — each is one more格 of generalization. |
+
+> **M2 — Shared Domain Model (later, NOT started):** a resource/endpoint relationship graph —
+> sink upstream observations (proxy/HAR/spec) into a shared layer every module can query, so the
+> verifier isn't guessing which paths relate (precedent: RESTler-style request-dependency graph
+> from OpenAPI). **Gated on** M1 proving generalization + an evidence-backed list of "what
+> downstream actually needs from upstream."
+>
+> **Strategic radar (decide later, do NOT act now):** black-box (deployable, but a fundamental
+> ceiling on truly-silent writes whose effect surfaces through *no* endpoint) vs. an optional
+> gray-box mode (log/instrumentation ingestion, à la BACFuzz) for higher-assurance confirmation.
 
 ## What is proven (committed, in tests / measured)
 
@@ -51,6 +72,14 @@ Where each stands today:
   automated mock-Gemini regression test that runs the real `execute_deep_verification`
   end-to-end (`test_d18_b1_shadow_integration.py`, closes D22) plus offline unit tests
   (`test_d18_b1_write_record.py`).
+- **M1.1 — read-type semantic-equivalence** (this commit): two read paths expose the SAME
+  object; responses shaped **equal-length** so the rule oracle stalls at `suspicious` and the
+  **AI must judge by semantic content, not size**. Adds structured evidence — the verdict
+  carries `evidence_path` + a code-computed `anchoring_result` (AI makes the semantic call,
+  code anchors it; **corroboration, observe-only, not an oracle**). **Live-measured** (shadow,
+  N=5): X-EQUIV-VULN→`verified` 5/5 (`owner_id` anchoring `confirmed`), X-EQUIV-SAFE→`failed`
+  5/5 (**0 false positives**) — `scripts/audit/shadow_m1_xequiv_run.out.txt`. Offline test:
+  `test_m1_evidence_anchoring.py`.
 - **Same-path cases resolve correctly** — AI **8/8**, 0 false-pos / 0 false-neg. See
   `vulnerable_target/benchmark/RESULTS.md`.
 
@@ -75,14 +104,14 @@ Where each stands today:
 
 ## Uncommitted right now (working tree)
 
-- **Docs restructure** — this doc set, moved into `docs/` + a thin root README
-  (about to be committed alongside this update).
 - **Proxy Radar tab (frontend)** — `preview_dashboard.html` gains the Step-9 proxy UI
   (start/stop, live SSE stream, flows list, "send to Hunter"). Backend `/proxy/*` routes
   already existed and are tested; this is the UI wiring. **Left uncommitted on purpose** —
-  it belongs to the later frontend phase, not the B-1 milestone.
+  it belongs to the later frontend phase, not the verification milestones.
 - `scripts/audit/` measurement drivers + `*.out.txt` transcripts — kept untracked
   (throwaway harnesses / evidence), not committed.
+
+> Everything else (docs restructure, B-1/M1.0, D22, D23, D23b, and M1.1) is committed.
 
 ## Runtime posture (defaults)
 
@@ -102,12 +131,19 @@ deployment, the nuclei keep-vs-cut decision — parked until a benchmark justifi
 
 ## Immediate next steps
 
-1. **D21** — promote the spec source to a declared config field (currently the `getattr`
-   seam), so B-1's real catalog can be wired for normal use, not just harnesses.
-2. **Broaden the proof** — beyond the single X-CROSS shape: nested-object, delete-type,
-   multi-step, noisier audit logs. (Gate hardening D23 + D23b is **done**; extend the
-   owner/subject vocabulary as real log samples appear.)
-3. **D19** — only after the above: promote the AI verdict from observe-only to
+1. **M1.2** — cross-path **silent write** confirmed via **read-back STATE** (not a
+   write-record). This is the real test of whether the B-2.2 guard mis-downgrades a true
+   `verified` (the M1.1 read shape needed no follow-up, so the guard was a no-op) and a map of
+   the black-box confirmation boundary. *(Do NOT pursue the "forced-follow-up read" shape — a
+   pseudo-problem: a read is either self-decisive or not a leak.)*
+   - **Anchor design (from the M1.1 review):** the evidence anchor must also bind **caller
+     identity**, not just object identity — `owner_id:2` on a read of object 2 is *expected*, so
+     anchoring the object id alone corroborates the "whose object" half but not the "caller is a
+     different user" half.
+2. **D21** — promote the spec source to a declared config field (currently the `getattr`
+   seam), so the real catalog can be wired for normal use, not just harnesses.
+3. **M1.x** — mass-assignment, delete-type, further shapes as generalization continues.
+4. **D19** — only after generalization is proven: promote the AI verdict from observe-only to
    authoritative in the real flow, with a gating policy.
-4. **Benchmark vs agent-style PoC tools** on a public target; **scope-lock hardening**
-   before any non-localhost target; retire the legacy `frontend/` (D5).
+5. **Scope-lock hardening** (HARD prerequisite before any real / non-lab target);
+   **benchmark vs agent-style PoC tools** on a public target; retire the legacy `frontend/` (D5).

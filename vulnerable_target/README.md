@@ -404,6 +404,58 @@ owner's write does, the correct verdict is **NOT vulnerable** — despite the id
 
 ---
 
+## M1.1 read-type semantic-equivalence additions (X-EQUIV cases)
+
+A DIFFERENT shape from the write cases: the SAME underlying object is reachable via **two
+equivalent read paths** — an owner-scoped canonical path and a flat resource path. The bug is
+that the flat path skips the ownership check. Responses are shaped **EQUAL-LENGTH** (a real
+record and a denial are the same size; identity differs only in `owner_id` and a fixed-width
+36-char `account_ref` UUID), so a size/diff oracle **cannot** decide — the verdict must come
+from reading the semantic content (whose object is this?).
+
+### X-EQUIV-VULN — REAL read-type semantic-equivalence BOLA (statement)
+
+`GET /api/statements/{statement_id}` returns a statement with **NO ownership check**, so Alice
+reads Bob's. The SAME object is also reachable via the owner-scoped `GET /api/users/{user_id}/statement`.
+`statement_id == owner_id` (seeded). Planted: **REAL**.
+
+```bash
+# Alice reads her OWN statement (id=1) — equal-length baseline
+curl -s http://127.0.0.1:8001/api/statements/1 -H 'Authorization: Bearer alice-token-aaaa'
+# -> {"id":1,"owner_id":1,"account_ref":"11111111-1111-1111-1111-111111111111","period":"2026-Q1","status":"OPEN"}
+
+# Alice reads BOB'S statement (id=2) with HER token — BOLA: 200, owner_id:2, SAME length
+curl -s http://127.0.0.1:8001/api/statements/2 -H 'Authorization: Bearer alice-token-aaaa'
+# -> {"id":2,"owner_id":2,"account_ref":"22222222-2222-2222-2222-222222222222","period":"2026-Q1","status":"OPEN"}
+```
+
+`owner_id:2` returned to Alice at the SAME body length as her own → a real cross-user read leak
+that only a content (not size) reading catches. Correct verdict: **vulnerable**.
+
+### X-EQUIV-SAFE — SECURE read-type control (ledger)
+
+`GET /api/ledgers/{ledger_id}` mirrors the statement shape but **enforces ownership**: a
+cross-user read returns an **equal-length soft-200 denial** (`owner_id:0`, a zero-UUID
+`account_ref`, `status:"DENY"`) — **never a 403, never the victim's data**. Planted: **NOT
+vulnerable**.
+
+```bash
+# Alice reads her OWN ledger (id=1) — real record
+curl -s http://127.0.0.1:8001/api/ledgers/1 -H 'Authorization: Bearer alice-token-aaaa'
+# -> {"id":1,"owner_id":1,"account_ref":"11111111-1111-1111-1111-1111111111aa","period":"2026-Q1","status":"OPEN"}
+
+# Alice reads BOB'S ledger (id=2) with HER token — DENIED, but as an equal-length soft 200
+curl -s http://127.0.0.1:8001/api/ledgers/2 -H 'Authorization: Bearer alice-token-aaaa'
+# -> {"id":0,"owner_id":0,"account_ref":"00000000-0000-0000-0000-000000000000","period":"2026-Q1","status":"DENY"}
+```
+
+The status is `200` and the body is the same length as a real ledger, but `owner_id:0` +
+`status:"DENY"` + the zero-UUID mean **no victim data was disclosed** → **NOT vulnerable**. The
+`DENY` token is deliberately not a rule-oracle veto keyword, so this case reaches the AI verifier
+(a stricter test) rather than being exonerated by the rule oracle on a keyword.
+
+---
+
 ## Planted-truth summary (ground truth / answer key)
 
 | case   | endpoint                              | planted truth          | how to confirm                                  |
@@ -419,6 +471,8 @@ owner's write does, the correct verdict is **NOT vulnerable** — despite the id
 | T-SILENT2 | `POST /api/users/{id}/theme`       | **REAL** (silent BOLA) | write-then-read: theme changed                |
 | X-CROSS | `POST /api/users/{id}/display-name` | **REAL** (cross-path BOLA) | cross-path: `GET /api/audit-log` shows the landed write (no same-path GET) |
 | X-SAFE | `POST /api/users/{id}/nickname`     | **NOT vulnerable** (cross-path secured trap) | cross-path: `GET /api/audit-log` shows NO row for the dropped cross-user write |
+| X-EQUIV-VULN | `GET /api/statements/{id}`    | **REAL** (read-type semantic-equivalence BOLA) | equal-length read: attack body carries `owner_id:2` (semantics, not size) |
+| X-EQUIV-SAFE | `GET /api/ledgers/{id}`       | **NOT vulnerable** (read-type secured control) | equal-length soft-200 denial: `owner_id:0`, `status:"DENY"`, zero-UUID — no victim data |
 
 ---
 

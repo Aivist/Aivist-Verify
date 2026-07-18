@@ -148,12 +148,17 @@ Respond with ONLY a JSON object of EXACTLY this shape (no markdown, no extra tex
   "next_request": { "method": "...", "path": "/...", "body": {...} | null, "reason": "..." } | null,
   "verdict": "verified" | "suspicious" | "failed" | "inconclusive" | null,
   "confidence": 0.0-1.0,
+  "evidence_path": "<a concrete JSON path INTO the observed response you cite as decisive — e.g. owner_id, data.owner_id, results[0].owner_id — or null if none>",
   "reasoning": "..."
 }
 
 Rules:
 - If decision is "request_more", "next_request" MUST be populated and "verdict" MUST be null.
 - If decision is "verdict", "verdict" MUST be populated and "next_request" MUST be null.
+- "evidence_path": when you deliver a verdict, cite the single concrete JSON path in the
+  observed response body that most decisively supports it (e.g. the field that identifies
+  WHOSE object was returned, or the field that carries the written value). Use a dotted /
+  bracket path from the root of that JSON body. null only when no field is decisive.
 - An opaque action-response status (e.g. 200 {"status":"ok"}) is NEVER, by itself, proof
   that the targeted state did or did not change.
 - "verified" = the attacked state was demonstrably changed (a read-back of the SAME resource/
@@ -191,6 +196,7 @@ Respond with ONLY a JSON object of EXACTLY this shape (no markdown, no extra tex
   "next_request": null,
   "verdict": "verified" | "suspicious" | "failed" | "inconclusive",
   "confidence": 0.0-1.0,
+  "evidence_path": "<a concrete JSON path into the observed response you cite as decisive, or null>",
   "reasoning": "..."
 }}
 """
@@ -217,6 +223,13 @@ class DeepVerificationResult:
     # B-2.2 transparency: the model's RAW (pre-guard) verdict + any structural override.
     ai_verdict_raw: Optional[str] = None
     guard_override: Optional[str] = None
+    # M1.1 evidence anchoring (observe-only): the JSON path the model CITED as decisive,
+    # and the CODE's structural verdict on whether that path resolves in the read-back and
+    # points at the attacked victim's runtime id. anchoring_result is one of:
+    # "confirmed" | "value_mismatch" | "failed_path_not_found" | "unparsable_read_back"
+    # | "no_read_back" | "no_path". Never changes ai_verdict — it corroborates it.
+    ai_evidence_path: Optional[str] = None
+    anchoring_result: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -548,6 +561,22 @@ def _build_turn1_prompt(context_note: str, evidence_block: str,
     return "\n".join(parts)
 
 
+# ==============================================================================
+# Provider seam — ALL provider-specific generation config (incl. structured/JSON
+# output mode) lives here, NOT in the business logic, so a different LLM provider is
+# a swap of this one function. Gemini enforces strict JSON via
+# response_mime_type="application/json"; another provider's adapter would set its own
+# JSON-mode flag here. Enforcing JSON at the API layer (not by prompt alone) is what
+# guarantees the {verdict, evidence_path, reasoning} contract parses.
+# ==============================================================================
+def _build_provider_config(types, system_instruction: str, temperature: float = 0.4):
+    return types.GenerateContentConfig(
+        system_instruction=system_instruction,
+        response_mime_type="application/json",   # provider-specific JSON mode (swappable)
+        temperature=temperature,
+    )
+
+
 async def _gemini_generate(client, types, model_name: str, contents, cfg):
     """One generate_content call with transient-503 retry; raises on final failure."""
     from google.genai import errors as genai_errors
@@ -576,6 +605,70 @@ def _parse_model_json(text: str) -> Dict[str, Any]:
     if not isinstance(obj, dict):
         raise ValueError("Model JSON was not an object")
     return obj
+
+
+# ==============================================================================
+# M1.1 evidence anchoring (observe-only). The AI makes the SEMANTIC call and CITES a
+# JSON path; the CODE then structurally checks that the cited path resolves in the
+# read-back and points at the attacked victim's runtime id. This NEVER changes the
+# verdict — it corroborates (or contradicts) the AI's cited evidence, logged alongside.
+# Target-agnostic: uses the model's path + the runtime attacked id; no target field names.
+# ==============================================================================
+_PATH_TOKEN_RE = re.compile(r"[^.\[\]]+|\[\d+\]")
+_MISSING = object()
+
+
+def _resolve_json_path(obj: Any, path: str) -> Any:
+    """Resolve a dotted/bracket JSON path (e.g. 'owner_id', 'data.owner_id',
+    'results[0].owner_id') against a parsed structure. A leading '$'/'root' and '.'
+    are tolerated. Raises KeyError/IndexError/TypeError when a segment does not
+    resolve — the caller catches those and records failed_path_not_found."""
+    p = str(path or "").strip()
+    if p[:1] == "$":
+        p = p[1:]
+    if p.lower().startswith("root."):
+        p = p[len("root"):]
+    cur = obj
+    for m in _PATH_TOKEN_RE.finditer(p):
+        tok = m.group(0)
+        if tok.startswith("[") and tok.endswith("]"):
+            cur = cur[int(tok[1:-1])]                 # list index
+        elif isinstance(cur, list):
+            cur = cur[int(tok)]                       # bare numeric key on a list
+        else:
+            cur = cur[tok]                            # dict key
+    return cur
+
+
+def _anchor_evidence(
+    read_back_body: Optional[str], evidence_path: Optional[str], attacked_object_id: Optional[str]
+) -> str:
+    """Structurally check the model's cited evidence_path against the read-back. Returns:
+      "confirmed"              — path resolves AND its scalar value == the attacked id;
+      "value_mismatch"        — path resolves but its value != the attacked id;
+      "failed_path_not_found" — path does not resolve (incl. AI-hallucinated paths);
+      "unparsable_read_back"  — the read-back body is not JSON;
+      "no_read_back"          — no read-back body available to anchor against;
+      "no_path"               — the model cited no evidence_path.
+    Type coercion is graceful: string "2" and int 2 compare equal. Never raises."""
+    if not evidence_path:
+        return "no_path"
+    if not read_back_body:
+        return "no_read_back"
+    try:
+        parsed = json.loads(read_back_body)
+    except Exception:
+        return "unparsable_read_back"
+    try:
+        value = _resolve_json_path(parsed, evidence_path)
+    except (KeyError, IndexError, TypeError, ValueError):
+        return "failed_path_not_found"
+    if value is _MISSING or isinstance(value, (dict, list)) or value is None:
+        # A container or null is not a scalar identity value to anchor on.
+        return "failed_path_not_found"
+    if attacked_object_id is None:
+        return "value_mismatch"
+    return "confirmed" if _scalar_str(value) == _scalar_str(attacked_object_id) else "value_mismatch"
 
 
 async def execute_deep_verification(
@@ -750,11 +843,7 @@ async def execute_deep_verification(
             )
 
         client_ai = genai.Client(api_key=settings.GEMINI_API_KEY)
-        cfg = types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            response_mime_type="application/json",
-            temperature=0.4,
-        )
+        cfg = _build_provider_config(types, SYSTEM_PROMPT)
 
         turn1_prompt = _build_turn1_prompt(context_note, evidence_block, available_endpoints)
         contents = [types.Content(role="user", parts=[types.Part(text=turn1_prompt)])]
@@ -807,6 +896,17 @@ async def execute_deep_verification(
                 _raw_verdict, attack_req.get("path", ""),
                 follow_up_path=None, follow_up_performed=False,
             )
+            # M1.1 anchoring (observe-only): no follow-up was performed, so the read-back
+            # the model judged on is the ATTACK response itself (the read-type leak case).
+            _evidence_path = turn1_obj.get("evidence_path")
+            _anchor = _anchor_evidence(
+                attack_result.get("response_body"), _evidence_path, attacked_object_id
+            )
+            logger.info(
+                "[DEEP-VERIFY] Evidence anchoring (turn-1 verdict): ai_verdict=%r "
+                "evidence_path=%r attacked_id=%r -> anchoring_result=%r (observe-only).",
+                _final_verdict, _evidence_path, attacked_object_id, _anchor,
+            )
             return DeepVerificationResult(
                 status="completed",
                 ai_verdict=_final_verdict,
@@ -822,6 +922,8 @@ async def execute_deep_verification(
                 turns_raw=turns_raw,
                 ai_verdict_raw=_raw_verdict,
                 guard_override=_override,
+                ai_evidence_path=_evidence_path,
+                anchoring_result=_anchor,
             )
 
         # ---------------- Execute the follow-up (scope-locked) ----------------
@@ -958,6 +1060,20 @@ async def execute_deep_verification(
                 _normalize_path(fu_request_record.get("path")),
             )
 
+        # M1.1 anchoring (observe-only): the read-back the model judged on is the follow-up
+        # response when one was captured, else the attack response.
+        _evidence_path = turn2_obj.get("evidence_path")
+        _anchor_body = (
+            (follow_up_response or {}).get("body")
+            if follow_up_response is not None
+            else attack_result.get("response_body")
+        )
+        _anchor = _anchor_evidence(_anchor_body, _evidence_path, attacked_object_id)
+        logger.info(
+            "[DEEP-VERIFY] Evidence anchoring (turn-2 verdict): ai_verdict=%r "
+            "evidence_path=%r attacked_id=%r -> anchoring_result=%r (observe-only).",
+            _final_verdict, _evidence_path, attacked_object_id, _anchor,
+        )
         return DeepVerificationResult(
             status="completed",
             ai_verdict=_final_verdict,
@@ -973,4 +1089,6 @@ async def execute_deep_verification(
             turns_raw=turns_raw,
             ai_verdict_raw=_raw_verdict,
             guard_override=_override,
+            ai_evidence_path=_evidence_path,
+            anchoring_result=_anchor,
         )

@@ -202,7 +202,38 @@ execute_deep_verification(parsed_request, payload, base_url, *,
   `ai_verdict` (the **final**, post-guard verdict), `ai_verdict_raw` (the model's
   pre-guard verdict), `guard_override` (the structural-guard reason, or `None`),
   `ai_confidence`, `ai_reasoning`, `ai_requested_follow_up`,
-  `follow_up_request`/`follow_up_response`, `baseline`, `attack`, `turns_raw`.
+  `follow_up_request`/`follow_up_response`, `baseline`, `attack`, `turns_raw`,
+  and — new in M1.1 — `ai_evidence_path` + `anchoring_result` (see below).
+
+---
+
+## Structured evidence + code-anchoring (M1.1, observe-only)
+
+The response contract carries **structured evidence**, not just a label: the model emits an
+`evidence_path` (a concrete JSON path into the read-back it cites as decisive) alongside
+`verdict` + `reasoning`. In CODE, `_anchor_evidence` resolves that path in the read-back
+(`_resolve_json_path`, wrapped in try/except so a hallucinated path never crashes the engine)
+and compares the value there — with type coercion (`"2"` == `2`) — against the attacked victim's
+runtime id. The outcome is recorded as `anchoring_result`, one of: `confirmed` |
+`value_mismatch` | `failed_path_not_found` | `unparsable_read_back` | `no_read_back` | `no_path`.
+
+This is the project's principle in action — **the AI makes the semantic call; code anchors it
+against ground truth** — but note the honest limits:
+
+- **Corroboration, not proof.** For a read of object 2, `owner_id:2` in the response is
+  *expected*; `confirmed` verifies the read-back exposes the attacked object's identity, it does
+  **not** by itself prove the "caller is a different user" half. It is a cross-check on the
+  model's cited evidence, not an independent oracle.
+- **Observe-only.** `anchoring_result` is **logged, never used to change `ai_verdict`** in this
+  task (no read-leak exemption was built). It corroborates; it does not gate.
+- Measured on the read-type X-EQUIV pair (`vulnerable_target/benchmark/RESULTS.md`, M1.1):
+  X-EQUIV-VULN → `verified` 5/5 with `evidence_path='owner_id'` / `anchoring_result='confirmed'`;
+  X-EQUIV-SAFE → `failed` 5/5 (0 false positives) with `anchoring_result='value_mismatch'`.
+
+**Provider seam (JSON mode):** strict JSON output is enforced at the **provider call site**, not
+by prompt text alone — `_build_provider_config` centralizes the Gemini-specific
+`response_mime_type="application/json"` so it stays swappable when other LLM providers are added
+(business logic never hardcodes provider params).
 
 ---
 

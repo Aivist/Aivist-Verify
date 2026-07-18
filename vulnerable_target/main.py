@@ -97,6 +97,8 @@ class User(Base):
     note = relationship("Note", back_populates="owner", uselist=False)
     theme = relationship("Theme", back_populates="owner", uselist=False)
     identity = relationship("Identity", back_populates="owner", uselist=False)
+    statement = relationship("Statement", back_populates="owner", uselist=False)
+    ledger = relationship("Ledger", back_populates="owner", uselist=False)
 
 
 class Order(Base):
@@ -225,6 +227,42 @@ class AuditEvent(Base):
     new_value = Column(String(256), nullable=False)
 
 
+class Statement(Base):
+    """Object behind X-EQUIV-VULN (read-type semantic-equivalence BOLA). The SAME
+    statement object is reachable two ways: an owner-scoped canonical path
+    (GET /api/users/{user_id}/statement) AND a flat resource path
+    (GET /api/statements/{statement_id}). The flat path has NO ownership check — that
+    is the bug. Bodies are shaped EQUAL-LENGTH across users (fixed-width uuid + fixed
+    period/status; only id/owner_id identity content differs) so the size/diff oracle
+    cannot decide and leaves it `suspicious` for the AI to judge by semantics."""
+    __tablename__ = "statements"
+
+    id = Column(Integer, primary_key=True)  # == owner_id for predictability
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    account_ref = Column(String(36), nullable=False)  # UUID, always 36 chars
+    period = Column(String(16), nullable=False, default="2026-Q1")
+    status = Column(String(8), nullable=False, default="OPEN")
+
+    owner = relationship("User", back_populates="statement")
+
+
+class Ledger(Base):
+    """Object behind X-EQUIV-SAFE (SECURE control, mirror of Statement). Same two-path
+    shape (GET /api/users/{user_id}/ledger and GET /api/ledgers/{ledger_id}) but BOTH
+    paths enforce ownership. A cross-user read is refused with an EQUAL-LENGTH soft-200
+    (owner_id 0, status DENY, a zero-uuid) — never a 403, never the victim's data — so
+    it also lands `suspicious`; the AI must see through the look-alike and NOT verify."""
+    __tablename__ = "ledgers"
+
+    id = Column(Integer, primary_key=True)  # == owner_id for predictability
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    account_ref = Column(String(36), nullable=False)
+    period = Column(String(16), nullable=False, default="2026-Q1")
+    status = Column(String(8), nullable=False, default="OPEN")
+
+    owner = relationship("User", back_populates="ledger")
+
+
 # ------------------------------------------------------------------------------
 # Seed data — Alice (id=1, user) and Bob (id=2, user) are normal users; Carol
 # (id=3, admin) is the privileged account used by the Vuln C test case. Each user
@@ -251,6 +289,9 @@ SEED_USERS = [
         "theme": {"theme": "light"},
         # D18 Phase 2: identity behind X-CROSS (display-name) + X-SAFE (nickname).
         "identity": {"display_name": "alice_dn", "nickname": "alice_nick"},
+        # M1.1: statement (X-EQUIV-VULN) + ledger (X-EQUIV-SAFE). Fixed-width uuid.
+        "statement": {"account_ref": "11111111-1111-1111-1111-111111111111"},
+        "ledger": {"account_ref": "11111111-1111-1111-1111-1111111111aa"},
     },
     {
         "id": 2,
@@ -281,6 +322,8 @@ SEED_USERS = [
         "note": {"text": "Remember to buy eggs"},
         "theme": {"theme": "dark"},
         "identity": {"display_name": "bob_dn", "nickname": "bob_nick"},
+        "statement": {"account_ref": "22222222-2222-2222-2222-222222222222"},
+        "ledger": {"account_ref": "22222222-2222-2222-2222-2222222222bb"},
     },
     {
         "id": 3,
@@ -296,6 +339,8 @@ SEED_USERS = [
         "note": {"text": "Remember to buy tea_"},
         "theme": {"theme": "system"},
         "identity": {"display_name": "carol_dn", "nickname": "carol_nick"},
+        "statement": {"account_ref": "33333333-3333-3333-3333-333333333333"},
+        "ledger": {"account_ref": "33333333-3333-3333-3333-3333333333cc"},
     },
 ]
 
@@ -316,6 +361,8 @@ async def _seed(session: AsyncSession) -> None:
         session.add(Note(id=u["id"], owner_id=u["id"], **u["note"]))
         session.add(Theme(owner_id=u["id"], **u["theme"]))
         session.add(Identity(owner_id=u["id"], **u["identity"]))
+        session.add(Statement(id=u["id"], owner_id=u["id"], **u["statement"]))
+        session.add(Ledger(id=u["id"], owner_id=u["id"], **u["ledger"]))
     await session.commit()
     logger.info("Seeded users: %s", ", ".join(u["username"] for u in SEED_USERS))
 
@@ -889,6 +936,100 @@ async def get_audit_log(
         {"id": e.id, "event": e.event, "user_id": e.user_id, "new_value": e.new_value}
         for e in rows
     ]}
+
+
+# ------------------------------------------------------------------------------
+# X-EQUIV-VULN — READ-TYPE SEMANTIC-EQUIVALENCE cross-path BOLA (M1.1).
+#
+# The SAME statement object is reachable two equivalent ways: an owner-scoped canonical
+# path AND a flat resource path. The flat path (get_statement) has NO ownership check —
+# so an authenticated user reads another user's statement. The response is shaped
+# EQUAL-LENGTH across users (fixed-width uuid + fixed period/status; only id/owner_id
+# identity differs), so a size/diff oracle cannot decide and leaves it `suspicious`; the
+# AI must recognize from SEMANTIC content (owner_id) that the returned object is another
+# user's. Planted: REAL. Decisive evidence = owner_id in the leaked body == the victim id.
+# ------------------------------------------------------------------------------
+_DENY_REF = "00000000-0000-0000-0000-000000000000"  # 36-char zero UUID (no victim data)
+
+
+def _statement_body(st: "Statement") -> dict:
+    return {"id": st.id, "owner_id": st.owner_id, "account_ref": st.account_ref,
+            "period": st.period, "status": st.status}
+
+
+@app.get("/api/users/{user_id}/statement", tags=["statements"])
+async def read_user_statement(
+    user_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # SECURE canonical path: ownership enforced (equal-length soft-200 on cross-user).
+    if user_id != current_user.id:
+        return {"id": 0, "owner_id": 0, "account_ref": _DENY_REF, "period": "2026-Q1", "status": "DENY"}
+    st = (await db.execute(select(Statement).where(Statement.owner_id == user_id))).scalars().first()
+    if st is None:
+        raise HTTPException(status_code=404, detail="Statement not found")
+    return _statement_body(st)
+
+
+@app.get("/api/statements/{statement_id}", tags=["statements"])
+async def get_statement(
+    statement_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    st = (await db.execute(select(Statement).where(Statement.id == statement_id))).scalars().first()
+    if st is None:
+        raise HTTPException(status_code=404, detail="Statement not found")
+    # VULNERABLE: no ownership check. Returns the SAME object the canonical path guards.
+    return _statement_body(st)
+
+
+# ------------------------------------------------------------------------------
+# X-EQUIV-SAFE — SECURE mirror of X-EQUIV-VULN (M1.1).
+#
+# Same two-path shape (canonical + flat) but BOTH paths enforce ownership. A cross-user
+# read is refused with an EQUAL-LENGTH soft-200 that carries NO victim identity (id 0,
+# owner_id 0, zero-uuid, status DENY) — never a 403, never the victim's data. It also
+# lands `suspicious`; the AI must see through the look-alike and NOT verify. Planted:
+# SECURE. A `verified` here is a FALSE POSITIVE.
+# ------------------------------------------------------------------------------
+def _ledger_body(led: "Ledger") -> dict:
+    return {"id": led.id, "owner_id": led.owner_id, "account_ref": led.account_ref,
+            "period": led.period, "status": led.status}
+
+
+def _ledger_deny() -> dict:
+    return {"id": 0, "owner_id": 0, "account_ref": _DENY_REF, "period": "2026-Q1", "status": "DENY"}
+
+
+@app.get("/api/users/{user_id}/ledger", tags=["ledgers"])
+async def read_user_ledger(
+    user_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if user_id != current_user.id:
+        return _ledger_deny()
+    led = (await db.execute(select(Ledger).where(Ledger.owner_id == user_id))).scalars().first()
+    if led is None:
+        raise HTTPException(status_code=404, detail="Ledger not found")
+    return _ledger_body(led)
+
+
+@app.get("/api/ledgers/{ledger_id}", tags=["ledgers"])
+async def get_ledger(
+    ledger_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    led = (await db.execute(select(Ledger).where(Ledger.id == ledger_id))).scalars().first()
+    if led is None:
+        raise HTTPException(status_code=404, detail="Ledger not found")
+    # SECURE: ownership enforced; cross-user -> equal-length soft-200 DENY (no victim data).
+    if led.owner_id != current_user.id:
+        return _ledger_deny()
+    return _ledger_body(led)
 
 
 @app.get("/", tags=["meta"])

@@ -306,7 +306,9 @@ agent must treat the following as deliberate-but-dangerous:
   `catalog_from_har` is a stub. The shadow pass reads its spec from
   `settings.AI_DEEP_VERIFY_OPENAPI_SPEC` (via `getattr` — *not* a declared config
   field, D21), else falls back to a same-resource placeholder. The benchmark attack
-  surface is the 18-endpoint `vulnerable_target/` app. Two known seams (auth-context,
-  endpoint catalog/spec wiring) are tracked in [`TECH_DEBT.md`](./TECH_DEBT.md) D18.
+  surface is the 22-route `vulnerable_target/` app (`app.openapi()` lists 18 path
+  templates; the +4 over the pre-M1.1 surface are the X-EQUIV read-type routes). Two
+  known seams (auth-context, endpoint catalog/spec wiring) are tracked in
+  [`TECH_DEBT.md`](./TECH_DEBT.md) D18.
 - When something "doesn't persist," suspect the **stale-SQLite-schema** trap
   documented in [`DATA_MODEL.md`](./DATA_MODEL.md) and [`DEVELOPMENT.md`](./DEVELOPMENT.md).

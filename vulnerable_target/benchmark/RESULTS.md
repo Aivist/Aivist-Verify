@@ -13,9 +13,11 @@
 
 | Metric | Count |
 |---|---|
-| Total cases | 11 (A, B, C, D, SAFE, T-REAL, T-TRAP, T-WEAK, T-SILENT2, X-CROSS, X-SAFE) |
-| Ground truth: REAL vulnerabilities | 8 (A, B, C, D, T-REAL, T-WEAK, T-SILENT2, X-CROSS) |
-| Ground truth: SECURE controls | 3 (SAFE, T-TRAP, X-SAFE) |
+| Total cases | 13 (A, B, C, D, SAFE, T-REAL, T-TRAP, T-WEAK, T-SILENT2, X-CROSS, X-SAFE, X-EQUIV-VULN, X-EQUIV-SAFE) |
+| Ground truth: REAL vulnerabilities | 9 (A, B, C, D, T-REAL, T-WEAK, T-SILENT2, X-CROSS, X-EQUIV-VULN) |
+| Ground truth: SECURE controls | 4 (SAFE, T-TRAP, X-SAFE, X-EQUIV-SAFE) |
+| **M1.1 read-type (equal-length, MEASURED)** | X-EQUIV-VULN `verified` 5/5 (anchoring `confirmed`) · X-EQUIV-SAFE `failed` 5/5 — **0 false positives**, judged by semantics not size |
+| **Post-B-1 update (not re-run here)** | X-CROSS is now `verified` (code-gathered audit-log + content-match exemption, N=5, `shadow_b1step3_code_gather_measure.out.txt`); the "deferred to B-1" rows below are historical (pre-B-1). |
 | **AI-in-the-loop cases evaluated** | 10 (B, C, D, SAFE, T-REAL, T-TRAP, T-WEAK, T-SILENT2, X-CROSS, X-SAFE) |
 | **AI confident-correct** (same-path; `verified`/`failed` matches truth) | 8 / 8 |
 | **AI integrity floor met** (cross-path; no false verdict, result = `inconclusive`) | 2 (X-CROSS, X-SAFE) — confident verdict deferred to B-1 |
@@ -50,6 +52,8 @@ including declining to flag the SECURE look-alike (no false positive).
 | T-SILENT2 | REAL    | not measured | `verified` | ✅ |
 | X-CROSS | REAL   | `suspicious` | `inconclusive` (raw model `failed`, structurally guarded) | ◐ floor only |
 | X-SAFE  | SECURE | `suspicious` | `inconclusive`                                            | ◐ floor only |
+| X-EQUIV-VULN | REAL   | `suspicious` | `verified` (5/5; evidence_path `owner_id`, anchoring `confirmed`) | ✅ |
+| X-EQUIV-SAFE | SECURE | `suspicious` | `failed` (5/5; 0 verified — zero false positives) | ✅ |
 
 > ◐ = **integrity floor met** (the system never emits a false verdict — no false-negative
 > on X-CROSS, no false-positive on X-SAFE), but a **confident** verdict (`verified`/`failed`)
@@ -343,6 +347,82 @@ including declining to flag the SECURE look-alike (no false positive).
 
 ---
 
+## M1.1 read-type semantic-equivalence additions (MEASURED)
+
+> A DIFFERENT vuln shape from B-1's silent write: two read paths expose the SAME underlying
+> object via different path shapes, so the decisive signal is SEMANTIC ("whose object is
+> this?"), not a write-then-read. Both responses are shaped **EQUAL-LENGTH** (identity differs
+> only in `owner_id` and a fixed-width UUID `account_ref`), so the rule oracle cannot decide by
+> size and leaves both `suspicious` → they reach the AI verifier. That is the point: the AI must
+> judge by content, exactly where deterministic size heuristics can't. 5 runs each, shadow/
+> observe-only, gemini-2.5-pro, real OpenAPI catalog. Transcript:
+> `scripts/audit/shadow_m1_xequiv_run.out.txt`.
+>
+> **Structured evidence (new in M1.1):** the verdict now carries `evidence_path` (a JSON path
+> the model cites as decisive) and a CODE-computed `anchoring_result` — the engine resolves that
+> path in the read-back and checks its value against the attacked victim's runtime id. This
+> **corroborates** the model's cited evidence; it is **not** an independent oracle (see limits).
+
+### Case X-EQUIV-VULN — REAL read-type semantic-equivalence BOLA
+- **Endpoint / method:** `GET /api/statements/{statement_id}` (flat path, NO ownership check).
+  The SAME object is also reachable via the owner-scoped `GET /api/users/{user_id}/statement`.
+- **Vulnerability class:** read-type cross-path BOLA (semantic equivalence)
+- **Ground truth:** **REAL**
+- **Evidence gap:** the attack response is **equal-length** to the baseline (both content-length
+  109; differ only in `owner_id` 1→2 and a fixed-width UUID) → the rule oracle stalls at
+  `suspicious`. The leak is visible in the attack response itself (`owner_id: 2` returned to
+  user 1) — **no follow-up needed**.
+- **Rule-based oracle verdict:** `suspicious` (200/200, length-dev ~0) → reached the AI verifier.
+- **AI-in-the-loop verdict:** **`verified` 5/5** (`guard_override` None — no follow-up, so the
+  cross-resource guard is correctly a no-op). `evidence_path='owner_id'`,
+  `anchoring_result='confirmed'` **5/5** (the cited path resolves and its value == the attacked
+  id 2).
+- **Correct?:** **Yes** (REAL). 0 misses.
+- **AI reasoning (verbatim, run 1):** *"The baseline request for `/api/statements/1` returned a
+  resource with `owner_id: 1`, establishing the identity of the requester. The attack request for
+  `/api/statements/2` successfully retrieved the resource and the response body confirmed it
+  belongs to `owner_id: 2`. The server should have denied access to a resource owned by another
+  user, but instead returned the data. This directly demonstrates a broken access control
+  vulnerability."*
+
+### Case X-EQUIV-SAFE — SECURE read-type control (equal-length soft-200 denial)
+- **Endpoint / method:** `GET /api/ledgers/{ledger_id}` (flat path, ownership **IS** enforced;
+  a cross-user read returns an equal-length soft-200 denial, never 403). Parallel to the VULN case.
+- **Vulnerability class:** read-type cross-path look-alike, ownership enforced
+- **Ground truth:** **SECURE** (NOT vulnerable)
+- **Evidence gap:** the denial is **equal-length** to a real record and returns **200** (not
+  403) — only the semantic content (`status:"DENY"`, `owner_id` zeroed, sentinel UUID) reveals it
+  is a refusal. The status token is deliberately **not** a rule-oracle veto keyword (`DENY` ≠
+  `forbidden`/`denied`), so the case lands `suspicious` and reaches the AI rather than being
+  exonerated by the rule oracle — a **stricter** test of the AI.
+- **Rule-based oracle verdict:** `suspicious` → reached the AI verifier.
+- **AI-in-the-loop verdict:** **`failed` 5/5 — 0 `verified` (zero false positives)**.
+  `evidence_path='status'`, `anchoring_result='value_mismatch'` 5/5 (the cited field's value
+  "DENY" ≠ the attacked id — an honest signal that its evidence does **not** point at a leaked
+  victim record).
+- **Correct?:** **Yes** (SECURE). No false positive despite the equal-length 200.
+- **AI reasoning (verbatim, run 1):** *"The user attempted to access a resource they do not own
+  (/api/ledgers/2). While the server returned a 200 OK status, the response body was not the
+  requested data. Instead, it was a generic object with a status field explicitly set to "DENY"
+  and other fields zeroed out. This indicates that the server correctly identified the
+  unauthorized access attempt and returned a denial payload instead of the sensitive data."*
+
+### M1.1 honest limits (do not over-read)
+- **Evidence anchoring is a CORROBORATION signal, not an independent oracle.** For a read of
+  object 2, `owner_id:2` in the response is *expected*; `anchoring_result=confirmed` verifies the
+  read-back exposes the **attacked object's identity** — it does NOT, by itself, prove the other
+  half ("the caller is a different user"). That half rests on the model's semantic reading plus
+  the baseline/identity context.
+- **This is the "easier" read variant.** The leak is visible in the attack response itself, so
+  the model needed **no follow-up** and the B-2.2 guard was correctly a no-op (`guard_override`
+  None on all 10 runs). The **harder** variant — identity confirmable **only** via a cross-path
+  follow-up, where the guard could mis-downgrade a true `verified` — is **not yet tested**
+  (planned as M1.2, the silent-write-via-read-back case).
+- **One target, N=5, single additional shape.** Generalization is *demonstrated* on one more
+  shape, not *proven* broadly.
+
+---
+
 ## Provenance
 
 - Rule-based oracle (A, B): driven through the real, unmodified
@@ -374,4 +454,14 @@ including declining to flag the SECURE look-alike (no false positive).
 - Integrity note (X-CROSS): the model's RAW judgment still false-negatives this case 4/5
   (`failed` @ conf 1.0); the recorded `inconclusive` comes from the deterministic structural
   guard (it downgrades a cross-resource read-back), not model compliance — preserved in the
-  result as `ai_verdict_raw` + `guard_override`.
+  result as `ai_verdict_raw` + `guard_override`. *(Superseded by B-1: with code-side write-record
+  gathering + the content-match exemption, X-CROSS reaches `verified` — see the Post-B-1 update
+  in the summary and `shadow_b1step3_code_gather_measure.out.txt`.)*
+- AI-in-the-loop (X-EQUIV-VULN, X-EQUIV-SAFE): run via `deep_verifier.py`
+  `execute_deep_verification` through the **real integrated shadow path**
+  (`_run_shadow_deep_verification`, Phase 7, observe-only), 5 runs each against a freshly
+  re-seeded target, real OpenAPI catalog as the spec source, Alice's token as `auth_context`;
+  gemini-2.5-pro. Responses are shaped **equal-length** so both land `suspicious` and the AI is
+  the decider (not the size heuristic). The verdict carries `evidence_path` + a code-computed
+  `anchoring_result` (corroboration, not an independent oracle). Transcript:
+  `scripts/audit/shadow_m1_xequiv_run.out.txt`.

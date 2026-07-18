@@ -80,16 +80,36 @@ breadth (more vuln shapes) and promotion (D19) — not the core "can it confirm?
 
 ## 4. The main line (3 nodes — B-1, D19, scope-lock; not separate tracks)
 
-1. **Judge correctly.** §5 (done): integrity floor — never a false verdict. **B-1 (✅ done,
-   committed `37769b3`):** it *confirms* cross-path bugs — catalog semantics + deterministic
-   write-record gathering + a structural *"write-record read is decisive"* guard exemption
-   (answer key §8). **Live-measured** (`X-CROSS`→`verified` 5/5, `X-SAFE`→`inconclusive`/safe
-   5/5, §5 + reverse-guards intact) and **locked by a regression test** (D22 closed). Remaining
-   is breadth only: broader vuln shapes (gate hardening D23/D23b done). *(TECH_DEBT.md
-   B-1; state in STATUS.md.)*
+1. **Judge correctly — milestone M1: prove the mechanism generalizes across shapes, zero FP.**
+   §5 (done): integrity floor — never a false verdict. Then confirm the hard case on shape after
+   shape:
+   - **M1.0 (B-1, ✅ done, `37769b3`):** silent cross-path **write**, confirmed via a **write-record**
+     — catalog semantics + deterministic write-record gathering + a structural guard exemption
+     (answer key §8). Live-measured (`X-CROSS`→`verified` 5/5, `X-SAFE`→safe 5/5), locked by a
+     regression test (D22 closed); gate hardened (D23/D23b).
+   - **M1.1 (✅ done, this commit):** read-type **semantic-equivalence**, equal-length — the rule
+     oracle can't decide by size, so the **AI judges by semantic content**; the verdict now carries
+     structured **`evidence_path` + code-computed `anchoring_result`** (AI makes the semantic call,
+     code anchors it — corroboration, observe-only). Live-measured: X-EQUIV-VULN→`verified` 5/5,
+     X-EQUIV-SAFE→`failed` 5/5 (**0 FP**), N=5, one target.
+   - **M1.2 (next):** cross-path **silent write** confirmed via **read-back STATE** (not a
+     write-record) — the real test of whether the B-2.2 guard mis-downgrades a true `verified`, and
+     a map of the black-box confirmation boundary. *(A "forced-follow-up read" shape was analyzed and
+     rejected as a pseudo-problem — a read is self-decisive or not a leak; do not pursue it.)*
+   - **M1.x (later):** mass-assignment, delete-type, and further shapes.
+
+   > **M2 — Shared Domain Model (later, NOT started):** a resource/endpoint relationship graph — sink
+   > upstream observations (proxy / HAR / spec) into a shared layer every module can query, so the
+   > verifier isn't guessing which paths relate (precedent: RESTler-style request-dependency graph
+   > from OpenAPI). **Gated on** M1 proving generalization + an evidence-backed list of "what downstream
+   > needs from upstream."
+   >
+   > **Strategic radar (decide later, do NOT act now):** black-box (deployable, but a fundamental ceiling
+   > on truly-silent writes whose effect surfaces through *no* endpoint) vs. an optional gray-box mode
+   > (log/instrumentation ingestion, à la BACFuzz) for higher-assurance confirmation.
 2. **Act.** **D19:** promote the AI verdict from observe-only/log to **authoritative** — take over
    the `suspicious` records in the real flow; decide the gating defaults. First time the product
-   "does the job." *(TECH_DEBT.md D19.)*
+   "does the job." Gated on M1 proving generalization. *(TECH_DEBT.md D19.)*
 3. **Be safe on real targets.** **Scope-lock hardening** (hard prerequisite before pointing at
    anything beyond localhost / self-built labs): consolidate the duplicated host-scope checks —
    the fuzzer's `_send_request` / `ScopeViolationError` enforcement (`fuzzer.py`) **and** the deep
