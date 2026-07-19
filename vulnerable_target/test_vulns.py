@@ -267,6 +267,90 @@ def test_safe_owner_write_does_land(client):
 
 
 # -----------------------------------------------------------------------------
+# X-SILENT-VULN (M1.2(A)) — silent cross-path WRITE confirmed by the object's OWN STATE
+# read on a DIFFERENT path. Alice overwrites Bob's gizmo `code`; the POST is an opaque
+# 200 {"status":"ok"} (no same-path GET at all); the ONLY observation is the cross-path
+# state read GET /api/gizmos/2. Ground truth: REAL — a landed cross-user write.
+# -----------------------------------------------------------------------------
+
+_UNIQUE = "gz-unique-7c3f9a12e4b"  # a fuzzer-style unique value (not a common enum)
+
+
+def test_x_silent_vuln_cross_user_write_lands_in_state(client):
+    # Baseline: Bob's gizmo state (via the cross-path state read) is the seeded value.
+    before = client.get("/api/gizmos/2", headers=_auth(ALICE_TOKEN))
+    assert before.status_code == 200
+    assert before.json() == {"id": 2, "owner_id": 2, "code": "gizmo_bob_v0"}
+
+    # Alice (her token) writes a UNIQUE value to Bob's gizmo (user_id=2). Opaque success.
+    write = client.post(
+        "/api/users/2/gizmo", headers=_auth(ALICE_TOKEN), json={"code": _UNIQUE}
+    )
+    assert write.status_code == 200
+    assert write.json() == {"status": "ok"}  # gives nothing away about whose code changed
+
+    # The ONLY way to observe it: the cross-path STATE read. The write LANDED on Bob's object.
+    after = client.get("/api/gizmos/2", headers=_auth(ALICE_TOKEN))
+    assert after.status_code == 200
+    assert after.json() == {"id": 2, "owner_id": 2, "code": _UNIQUE}  # victim's state carries our value
+
+
+def test_x_silent_vuln_has_no_same_path_get(client):
+    # There is deliberately NO GET on the write path -> a same-path read-back is impossible;
+    # confirmation MUST be cross-path. FastAPI answers 405 (path exists, method not allowed).
+    resp = client.get("/api/users/2/gizmo", headers=_auth(ALICE_TOKEN))
+    assert resp.status_code == 405
+
+
+# -----------------------------------------------------------------------------
+# X-SILENT-SAFE (M1.2(A)) — SECURE mirror of X-SILENT-VULN. SAME opaque 200 on the write,
+# but ownership IS enforced: a cross-user write is silently dropped, so the cross-path
+# state read shows the value UNCHANGED. Ground truth: SECURE — a `verified` is a FALSE POSITIVE.
+# -----------------------------------------------------------------------------
+
+def test_x_silent_safe_cross_user_write_does_not_land(client):
+    before = client.get("/api/sprockets/2", headers=_auth(ALICE_TOKEN))
+    assert before.status_code == 200
+    assert before.json() == {"id": 2, "owner_id": 2, "code": "sprocket_bob_v0"}
+
+    # Alice attempts to overwrite Bob's sprocket — SAME opaque 200 ok as the vulnerable gizmo.
+    write = client.post(
+        "/api/users/2/sprocket", headers=_auth(ALICE_TOKEN), json={"code": _UNIQUE}
+    )
+    assert write.status_code == 200
+    assert write.json() == {"status": "ok"}  # NOT a 403 — that is the trap
+
+    # Cross-path STATE read: UNCHANGED. The unique value is ABSENT -> the write was dropped.
+    after = client.get("/api/sprockets/2", headers=_auth(ALICE_TOKEN))
+    assert after.status_code == 200
+    assert after.json() == {"id": 2, "owner_id": 2, "code": "sprocket_bob_v0"}
+    assert _UNIQUE not in after.text  # the causality signal the exemption gates on is absent
+
+
+def test_x_silent_safe_owner_write_does_land(client):
+    # Sanity: the SAFE endpoint is functional — the legitimate owner CAN update his own.
+    write = client.post(
+        "/api/users/2/sprocket", headers=_auth(BOB_TOKEN), json={"code": _UNIQUE}
+    )
+    assert write.status_code == 200
+    after = client.get("/api/sprockets/2", headers=_auth(BOB_TOKEN))
+    assert after.json() == {"id": 2, "owner_id": 2, "code": _UNIQUE}
+
+
+def test_x_silent_vuln_and_safe_write_responses_are_byte_identical(client):
+    # A single-shot oracle cannot tell the REAL silent write from the SECURE one: same
+    # status, same bytes on the write response. Only the cross-path STATE read separates them.
+    vuln = client.post(
+        "/api/users/2/gizmo", headers=_auth(ALICE_TOKEN), json={"code": _UNIQUE}
+    )
+    safe = client.post(
+        "/api/users/2/sprocket", headers=_auth(ALICE_TOKEN), json={"code": _UNIQUE}
+    )
+    assert vuln.status_code == safe.status_code == 200
+    assert vuln.content == safe.content  # identical {"status":"ok"}
+
+
+# -----------------------------------------------------------------------------
 # Auth is still required (the bugs are authorization bugs, not "no auth at all").
 # -----------------------------------------------------------------------------
 
@@ -277,3 +361,5 @@ def test_missing_token_is_rejected(client):
     assert client.get("/api/admin/users").status_code == 401
     assert client.get("/api/users/2/settings").status_code == 401
     assert client.get("/api/users/2/avatar").status_code == 401
+    assert client.get("/api/gizmos/2").status_code == 401
+    assert client.get("/api/sprockets/2").status_code == 401

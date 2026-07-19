@@ -22,8 +22,8 @@ two shapes / one target.
 
 | Suite | Command (from repo root) | Result |
 |---|---|---|
-| Backend | `python -m pytest backend/tests -q` | **197 passed** |
-| Ground-truth target | `python -m pytest vulnerable_target -q` | **14 passed** |
+| Backend | `python -m pytest backend/tests -q` | **208 passed** |
+| Ground-truth target | `python -m pytest vulnerable_target -q` | **19 passed** |
 
 ## The main line (three nodes)
 
@@ -43,14 +43,16 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
 |---|---|---|
 | **M1.0 (B-1)** | silent cross-path **write**, confirmed via a **write-record** | **DONE, committed `37769b3`.** X-CROSS→`verified` 5/5, X-SAFE→safe 5/5; regression test locks it. |
 | **M1.1** | read-type **semantic-equivalence**, equal-length, confirmed by **semantics + evidence anchoring** | **DONE, committed `002b33c`.** X-EQUIV-VULN→`verified` 5/5, X-EQUIV-SAFE→`failed` 5/5 — **0 FP**, N=5, one target. |
-| **M1.2 (in progress)** | cross-path **silent write** confirmed via **read-back STATE** (not a write-record) | **Prerequisites DONE:** anchoring extended to bind caller-identity + payload-causality (`2cac345`); **HALF-1 is now OBJECT-SCOPED** (this commit) — a silent write whose only candidate write-record is irrelevant no longer hijacks the follow-up, so the model can read the object's own state. **Confirmed & documented, NOT yet fixed:** the B-2.2 guard *does* mis-downgrade a correct cross-path STATE read-back to `inconclusive` (no read-back-state exemption; the anchors corroborate the leak, only the guard blocks it). **Remaining:** the guard-exemption decision + live target cases / measurement. *(A "forced-follow-up read" shape was rejected as a pseudo-problem — reads are self-decisive or not a leak; do not pursue it.)* |
+| **M1.2 — mechanism BUILT + proven SAFE offline, NOT yet confirmed live** | cross-path **silent write** confirmed via **read-back STATE** (not a write-record) | **Prerequisites DONE:** caller-identity + payload-causality anchoring (`2cac345`); object-scoped HALF-1 (`3e949cb`). **M1.2(A) — state-readback exemption BUILT (this commit):** a SECOND, separate guard channel (`STATE_READBACK_EXEMPTION_REASON`, **disjoint from B-1**, `verified`-only) that lets a correct cross-path STATE read stand as `verified` **iff** code AND-confirms all three anchors — owner==attacked ∧ caller!=owner (`caller_identity=confirmed`) **and** payload-causality (THIS attack's UNIQUE value present). **Proven SAFE offline both ways, 0 FP** (`test_m12_state_readback_exemption.py`): VULN-shape→exempt→`verified`; **SAFE-shape (payload absent)→NOT exempt→stays `inconclusive` even when the model raw-says `verified`.** **NOT exercised live:** gemini-2.5-pro never reaches the cross-path object-state read on its own — `GET /api/gizmos/2` chosen **0/5**; it tried the same-path GET (→405) or the empty audit-log (`shadow_m12a_state_readback_run.out.txt`). **Same wall as B-1** (model chose the decisive endpoint 0/20). Live: X-SILENT-VULN/SAFE both `inconclusive` 5/5 (**integrity floor held, 0 FP**). **So the exemption is safe & ready but currently has no inputs. Next = M1.2(B):** deterministically code-gather the object's own state read-back (target-agnostic, mirroring B-1's HALF-1) to feed it. |
 | **M1.x (later)** | mass-assignment, delete-type, and further shapes | Not started — each is one more格 of generalization. |
 
 > **M2 — Shared Domain Model (later, NOT started):** a resource/endpoint relationship graph —
 > sink upstream observations (proxy/HAR/spec) into a shared layer every module can query, so the
 > verifier isn't guessing which paths relate (precedent: RESTler-style request-dependency graph
 > from OpenAPI). **Gated on** M1 proving generalization + an evidence-backed list of "what
-> downstream actually needs from upstream."
+> downstream actually needs from upstream." **Minimal slice pulled forward:** M1.2(B)'s "find the
+> attacked object's own state endpoint" is exactly the smallest slice of this graph — build only
+> that slice now; the full dependency graph stays M2.
 >
 > **Strategic radar (decide later, do NOT act now):** black-box (deployable, but a fundamental
 > ceiling on truly-silent writes whose effect surfaces through *no* endpoint) vs. an optional
@@ -92,6 +94,25 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
   B-1 content-match unchanged with the caller's id); otherwise it **steps back** and the model
   reads the object's own state. B-1 preserved (X-CROSS/X-SAFE audit carries the caller row);
   offline-tested both ways (`test_m12_object_scope.py`). No guard / content-match / verdict change.
+- **M1.2(A) state-readback exemption — BUILT + proven SAFE offline, NOT exercised live** (this
+  commit): a SECOND, separate guard-exemption channel (`STATE_READBACK_EXEMPTION_REASON`) —
+  **DISJOINT** from B-1's write-record exemption (never fires on a write-record path), `verified`-only,
+  cross-path-only. It exempts a cross-path STATE read-back from the B-2.2 downgrade **only** when code
+  AND-confirms all three anchors: **(1)** owner==attacked ∧ **(2)** caller!=owner
+  (`_anchor_caller_identity == "confirmed"`) **and (3)** payload-causality (`_anchor_payload_causality`
+  confirmed — THIS attack's UNIQUE value present). **(3) is the non-negotiable false-positive gate:**
+  (1)+(2) hold for BOTH a real leak and a securely-dropped write; only the unique value landing separates
+  them. **Offline both ways, 0 FP** (`test_m12_state_readback_exemption.py`): VULN-shape→exempt→`verified`;
+  SAFE-shape (payload absent)→NOT exempt→stays `inconclusive` even when the model raw-says `verified`.
+  **Live (shadow, N=5, gemini-2.5-pro, `shadow_m12a_state_readback_run.out.txt`): the exemption fired 0/5 —
+  the model never reached the cross-path object-state read** (`GET /api/gizmos/2` chosen 0/5; it tried the
+  same-path GET → 405, or the empty audit-log). X-SILENT-VULN→`inconclusive` 5/5, X-SILENT-SAFE→`inconclusive`
+  5/5 (**0 false positives** — integrity floor held). New target ground truth X-SILENT-VULN
+  (`POST /api/users/{id}/gizmo`) / X-SILENT-SAFE (`.../sprocket`), byte-verified in
+  `vulnerable_target/test_vulns.py`. **The mechanism is safe & ready but has no inputs until M1.2(B).**
+  **Design principle (reinforced):** confirmation must NOT rely on the model *realizing* it should fetch
+  other evidence — code deterministically gathers the evidence, the model only does the irreplaceable
+  semantic read (prompt-nudging the model to self-discover was tried at B-1, 0/20 — not the path).
 - **Same-path cases resolve correctly** — AI **8/8**, 0 false-pos / 0 false-neg. See
   `vulnerable_target/benchmark/RESULTS.md`.
 
@@ -100,6 +121,12 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
 - **One vuln shape, one target, N=5.** Only "cross-path write-then-read BOLA" (X-CROSS).
   nested-object, delete-type, multi-step, and noisier real audit logs are untested.
   "Mechanism proven on this class," not "verifier finished."
+- **Black-box boundary (mapped, M1.2(A)):** a silent write with **no same-path GET and no relevant
+  write-record** is **NOT confirmable by the model's unaided follow-up** — the model does not, on its
+  own, fetch a *different* resource path that exposes the attacked object's state (it tries the
+  same-path GET → 405, or an empty log). Confirmation of this shape requires **code** to steer it to
+  the object's state path (M1.2(B)). This maps one edge of the black-box confirmation ceiling; a
+  truly-silent write whose effect surfaces through *no* endpoint stays a fundamental black-box limit.
 - **The final verdict still leans on the model reading the log.** Code *gathers* the
   evidence (deterministic); Gemini still *interprets* it (raw `verified` 5/5 here). A
   model-specific pillar — re-run the benchmark on any model swap.
@@ -143,15 +170,19 @@ deployment, the nuclei keep-vs-cut decision — parked until a benchmark justifi
 
 ## Immediate next steps
 
-1. **M1.2 — the B-2.2 guard question (the next real step).** Prerequisites are done: anchoring
-   binds caller-identity + payload-causality (`2cac345`), and HALF-1 is object-scoped (this
-   commit) so the model can now reach the object's own STATE read-back. **Confirmed:** the guard
-   *does* downgrade a correct cross-path STATE read-back to `inconclusive` — the anchors
-   corroborate the leak, only the guard blocks it (`test_m12_object_scope.py::test_b_...`). Decide
-   whether a **read-back-state exemption** is warranted (and what makes a state read-back
-   decisive without re-opening a false positive), then build the live target cases + measurement.
-   *(Do NOT pursue the "forced-follow-up read" shape — a pseudo-problem: a read is either
-   self-decisive or not a leak.)*
+1. **M1.2(B) — code-gather the object's own state read-back (the next real step).** The
+   state-readback exemption is built + proven safe offline (both ways, 0 FP) but **fired 0/5 live**
+   because gemini-2.5-pro never reaches the cross-path object-state read on its own (same wall as
+   B-1: the model chose the decisive endpoint 0/20). So **deterministically code-gather** the
+   attacked object's own state read-back — target-agnostic, mirroring B-1's HALF-1 write-record
+   gather — and feed it to the (already-proven) exemption; then re-measure live.
+   - **Design principle (do NOT relitigate):** confirmation must NOT rely on the model *realizing*
+     it should fetch other evidence — CODE deterministically gathers the evidence; the model only
+     does the irreplaceable SEMANTIC read. Prompt-nudging the model to self-discover the read-back
+     was tried at B-1 (0/20) and is not the path.
+   - **M2 connection (do the minimal slice only):** M1.2(B)'s "find the object's own state endpoint"
+     is the MINIMAL SLICE of the future API-dependency graph (M2 / RESTler-style). Build only that
+     slice now; the full dependency graph stays **M2** (gated on M1 proving generalization).
 2. **D21** — promote the spec source to a declared config field (currently the `getattr`
    seam), so the real catalog can be wired for normal use, not just harnesses.
 3. **M1.x** — mass-assignment, delete-type, further shapes as generalization continues.

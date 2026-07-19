@@ -92,21 +92,36 @@ breadth (more vuln shapes) and promotion (D19) — not the core "can it confirm?
      structured **`evidence_path` + code-computed `anchoring_result`** (AI makes the semantic call,
      code anchors it — corroboration, observe-only). Live-measured: X-EQUIV-VULN→`verified` 5/5,
      X-EQUIV-SAFE→`failed` 5/5 (**0 FP**), N=5, one target.
-   - **M1.2 (in progress):** cross-path **silent write** confirmed via **read-back STATE** (not a
-     write-record). Prerequisites done — anchoring binds caller-identity + payload-causality
-     (`2cac345`), and **HALF-1 is now object-scoped** (it force-gathers a write-record only when the
-     record is about the attacked object, else steps back so the model reads the object's own state).
-     What remains is the real test: the B-2.2 guard **does** mis-downgrade a correct cross-path STATE
-     read-back — decide the read-back-state exemption, then live target cases + measurement. *(A
-     "forced-follow-up read" shape was rejected as a pseudo-problem — a read is self-decisive or not
-     a leak; do not pursue it.)*
+   - **M1.2 (mechanism built + proven safe offline; NOT yet confirmed live):** cross-path **silent
+     write** confirmed via **read-back STATE** (not a write-record). Prerequisites done — anchoring
+     binds caller-identity + payload-causality (`2cac345`), object-scoped HALF-1 (`3e949cb`).
+     **M1.2(A) — state-readback exemption BUILT:** a SECOND, separate guard channel
+     (`STATE_READBACK_EXEMPTION_REASON`, **disjoint** from B-1, `verified`-only) that keeps a correct
+     cross-path STATE read `verified` **iff** code AND-confirms three anchors — owner==attacked ∧
+     caller!=owner **and** payload-causality (THIS attack's unique value present, the non-negotiable
+     false-positive gate). **Proven safe offline both ways, 0 FP** (`test_m12_state_readback_exemption.py`):
+     VULN→exempt→`verified`; SAFE (payload absent)→not exempt→stays `inconclusive` even if the model
+     raw-says `verified`. **But NOT exercised live:** gemini-2.5-pro never reaches the cross-path
+     object-state read on its own (`GET /api/gizmos/2` chosen **0/5**; it tried the same-path GET → 405
+     or the empty audit-log) — **the same wall as B-1** (decisive endpoint chosen 0/20). Live: both
+     X-SILENT cases `inconclusive` 5/5, **0 FP** (integrity floor held). So the exemption is safe & ready
+     but **has no inputs**. **Next = M1.2(B):** deterministically **code-gather** the attacked object's
+     own state read-back (target-agnostic, mirroring B-1's HALF-1) to feed the already-proven exemption,
+     then re-measure. *(A "forced-follow-up read" shape was rejected as a pseudo-problem — a read is
+     self-decisive or not a leak; do not pursue it.)*
    - **M1.x (later):** mass-assignment, delete-type, and further shapes.
 
    > **M2 — Shared Domain Model (later, NOT started):** a resource/endpoint relationship graph — sink
    > upstream observations (proxy / HAR / spec) into a shared layer every module can query, so the
    > verifier isn't guessing which paths relate (precedent: RESTler-style request-dependency graph
    > from OpenAPI). **Gated on** M1 proving generalization + an evidence-backed list of "what downstream
-   > needs from upstream."
+   > needs from upstream." **Minimal slice pulled forward:** M1.2(B)'s "find the attacked object's own
+   > state endpoint" is the smallest slice of this graph — build only that slice now; the full graph stays M2.
+   >
+   > **Black-box boundary (mapped at M1.2(A)):** a silent write with **no same-path GET and no relevant
+   > write-record** is not confirmable by the model's **unaided** follow-up — confirmation requires code to
+   > steer it to the object's state path (M1.2(B)). A truly-silent write whose effect surfaces through *no*
+   > endpoint remains the fundamental black-box ceiling below.
    >
    > **Strategic radar (decide later, do NOT act now):** black-box (deployable, but a fundamental ceiling
    > on truly-silent writes whose effect surfaces through *no* endpoint) vs. an optional gray-box mode
@@ -149,3 +164,10 @@ authorization the central constraint, not an afterthought:
 no claim trusted without being verified against code; small, reversible,
 zero-regression steps; every override logged transparently (raw verdict preserved). **A green test
 proves nothing unless something was allowed to fail.**
+
+**Confirmation must not depend on the model self-discovering evidence.** Code deterministically
+*gathers* the decisive read-back (B-1's write-record; M1.2(B)'s object-state read); the model only
+does the irreplaceable *semantic* read of what code fetched. Prompt-nudging the model to choose the
+decisive follow-up on its own was tried and measured — it chose it **0/20** at B-1 and **0/5** at
+M1.2(A) — so it is a proven dead end, not a tuning problem. New evidence types = new deterministic
+gatherers, never "ask the model to realize it should look."

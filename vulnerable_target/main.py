@@ -24,6 +24,10 @@
 #   * T-SILENT2  — silent BOLA (theme)    : POST /api/users/{user_id}/theme   (REAL)
 #   * X-CROSS    — cross-path BOLA        : POST /api/users/{user_id}/display-name (REAL; confirm via GET /api/audit-log, NO same-path GET)
 #   * X-SAFE     — cross-path SAFE control: POST /api/users/{user_id}/nickname     (SECURE; cross-user write dropped, no audit row)
+#   * X-SILENT-VULN — silent write, confirm via cross-path STATE read (M1.2(A)):
+#                 POST /api/users/{user_id}/gizmo    (REAL; opaque 200, NO same-path GET; state at GET /api/gizmos/{id})
+#   * X-SILENT-SAFE — secure mirror of X-SILENT-VULN (M1.2(A)):
+#                 POST /api/users/{user_id}/sprocket (SECURE; cross-user write dropped; state at GET /api/sprockets/{id})
 #
 # Run:
 #   python -m uvicorn vulnerable_target.main:app --reload --port 8001
@@ -99,6 +103,8 @@ class User(Base):
     identity = relationship("Identity", back_populates="owner", uselist=False)
     statement = relationship("Statement", back_populates="owner", uselist=False)
     ledger = relationship("Ledger", back_populates="owner", uselist=False)
+    gizmo = relationship("Gizmo", back_populates="owner", uselist=False)
+    sprocket = relationship("Sprocket", back_populates="owner", uselist=False)
 
 
 class Order(Base):
@@ -263,6 +269,40 @@ class Ledger(Base):
     owner = relationship("User", back_populates="ledger")
 
 
+class Gizmo(Base):
+    """Object behind X-SILENT-VULN (M1.2(A)): silent cross-path WRITE confirmed by the
+    object's OWN STATE read on a DIFFERENT path. The write POST /api/users/{id}/gizmo has
+    NO ownership check (REAL) and returns the SAME opaque 200 {"status":"ok"} as the secure
+    mirror; there is deliberately NO same-path GET. The only observation point is the
+    cross-path state read GET /api/gizmos/{gizmo_id}, which returns owner_id + the written
+    `code` — so whether the cross-user write LANDED is visible only in that state, never in
+    the write response. id seeded == owner_id (so /api/gizmos/2 is Bob's)."""
+    __tablename__ = "gizmos"
+
+    id = Column(Integer, primary_key=True)  # == owner_id for predictability
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    code = Column(String(128), nullable=False, default="")
+
+    owner = relationship("User", back_populates="gizmo")
+
+
+class Sprocket(Base):
+    """Object behind X-SILENT-SAFE (M1.2(A)): the SECURE mirror of Gizmo. POST
+    /api/users/{id}/sprocket returns the SAME opaque 200 {"status":"ok"} but ownership IS
+    enforced — a cross-user write is SILENTLY DROPPED (no change, no error, still 200,
+    never a 403). Like Gizmo there is NO same-path GET; the cross-path state read
+    GET /api/sprockets/{sprocket_id} exposes owner_id + `code`, so a write-then-read shows
+    the value UNCHANGED for a cross-user attempt. Correct verdict: NOT vulnerable — a
+    `verified` here is a FALSE POSITIVE. id seeded == owner_id."""
+    __tablename__ = "sprockets"
+
+    id = Column(Integer, primary_key=True)  # == owner_id for predictability
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    code = Column(String(128), nullable=False, default="")
+
+    owner = relationship("User", back_populates="sprocket")
+
+
 # ------------------------------------------------------------------------------
 # Seed data — Alice (id=1, user) and Bob (id=2, user) are normal users; Carol
 # (id=3, admin) is the privileged account used by the Vuln C test case. Each user
@@ -292,6 +332,9 @@ SEED_USERS = [
         # M1.1: statement (X-EQUIV-VULN) + ledger (X-EQUIV-SAFE). Fixed-width uuid.
         "statement": {"account_ref": "11111111-1111-1111-1111-111111111111"},
         "ledger": {"account_ref": "11111111-1111-1111-1111-1111111111aa"},
+        # M1.2(A): gizmo (X-SILENT-VULN) + sprocket (X-SILENT-SAFE). Seeded `code`.
+        "gizmo": {"code": "gizmo_alice_v0"},
+        "sprocket": {"code": "sprocket_alice_v0"},
     },
     {
         "id": 2,
@@ -324,6 +367,8 @@ SEED_USERS = [
         "identity": {"display_name": "bob_dn", "nickname": "bob_nick"},
         "statement": {"account_ref": "22222222-2222-2222-2222-222222222222"},
         "ledger": {"account_ref": "22222222-2222-2222-2222-2222222222bb"},
+        "gizmo": {"code": "gizmo_bob_v0"},
+        "sprocket": {"code": "sprocket_bob_v0"},
     },
     {
         "id": 3,
@@ -341,6 +386,8 @@ SEED_USERS = [
         "identity": {"display_name": "carol_dn", "nickname": "carol_nick"},
         "statement": {"account_ref": "33333333-3333-3333-3333-333333333333"},
         "ledger": {"account_ref": "33333333-3333-3333-3333-3333333333cc"},
+        "gizmo": {"code": "gizmo_carol_v0"},
+        "sprocket": {"code": "sprocket_carol_v0"},
     },
 ]
 
@@ -363,6 +410,8 @@ async def _seed(session: AsyncSession) -> None:
         session.add(Identity(owner_id=u["id"], **u["identity"]))
         session.add(Statement(id=u["id"], owner_id=u["id"], **u["statement"]))
         session.add(Ledger(id=u["id"], owner_id=u["id"], **u["ledger"]))
+        session.add(Gizmo(id=u["id"], owner_id=u["id"], **u["gizmo"]))
+        session.add(Sprocket(id=u["id"], owner_id=u["id"], **u["sprocket"]))
     await session.commit()
     logger.info("Seeded users: %s", ", ".join(u["username"] for u in SEED_USERS))
 
@@ -519,6 +568,26 @@ class DisplayNameUpdateRequest(BaseModel):
 
 class NicknameUpdateRequest(BaseModel):
     nickname: str = Field(..., min_length=1, max_length=128)
+
+
+class GizmoUpdateRequest(BaseModel):
+    code: str = Field(..., min_length=1, max_length=128)
+
+
+class GizmoResponse(BaseModel):
+    id: int
+    owner_id: int
+    code: str
+
+
+class SprocketUpdateRequest(BaseModel):
+    code: str = Field(..., min_length=1, max_length=128)
+
+
+class SprocketResponse(BaseModel):
+    id: int
+    owner_id: int
+    code: str
 
 
 # ------------------------------------------------------------------------------
@@ -1032,6 +1101,100 @@ async def get_ledger(
     return _ledger_body(led)
 
 
+# ------------------------------------------------------------------------------
+# X-SILENT-VULN — SILENT cross-path WRITE, confirmed by the object's OWN STATE (M1.2(A)).
+#
+# POST /api/users/{user_id}/gizmo updates the gizmo `code` with NO ownership check (REAL
+# vuln) and returns the SAME opaque 200 {"status":"ok"} as the secure mirror. There is NO
+# same-path GET; the cross-user write is observable ONLY via the cross-path STATE read
+# GET /api/gizmos/{gizmo_id}, which returns owner_id + the written code. A landed cross-user
+# write shows up as the attacker's value in the victim's object state. Planted: REAL.
+# ------------------------------------------------------------------------------
+@app.post("/api/users/{user_id}/gizmo", tags=["gizmos"])
+async def update_gizmo(
+    payload: GizmoUpdateRequest,
+    user_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    gizmo = (
+        await db.execute(select(Gizmo).where(Gizmo.owner_id == user_id))
+    ).scalars().first()
+
+    # VULNERABLE: no check that user_id == current_user.id. The write lands for whatever
+    # {user_id} was requested; only the cross-path STATE read reveals whose code changed.
+    if gizmo is not None:
+        gizmo.code = payload.code
+        await db.flush()
+
+    # Opaque, constant response — byte-identical to the SAFE sprocket endpoint below.
+    return {"status": "ok"}
+
+
+@app.get("/api/gizmos/{gizmo_id}", response_model=GizmoResponse, tags=["gizmos"])
+async def get_gizmo(
+    gizmo_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # STATE read-back (the cross-path observation point). Authenticated; returns the object's
+    # own state (owner_id + code) so a write-then-read can confirm whether the cross-user
+    # write landed. Reads are permissive by design — this mirrors the avatar SAFE control's
+    # permissive read-back; the property under test is the WRITE's ownership enforcement.
+    gizmo = (
+        await db.execute(select(Gizmo).where(Gizmo.id == gizmo_id))
+    ).scalars().first()
+    if gizmo is None:
+        raise HTTPException(status_code=404, detail="Gizmo not found")
+    return GizmoResponse(id=gizmo.id, owner_id=gizmo.owner_id, code=gizmo.code)
+
+
+# ------------------------------------------------------------------------------
+# X-SILENT-SAFE — SECURE mirror of X-SILENT-VULN (M1.2(A)).
+#
+# POST /api/users/{user_id}/sprocket returns the SAME opaque 200 {"status":"ok"} but
+# ownership IS enforced: a cross-user write is SILENTLY DROPPED (no change, still 200, never
+# a 403). Like the gizmo there is NO same-path GET; the cross-path STATE read
+# GET /api/sprockets/{sprocket_id} shows the value UNCHANGED for a cross-user attempt.
+# Correct verdict: NOT vulnerable — a `verified` here is a FALSE POSITIVE.
+# ------------------------------------------------------------------------------
+@app.post("/api/users/{user_id}/sprocket", tags=["sprockets"])
+async def update_sprocket(
+    payload: SprocketUpdateRequest,
+    user_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # SECURE: ownership IS enforced. Only the owner's own sprocket is ever written; a
+    # cross-user attempt falls through with NO write — but the SAME opaque 200 {"status":
+    # "ok"}, never a 403. That missing 403 is the trap.
+    if user_id == current_user.id:
+        sprocket = (
+            await db.execute(select(Sprocket).where(Sprocket.owner_id == user_id))
+        ).scalars().first()
+        if sprocket is not None:
+            sprocket.code = payload.code
+            await db.flush()
+
+    return {"status": "ok"}
+
+
+@app.get("/api/sprockets/{sprocket_id}", response_model=SprocketResponse, tags=["sprockets"])
+async def get_sprocket(
+    sprocket_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # STATE read-back (cross-path observation point), permissive like get_gizmo. For a
+    # cross-user write attempt the dropped write means this returns the ORIGINAL code.
+    sprocket = (
+        await db.execute(select(Sprocket).where(Sprocket.id == sprocket_id))
+    ).scalars().first()
+    if sprocket is None:
+        raise HTTPException(status_code=404, detail="Sprocket not found")
+    return SprocketResponse(id=sprocket.id, owner_id=sprocket.owner_id, code=sprocket.code)
+
+
 @app.get("/", tags=["meta"])
 async def root():
     return {
@@ -1055,6 +1218,10 @@ async def root():
             "POST /api/users/{user_id}/display-name (X-CROSS: REAL cross-path BOLA)",
             "POST /api/users/{user_id}/nickname     (X-SAFE: SECURE cross-path control)",
             "GET /api/audit-log                 (cross-path read-back for display-name/nickname)",
+            "POST /api/users/{user_id}/gizmo    (X-SILENT-VULN: silent write, cross-path STATE read)",
+            "GET /api/gizmos/{gizmo_id}         (cross-path STATE read-back for gizmo)",
+            "POST /api/users/{user_id}/sprocket (X-SILENT-SAFE: SECURE mirror)",
+            "GET /api/sprockets/{sprocket_id}   (cross-path STATE read-back for sprocket)",
         ],
     }
 

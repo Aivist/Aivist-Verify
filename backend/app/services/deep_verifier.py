@@ -256,6 +256,15 @@ CROSS_RESOURCE_OVERRIDE_REASON = "cross_resource_readback_not_decisive"
 # attacked object id + same written value, found together in a single record). The model's
 # say-so is never sufficient — see _write_record_content_match.
 WRITE_RECORD_EXEMPTION_REASON = "write_record_readback_decisive"
+# M1.2(A): a SECOND, separate exemption channel. A cross-path STATE read-back (the attacked
+# object's OWN state, NOT a write-record) is EXEMPTED from the downgrade ONLY when the code has
+# structurally confirmed all three, AND-ed: the read object IS the attacked object (owner ==
+# attacked), the actor differs from the owner (caller != owner), AND this attack's UNIQUE
+# injected value appears in the read-back (payload causality). The causality check is the
+# non-negotiable false-positive gate — (owner==attacked, caller!=owner) hold for BOTH a real
+# leak and a securely-dropped write; only the unique value landing separates them. Computed by
+# the caller from the M1.2 anchors and passed in as a boolean (see execute_deep_verification).
+STATE_READBACK_EXEMPTION_REASON = "state_readback_causally_decisive"
 
 
 def _normalize_path(path: Optional[str]) -> str:
@@ -276,6 +285,7 @@ def _apply_cross_resource_guard(
     follow_up_path: Optional[str],
     follow_up_performed: bool,
     write_record_decisive: bool = False,
+    state_readback_decisive: bool = False,
 ):
     """Structural backstop. Returns (final_verdict, decision_reason).
 
@@ -299,8 +309,18 @@ def _apply_cross_resource_guard(
     held — a write-record FLAG without the verified content match does NOT exempt (so a
     secure cross-path control with no matching record stays "inconclusive").
 
-    Method-agnostic and target-agnostic: compares path strings; the content match is
-    computed by the caller and passed in as a boolean.
+    M1.2(A) STATE-READBACK EXEMPTION (a SECOND, separate channel): a cross-path "verified"
+    is ALSO kept decisive when `state_readback_decisive` is True — i.e. the caller has
+    structurally confirmed (in code, from the read-back + the attack's OWN runtime params,
+    never the model's say-so) that the cross-path read-back is the ATTACKED object's OWN
+    STATE and it now carries THIS attack's unique injected value: owner==attacked AND
+    caller!=owner AND payload-causality confirmed, all three AND-ed by the caller. Like the
+    write-record channel it applies ONLY to "verified" and ONLY on a cross-path read-back.
+    The two channels are DISJOINT (the caller never sets this for a write-record path), and
+    the write-record exemption takes precedence when both are set — so B-1 is unaffected.
+
+    Method-agnostic and target-agnostic: compares path strings; both `write_record_decisive`
+    and `state_readback_decisive` are computed by the caller and passed in as booleans.
     """
     if verdict not in ("verified", "failed"):
         return verdict, None
@@ -311,6 +331,8 @@ def _apply_cross_resource_guard(
     # Cross-path read-back from here on.
     if verdict == "verified" and write_record_decisive:
         return verdict, WRITE_RECORD_EXEMPTION_REASON
+    if verdict == "verified" and state_readback_decisive:
+        return verdict, STATE_READBACK_EXEMPTION_REASON
     return "inconclusive", CROSS_RESOURCE_OVERRIDE_REASON
 
 
@@ -1207,65 +1229,101 @@ async def execute_deep_verification(
                 degraded_reason=f"Gemini turn-2 error: {type(e).__name__}: {e}",
             )
 
-        # ---------------- B-2.2 structural guard + B-1 write-record exemption -------
+        # ---- B-2.2 structural guard + exemptions (B-1 write-record; M1.2(A) state read-back) ----
         # A follow-up read-back was performed iff we actually captured a response.
         _raw_verdict = turn2_obj.get("verdict")
-        # HALF 2: structurally verify (in code, against the attack's own runtime params)
-        # that the cross-path read-back is an explicit record of THIS write — same
-        # attacked object id AND same written value, together in one record. The model's
-        # say-so is NOT sufficient; only this content match exempts the downgrade.
+        _follow_up_performed = follow_up_response is not None
+        _fu_path = fu_request_record.get("path")
+        _fu_is_write_record = _path_is_write_record(_fu_path)
+
+        # B-1 HALF 2: structurally verify (in code, against the attack's own runtime params)
+        # that the cross-path read-back is an explicit record of THIS write — same attacked
+        # object id AND same written value, together in one record. The model's say-so is NOT
+        # sufficient; only this content match exempts the downgrade. Write-record path ONLY.
         _content_match = False
-        if (
-            follow_up_response is not None
-            and _path_is_write_record(fu_request_record.get("path"))
-        ):
+        if _follow_up_performed and _fu_is_write_record:
             _content_match = _write_record_content_match(
                 (follow_up_response or {}).get("body"),
                 attacked_object_id,
                 written_values,
             )
+
+        # M1.1/M1.2 evidence anchoring. Computed HERE (before the guard) because the M1.2(A)
+        # state-read exemption below is GATED on two of these anchors. The anchors are still
+        # code-computed from the read-back + the attack's OWN runtime params — never the model's
+        # say-so — and still never touch the RAW verdict. Read-back judged on: the follow-up
+        # response when captured, else the attack response.
+        _evidence_path = turn2_obj.get("evidence_path")
+        _anchor_body = (
+            (follow_up_response or {}).get("body")
+            if _follow_up_performed
+            else attack_result.get("response_body")
+        )
+        _anchor = _anchor_evidence(_anchor_body, _evidence_path, attacked_object_id)
+        _caller_anchor = _anchor_caller_identity(_anchor_body, attacked_object_id, caller_object_id)
+        _causality_anchor = _anchor_payload_causality(_anchor_body, _evidence_path, written_values)
+
+        # M1.2(A) STATE-READBACK EXEMPTION — a SECOND, separate channel from B-1's write-record
+        # exemption. A cross-path STATE read-back may stand as `verified` ONLY when code
+        # structurally confirms ALL THREE, AND-ed:
+        #   (1) the read object IS the ATTACKED object (owner id == attacked id), AND
+        #   (2) the actor differs from the owner (caller id != owner id)
+        #       -> (1)+(2) == the caller-identity anchor being "confirmed"; AND
+        #   (3) PAYLOAD CAUSALITY: THIS attack's unique injected value appears in the read-back
+        #       -> the payload-causality anchor being "confirmed_at_path"/"confirmed_in_body".
+        # (3) is the NON-NEGOTIABLE false-positive gate: (1)+(2) hold for BOTH a real leak and a
+        # securely-DROPPED write (a dropped write still leaves the object owned by the victim,
+        # attacked by the caller) — only the unique-value-landed causality separates them. The
+        # channel is DISJOINT from B-1: it never fires on a write-record path (those go through
+        # the content-match exemption), so B-1 / D23 / D23b are untouched.
+        _state_readback_decisive = (
+            _follow_up_performed
+            and not _fu_is_write_record
+            and _caller_anchor == "confirmed"
+            and _causality_anchor in ("confirmed_at_path", "confirmed_in_body")
+        )
+
         _final_verdict, _override = _apply_cross_resource_guard(
             _raw_verdict,
             attack_req.get("path", ""),
-            fu_request_record.get("path"),
-            follow_up_performed=(follow_up_response is not None),
+            _fu_path,
+            follow_up_performed=_follow_up_performed,
             write_record_decisive=_content_match,
+            state_readback_decisive=_state_readback_decisive,
         )
         if _override == WRITE_RECORD_EXEMPTION_REASON:
             logger.info(
                 "[DEEP-VERIFY] Write-record exemption: cross-path read-back %r is a "
                 "structurally-verified record of the attack (attacked_id=%r, written_value "
                 "present) -> verdict %r kept decisive (NOT downgraded).",
-                _normalize_path(fu_request_record.get("path")),
-                attacked_object_id, _final_verdict,
+                _normalize_path(_fu_path), attacked_object_id, _final_verdict,
+            )
+        elif _override == STATE_READBACK_EXEMPTION_REASON:
+            logger.info(
+                "[DEEP-VERIFY] State-readback exemption: cross-path read-back %r is the "
+                "attacked object's OWN state (caller_identity=%r) and carries THIS attack's "
+                "injected value (payload_causality=%r) -> verdict %r kept decisive (NOT "
+                "downgraded). attacked_id=%r caller_id=%r.",
+                _normalize_path(_fu_path), _caller_anchor, _causality_anchor,
+                _final_verdict, attacked_object_id, caller_object_id,
             )
         elif _override:
             logger.info(
                 "[DEEP-VERIFY] Structural guard: model verdict=%r downgraded to %r "
-                "(%s) — attack_path=%r follow_up_path=%r (different concrete resource; "
-                "no verified write-record content match).",
+                "(%s) — attack_path=%r follow_up_path=%r (different concrete resource; no "
+                "verified write-record content match, no state-readback causality).",
                 _raw_verdict, _final_verdict, _override,
                 _normalize_path(attack_req.get("path", "")),
-                _normalize_path(fu_request_record.get("path")),
+                _normalize_path(_fu_path),
             )
 
-        # M1.1/M1.2 anchoring (observe-only): the read-back the model judged on is the follow-up
-        # response when one was captured, else the attack response.
-        _evidence_path = turn2_obj.get("evidence_path")
-        _anchor_body = (
-            (follow_up_response or {}).get("body")
-            if follow_up_response is not None
-            else attack_result.get("response_body")
-        )
-        _anchor = _anchor_evidence(_anchor_body, _evidence_path, attacked_object_id)
-        _caller_anchor = _anchor_caller_identity(_anchor_body, attacked_object_id, caller_object_id)
-        _causality_anchor = _anchor_payload_causality(_anchor_body, _evidence_path, written_values)
         logger.info(
             "[DEEP-VERIFY] Evidence anchoring (turn-2 verdict): ai_verdict=%r evidence_path=%r "
             "attacked_id=%r caller_id=%r -> object=%r caller_identity=%r payload_causality=%r "
-            "(observe-only).",
+            "(state_readback_exempt=%r).",
             _final_verdict, _evidence_path, attacked_object_id, caller_object_id,
             _anchor, _caller_anchor, _causality_anchor,
+            _override == STATE_READBACK_EXEMPTION_REASON,
         )
         return DeepVerificationResult(
             status="completed",

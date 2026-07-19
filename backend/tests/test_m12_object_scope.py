@@ -190,15 +190,16 @@ def test_b_unrelated_record_makes_half1_step_back(monkeypatch):
         state_body=json.dumps({"id": 2, "owner_id": 2, "color": UNIQUE}),
     )
     assert res.status == "completed"
-    # THE FIX: the follow-up is the model's own state read, NOT the hijacked record.
+    # THE OBJECT-SCOPE FIX: the follow-up is the model's own state read, NOT the hijacked record.
     assert res.follow_up_request["path"] == "/api/widgets/2"
     assert res.follow_up_request["path"] != RECORD_PATH
-    # The M1.2 anchors corroborate the leak on the state read (observe-only):
+    # The M1.2 anchors confirm the leak on the state read:
     assert res.caller_identity_anchor == "confirmed"           # owner 2 != caller 1
     assert res.payload_causality_anchor in ("confirmed_at_path", "confirmed_in_body")
-    # DOCUMENTED REMAINING GAP (NOT fixed in this task): the cross-resource guard still
-    # downgrades a correct cross-path STATE read-back to inconclusive (no read-back-state
-    # exemption exists — that is the next M1.2(A) question, deliberately left alone here).
+    # M1.2(A) NOW CLOSES THE GAP this test used to document: with the state-readback exemption
+    # in place, a correct cross-path STATE read-back (all three anchors confirmed) is no longer
+    # downgraded — it stands as `verified`. (The full both-ways proof of that exemption, incl.
+    # the SAFE shape staying inconclusive, lives in test_m12_state_readback_exemption.py.)
     assert res.ai_verdict_raw == "verified"
-    assert res.ai_verdict == "inconclusive"
-    assert res.guard_override == dv.CROSS_RESOURCE_OVERRIDE_REASON
+    assert res.ai_verdict == "verified"
+    assert res.guard_override == dv.STATE_READBACK_EXEMPTION_REASON
