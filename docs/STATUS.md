@@ -22,7 +22,7 @@ two shapes / one target.
 
 | Suite | Command (from repo root) | Result |
 |---|---|---|
-| Backend | `python -m pytest backend/tests -q` | **175 passed** |
+| Backend | `python -m pytest backend/tests -q` | **197 passed** |
 | Ground-truth target | `python -m pytest vulnerable_target -q` | **14 passed** |
 
 ## The main line (three nodes)
@@ -42,8 +42,8 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
 | Milestone | Shape / how confirmed | State |
 |---|---|---|
 | **M1.0 (B-1)** | silent cross-path **write**, confirmed via a **write-record** | **DONE, committed `37769b3`.** X-CROSS→`verified` 5/5, X-SAFE→safe 5/5; regression test locks it. |
-| **M1.1** | read-type **semantic-equivalence**, equal-length, confirmed by **semantics + evidence anchoring** | **DONE (this commit).** X-EQUIV-VULN→`verified` 5/5, X-EQUIV-SAFE→`failed` 5/5 — **0 FP**, N=5, one target. |
-| **M1.2 (next)** | cross-path **silent write** confirmed via **read-back STATE** (not a write-record) | **Not started.** The real test of whether the B-2.2 guard mis-downgrades a true `verified`, and a map of the black-box confirmation boundary. *(A "forced-follow-up read" shape was analyzed and rejected as a pseudo-problem — reads are self-decisive or not a leak; do not pursue it.)* |
+| **M1.1** | read-type **semantic-equivalence**, equal-length, confirmed by **semantics + evidence anchoring** | **DONE, committed `002b33c`.** X-EQUIV-VULN→`verified` 5/5, X-EQUIV-SAFE→`failed` 5/5 — **0 FP**, N=5, one target. |
+| **M1.2 (in progress)** | cross-path **silent write** confirmed via **read-back STATE** (not a write-record) | **Prerequisites DONE:** anchoring extended to bind caller-identity + payload-causality (`2cac345`); **HALF-1 is now OBJECT-SCOPED** (this commit) — a silent write whose only candidate write-record is irrelevant no longer hijacks the follow-up, so the model can read the object's own state. **Confirmed & documented, NOT yet fixed:** the B-2.2 guard *does* mis-downgrade a correct cross-path STATE read-back to `inconclusive` (no read-back-state exemption; the anchors corroborate the leak, only the guard blocks it). **Remaining:** the guard-exemption decision + live target cases / measurement. *(A "forced-follow-up read" shape was rejected as a pseudo-problem — reads are self-decisive or not a leak; do not pursue it.)* |
 | **M1.x (later)** | mass-assignment, delete-type, and further shapes | Not started — each is one more格 of generalization. |
 
 > **M2 — Shared Domain Model (later, NOT started):** a resource/endpoint relationship graph —
@@ -80,6 +80,18 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
   N=5): X-EQUIV-VULN→`verified` 5/5 (`owner_id` anchoring `confirmed`), X-EQUIV-SAFE→`failed`
   5/5 (**0 false positives**) — `scripts/audit/shadow_m1_xequiv_run.out.txt`. Offline test:
   `test_m1_evidence_anchoring.py`.
+- **M1.2 anchoring** (`2cac345`): evidence anchoring extended (observe-only) to bind
+  **caller-identity** (`_anchor_caller_identity` — the read-back object is the victim's, not the
+  caller's) and **payload-causality** (`_anchor_payload_causality` — THIS attack's unique value
+  actually landed). Tests pin that caller-identity `confirms` for **both** a real leak and a
+  securely-dropped write, so only **payload-causality** separates them (the D19 gating constraint).
+- **M1.2 HALF-1 object-scope** (this commit): B-1's HALF-1 used to force-gather the single
+  **global** write-record for ANY silent write, even one it doesn't record — hijacking the
+  follow-up. HALF-1 now **probes the candidate once and gathers only if the record holds the
+  caller's own (baseline, definitely-landed) write** (`_record_is_relevant_to_write`, reusing the
+  B-1 content-match unchanged with the caller's id); otherwise it **steps back** and the model
+  reads the object's own state. B-1 preserved (X-CROSS/X-SAFE audit carries the caller row);
+  offline-tested both ways (`test_m12_object_scope.py`). No guard / content-match / verdict change.
 - **Same-path cases resolve correctly** — AI **8/8**, 0 false-pos / 0 false-neg. See
   `vulnerable_target/benchmark/RESULTS.md`.
 
@@ -131,15 +143,15 @@ deployment, the nuclei keep-vs-cut decision — parked until a benchmark justifi
 
 ## Immediate next steps
 
-1. **M1.2** — cross-path **silent write** confirmed via **read-back STATE** (not a
-   write-record). This is the real test of whether the B-2.2 guard mis-downgrades a true
-   `verified` (the M1.1 read shape needed no follow-up, so the guard was a no-op) and a map of
-   the black-box confirmation boundary. *(Do NOT pursue the "forced-follow-up read" shape — a
-   pseudo-problem: a read is either self-decisive or not a leak.)*
-   - **Anchor design (from the M1.1 review):** the evidence anchor must also bind **caller
-     identity**, not just object identity — `owner_id:2` on a read of object 2 is *expected*, so
-     anchoring the object id alone corroborates the "whose object" half but not the "caller is a
-     different user" half.
+1. **M1.2 — the B-2.2 guard question (the next real step).** Prerequisites are done: anchoring
+   binds caller-identity + payload-causality (`2cac345`), and HALF-1 is object-scoped (this
+   commit) so the model can now reach the object's own STATE read-back. **Confirmed:** the guard
+   *does* downgrade a correct cross-path STATE read-back to `inconclusive` — the anchors
+   corroborate the leak, only the guard blocks it (`test_m12_object_scope.py::test_b_...`). Decide
+   whether a **read-back-state exemption** is warranted (and what makes a state read-back
+   decisive without re-opening a false positive), then build the live target cases + measurement.
+   *(Do NOT pursue the "forced-follow-up read" shape — a pseudo-problem: a read is either
+   self-decisive or not a leak.)*
 2. **D21** — promote the spec source to a declared config field (currently the `getattr`
    seam), so the real catalog can be wired for normal use, not just harnesses.
 3. **M1.x** — mass-assignment, delete-type, further shapes as generalization continues.

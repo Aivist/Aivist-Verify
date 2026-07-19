@@ -149,6 +149,18 @@ target-agnostic (no concrete path/field/tag is hardcoded):
    endpoint from the catalog (generic `_WRITE_RECORD_KEYWORDS` vocabulary) and forces
    it as the single follow-up. If none exists, it does **not** fabricate one → the
    flow stays `inconclusive`.
+   - **Object-scope gate (M1.2, `_record_is_relevant_to_write`):** the force-gather is
+     **conditional**. HALF 1 probes the candidate record once and hijacks the follow-up
+     **only if that record already holds the caller's OWN (baseline, definitely-landed)
+     write** — the caller's runtime id together with the value we wrote — proven by the
+     same content-match with the *caller's* id (target-agnostic; no path/field/tag
+     hardcoded). If the record does **not** record this write-type (e.g. a global
+     audit-log unrelated to the attacked resource), HALF 1 **steps back** and lets the
+     model choose its own follow-up (for a state-confirmable write, the object's own
+     read-back). On a probe error / missing ids it defaults to the existing gather so B-1
+     never regresses. This unblocks the M1.2 shape (silent write confirmed by the object's
+     own state); the guard still downgrades that cross-path state read-back (no read-back-
+     state exemption yet — see STATUS M1.2).
 3. **Write-record exemption — HALF 2** (`_write_record_content_match` +
    `_apply_cross_resource_guard(..., write_record_decisive=True)`): a cross-path
    `verified` is normally downgraded by B-2.2. It is **exempted only when** the code

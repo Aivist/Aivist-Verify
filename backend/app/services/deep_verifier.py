@@ -535,6 +535,24 @@ def _write_record_content_match(
     return False
 
 
+def _record_is_relevant_to_write(
+    record_body: Optional[str],
+    caller_object_id: Optional[str],
+    written_values: List[str],
+) -> bool:
+    """M1.2 OBJECT-SCOPE gate (target-agnostic). Is a candidate write-record endpoint plausibly
+    ABOUT THE ATTACKED OBJECT's write-type — i.e. does it actually record writes like this one?
+
+    Proven structurally WITHOUT any counterfactual or hardcoding: the BASELINE (authorized self)
+    write DEFINITELY landed, so if this record endpoint tracks writes of this type it MUST already
+    contain the CALLER's own write — the caller's id together with the value we wrote, in one
+    record. Reuses the B-1 content-match (unchanged) with the CALLER's runtime id. Returns False
+    when the record does NOT contain the caller's landed self-write (e.g. a global audit-log that
+    does not record THIS resource) -> HALF-1 should step back and let the model choose its own
+    follow-up (for a state-confirmable write, the object's own read-back)."""
+    return _write_record_content_match(record_body, caller_object_id, written_values)
+
+
 def _redact_headers(headers: Dict[str, str]) -> Dict[str, str]:
     """Mask auth secrets in the evidence trail / prompt (request still uses the real value)."""
     out = {}
@@ -923,16 +941,55 @@ async def execute_deep_verification(
             and _is_write_method(attack_req.get("method"))
             and not has_same_path_readback(available_endpoints or [], attack_req.get("path", ""))
         ):
-            det_record_path = select_write_record_endpoint(
+            _candidate = select_write_record_endpoint(
                 available_endpoints or [], attacked_object_id=attacked_object_id
             )
-            if det_record_path:
-                logger.info(
-                    "[DEEP-VERIFY] HALF 1: write attack on %r has no same-path read-back; "
-                    "code will deterministically gather write-record read-back %r "
-                    "(generic record/log endpoint; model choice not relied upon).",
-                    attack_req.get("path"), det_record_path,
-                )
+            if _candidate:
+                # --- M1.2 OBJECT-SCOPE GATE ---------------------------------------------
+                # Only HIJACK the follow-up with this record endpoint if it is plausibly ABOUT
+                # THE ATTACKED OBJECT's write-type. We probe it ONCE and keep it only if it
+                # already records the caller's OWN (baseline, definitely-landed) write. If it does
+                # not — an unrelated global record (e.g. an audit-log that does not track THIS
+                # resource) — we STEP BACK so the model can choose its own follow-up (for a
+                # state-confirmable write, the object's own read-back). Default to the existing
+                # gather behavior whenever we cannot POSITIVELY prove irrelevance (fetch error /
+                # missing runtime ids) so B-1 never regresses. Target-agnostic; reuses the B-1
+                # content-match; no path/field/tag hardcoded.
+                _object_scoped = True
+                if caller_object_id and written_values and _candidate.startswith("/"):
+                    try:
+                        _probe = {"method": "GET", "path": _candidate, "query_params": {},
+                                  "headers": dict(auth_context), "body": None}
+                        if approved and _host_of(_reconstruct_url(_probe, base_url)) != approved:
+                            raise ScopeViolationError(
+                                f"record probe host outside approved scope '{approved}'"
+                            )
+                        _probe_result = await _send_request(client, _probe, base_url)
+                        _object_scoped = _record_is_relevant_to_write(
+                            (_probe_result or {}).get("response_body"),
+                            caller_object_id, written_values,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "[DEEP-VERIFY] HALF 1 object-scope probe of %r failed (%s); defaulting "
+                            "to the existing gather behavior (B-1 safe).", _candidate, e,
+                        )
+                        _object_scoped = True
+                if _object_scoped:
+                    det_record_path = _candidate
+                    logger.info(
+                        "[DEEP-VERIFY] HALF 1: write attack on %r has no same-path read-back; the "
+                        "record endpoint %r IS about the attacked object (it records the caller's own "
+                        "landed write) -> code will gather it (model choice not relied upon).",
+                        attack_req.get("path"), det_record_path,
+                    )
+                else:
+                    logger.info(
+                        "[DEEP-VERIFY] HALF 1: candidate write-record %r is NOT about the attacked "
+                        "object (it does not record the caller's own landed write) -> stepping back; "
+                        "the model chooses its own follow-up (e.g. the object's own state read).",
+                        _candidate,
+                    )
 
         # Build the evidence block (single exchange for read-only cases).
         if payload:

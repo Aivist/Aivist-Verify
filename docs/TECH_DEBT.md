@@ -373,6 +373,10 @@
      same-path read-back, the *code* (not the model) selects a record/log endpoint from the
      catalog and forces it as the follow-up (`select_write_record_endpoint` /
      `has_same_path_readback`), sidestepping the model never choosing it unaided (0/20).
+     *(M1.2 update: HALF 1 is now **object-scoped** — `_record_is_relevant_to_write` probes the
+     candidate and force-gathers only if the record holds the caller's own landed write, else
+     steps back so the model reads the object's own state. B-1 preserved; see STATUS M1.2 /
+     `test_m12_object_scope.py`.)*
   3. **Write-record exemption (HALF 2)** — `_write_record_content_match` +
      `_apply_cross_resource_guard(write_record_decisive=…)`: a cross-path `verified` is
      exempted from the B-2.2 downgrade **only** when a single record structurally contains

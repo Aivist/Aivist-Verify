@@ -92,10 +92,14 @@ breadth (more vuln shapes) and promotion (D19) — not the core "can it confirm?
      structured **`evidence_path` + code-computed `anchoring_result`** (AI makes the semantic call,
      code anchors it — corroboration, observe-only). Live-measured: X-EQUIV-VULN→`verified` 5/5,
      X-EQUIV-SAFE→`failed` 5/5 (**0 FP**), N=5, one target.
-   - **M1.2 (next):** cross-path **silent write** confirmed via **read-back STATE** (not a
-     write-record) — the real test of whether the B-2.2 guard mis-downgrades a true `verified`, and
-     a map of the black-box confirmation boundary. *(A "forced-follow-up read" shape was analyzed and
-     rejected as a pseudo-problem — a read is self-decisive or not a leak; do not pursue it.)*
+   - **M1.2 (in progress):** cross-path **silent write** confirmed via **read-back STATE** (not a
+     write-record). Prerequisites done — anchoring binds caller-identity + payload-causality
+     (`2cac345`), and **HALF-1 is now object-scoped** (it force-gathers a write-record only when the
+     record is about the attacked object, else steps back so the model reads the object's own state).
+     What remains is the real test: the B-2.2 guard **does** mis-downgrade a correct cross-path STATE
+     read-back — decide the read-back-state exemption, then live target cases + measurement. *(A
+     "forced-follow-up read" shape was rejected as a pseudo-problem — a read is self-decisive or not
+     a leak; do not pursue it.)*
    - **M1.x (later):** mass-assignment, delete-type, and further shapes.
 
    > **M2 — Shared Domain Model (later, NOT started):** a resource/endpoint relationship graph — sink
