@@ -8,7 +8,7 @@
 > current code.
 >
 > **What changed since this audit:**
-> - **Suite size:** the backend suite grew from ~73 (here) to **145**. Files that landed
+> - **Suite size:** the backend suite grew from ~73 (here) to **145** at that time (**227** as of M1.2). Files that landed
 >   since this audit: `test_verdict_oracle.py` (9), `test_d18_b22_guard.py` (18),
 >   `test_d18_phase2_crosspath.py`, `test_endpoint_catalog.py`, `test_d18_b1_write_record.py`,
 >   and `test_d18_b1_shadow_integration.py` (the B-1 shadow-path regression test, D22). See

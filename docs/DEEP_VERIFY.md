@@ -10,6 +10,11 @@
 > Gemini) and `AI_DEEP_VERIFY_SHADOW` (the fuzzer calls it after a batch). With the
 > defaults, nothing here runs and behavior is byte-identical to before. The
 > rule-based HTTP verify still uses `fuzzer.py`.
+>
+> **Confirms three vuln shapes, zero false positives** (each live-measured N=5, shadow):
+> **M1.0/B-1** silent cross-path write via a code-gathered **write-record**; **M1.1** read-type
+> **semantic equivalence**; **M1.2** silent cross-path write via a code-gathered **object-STATE**
+> read-back. The verdict is still **observe-only** — promoting it to authoritative is **D19**.
 
 ---
 
@@ -52,7 +57,7 @@ Only stable, side-effect-free helpers are imported from `fuzzer.py`:
 - `ScopeViolationError` for host lock enforcement
 
 No changes to the fuzzer's verdict path; the rule-oracle tests stay green (backend
-backend suite: **145 passed** — see [`STATUS.md`](./STATUS.md)).
+suite: **227 passed** — see [`STATUS.md`](./STATUS.md)).
 
 ---
 
@@ -86,11 +91,24 @@ five-point **DECISIVE-EVIDENCE STANDARD**:
 4. `inconclusive` means "cannot confirm from the evidence gathered; a human must
    decide" — the honest answer **only** in a genuine evidence gap (when decisive
    read-back evidence does exist, commit to `verified` / `failed` rather than hedging).
-5. **SAME-RESOURCE RULE** — a read-back is decisive only if it queries the **same**
-   resource/path the attack targeted (any HTTP method on that resource) or is an
-   explicit record of that write. A **different** endpoint that merely exposes a field
-   with the *same name* as what was written is **not** the same state and is **not**
-   decisive → the model must answer `inconclusive`.
+5. **SAME-RESOURCE RULE** — a read-back is decisive in exactly **three** cases:
+   **(a)** it queries the **same** resource/path the attack targeted (any HTTP method on
+   that resource); **(b)** it is an explicit record of that write; or **(c)** *(M1.2(C))*
+   it is a read of the **attacked object's own current state that the SYSTEM ITSELF
+   gathered** and says so — when the attacked resource has no same-path read-back, the
+   engine may fetch the object's state by another path, and that response *is* the attacked
+   state. Case (c) requires checking that the object returned is the one attacked **and**
+   comparing the value the attack wrote against what that state now holds. Case (c) **never**
+   applies to a read the *model* chose: a **different** endpoint the model picked, or one that
+   merely exposes a field with the *same name* as what was written, is **not** the same state
+   and is **not** decisive → the model must answer `inconclusive`.
+
+   > Rule 5 is restated in `_TURN2_TEMPLATE` and in the `_OPTIONS_BLOCK` verdict definitions —
+   > **all three must agree.** M1.2(C) exists because they did not: code gathered a cross-path
+   > object state and exempted it structurally while the prompt still forbade concluding from a
+   > different path, so the model held decisive evidence and answered `inconclusive` 2/5.
+   > Keeping prompt and code in agreement is now a standing discipline
+   > ([`ROADMAP.md`](./ROADMAP.md) §6).
 
 ---
 
@@ -115,6 +133,63 @@ It is applied at **both** return sites in `execute_deep_verification`. The resul
 records the outcome transparently: `ai_verdict` is the **final** (post-guard) verdict,
 `ai_verdict_raw` preserves the model's original pre-guard verdict, and `guard_override`
 holds the override reason (or `None` when the guard did not fire).
+
+### The two exemption channels (both `verified`-only, both cross-path-only, DISJOINT)
+
+A cross-path `verified` is downgraded **unless** exactly one of these structural exemptions
+fires. Both are computed **in code** from the attack's own runtime params — the model's say-so is
+never sufficient — and passed into the guard as booleans:
+
+| Channel | Constant | Fires when | Applies to |
+|---|---|---|---|
+| **B-1 write-record** | `WRITE_RECORD_EXEMPTION_REASON` | `_write_record_content_match` finds the attacked object id **and** a value this attack wrote **in one record** (D23/D23b-hardened) | follow-up paths that ARE record/log-style |
+| **M1.2(A) state read-back** | `STATE_READBACK_EXEMPTION_REASON` | all three anchors AND: owner==attacked ∧ caller!=owner (`caller_identity == "confirmed"`) **and** payload-causality confirmed | follow-up paths that are **not** record/log-style |
+
+They are kept **disjoint** by `_path_is_write_record(follow_up_path)`, so D23/D23b remain the sole
+authority on record paths. If both were somehow set, the write-record channel takes precedence, so
+B-1's behaviour is unchanged.
+
+**Payload-causality is the false-positive gate.** Owner-identity and caller!=owner confirm for
+**both** a real leak and a securely-*dropped* write (a dropped cross-user write still leaves the
+object owned by the victim and attacked by the caller) — only "THIS attack's unique value is
+actually present" separates them. Measured: X-SILENT-VULN causality `confirmed_at_path` 5/5 →
+`verified` 5/5; X-SILENT-SAFE causality `absent` 5/5 → no exemption → `inconclusive` 5/5, **0
+false positives**.
+
+> **Known boundary:** causality assumes the written value is high-entropy. On boolean / small-int /
+> enum fields — or with concurrent runs writing the same value — it can collide. See
+> [`ROADMAP.md`](./ROADMAP.md) §7.
+
+---
+
+## M1.2(B) — deterministic object-state gather
+
+B-1's HALF 1 gathers a **write-record**. M1.2(B) adds the parallel gather for the case where **no
+relevant write-record exists**: the code resolves and fetches the **attacked object's own state**,
+which usually lives on a *different* path (write `POST /api/users/{id}/gizmo`, state
+`GET /api/gizmos/{id}`).
+
+- **Why:** measured, the model does **not** find that path on its own — `0/5` at M1.2(A) (it tried
+  the same-path GET → 405, or an empty audit-log). That is B-1's wall (`0/20`) again.
+- **Where:** `endpoint_catalog.select_object_state_endpoint(entries, attack_path, attacked_object_id)`,
+  wired in `execute_deep_verification` as the fallback when `det_record_path is None`.
+- **How (generic, no target path/field/tag hardcoded):** take the **resource noun** = the write
+  path's last non-id segment (`attacked_resource_noun`, singular/plural-insensitive); keep GET
+  endpoints that carry that noun as a whole segment **and** are object-scoped (have a `{template}`
+  to bind to the attacked id — the same binding `select_write_record_endpoint` already uses);
+  **exclude** record/log endpoints (B-1's channel); reject a candidate resolving to the attack's own
+  path; prefer the canonical `<noun>/{id}` read. Returns `None` rather than fabricating.
+- **Safety:** the resolver is only a **FETCHER** — the three-AND gate above remains the
+  **VERIFIER**. A wrong gather fails the owner/causality anchors and degrades to `inconclusive`,
+  never to a false positive.
+- **Honesty:** when the engine (not the model) chose the follow-up, the turn-2 message carries an
+  explicit NOTE saying so and describing *what* was fetched (state vs record). It never suggests a
+  verdict.
+- **Genericity proven** on a foreign spec sharing no vocabulary with this target
+  (`/v2/widgets/{id}`, `/shop/policies/{id}`, `/erp/dispatch-boxes/{id}`) in
+  `test_m12b_state_gather.py`.
+- **Result:** gather `0/5 → 5/5`; with M1.2(C)'s prompt carve-out, X-SILENT-VULN `3/5 → 5/5`
+  `verified`, X-SILENT-SAFE `verified` **0/5**.
 
 ---
 

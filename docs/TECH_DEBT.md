@@ -82,7 +82,7 @@
   radar tests added; Nuclei pipeline still bare.
 - **Where:** `backend/tests/test_api_endpoints.py` (API smoke); `test_step9_proxy.py`
   (proxy radar, Step 9); plus pruner, custody, Step D extraction in other files.
-  Total backend suite: **145 tests** (grew from an old 73 via the verdict-oracle, B-2.2
+  Total backend suite: **227 tests** (grew from an old 73 via the verdict-oracle, B-2.2
   guard, cross-path, catalog, and B-1 write-record + shadow-integration tests). See
   [`STATUS.md`](./STATUS.md).
 - **Covered:** FastAPI `TestClient` over isolated per-test SQLite with Gemini,
@@ -185,7 +185,7 @@
   when the spec declares them, `summary`/`description` deliberately not surfaced — + HAR
   stub raising `NotImplementedError` + dispatch) is wired into `_shadow_endpoint_catalog`
   via an optional `catalog_source`. With **no source configured the output is byte-identical
-  to the old placeholder (zero regression)**; the real 22-route surface is used only when
+  to the old placeholder (zero regression)**; the real 26-route surface is used only when
   a spec source is explicitly provided. Human-owned tests (`test_endpoint_catalog.py`)
   cover this; the B1/B2 pair is the allowed-to-fail proof (placeholder has 0 cross-resource
   endpoints; real catalog reaches them, incl. `GET /api/invoices/{invoice_id}`).
@@ -390,6 +390,41 @@
 - **Follow-ups (separate items, not B-1 blockers):** D21 (declare the spec field), D23/D23b (tighten
   the id match), broaden beyond the single X-CROSS shape, update `RESULTS.md` with the B-1 result,
   then D19 (make the verdict authoritative). See [`STATUS.md`](./STATUS.md).
+
+### M1.2 (✅ DONE) — silent write confirmed via a code-gathered object-STATE read-back
+- **What:** the third confirmed vuln shape. A silent cross-path write with **no same-path GET and
+  no relevant write-record** — the only decisive evidence is the attacked object's **own state on a
+  different path**. Achieved without weakening the integrity floor; **0 false positives**.
+- **Landed (three parts):**
+  1. **(A) State-readback exemption** — `STATE_READBACK_EXEMPTION_REASON`, a SECOND guard channel
+     **disjoint** from B-1's write-record exemption (kept apart by `_path_is_write_record`), `verified`-only,
+     cross-path-only. Fires **only** when code AND-confirms three anchors: owner==attacked ∧
+     caller!=owner (`_anchor_caller_identity == "confirmed"`) **and payload-causality**
+     (`_anchor_payload_causality` — THIS attack's unique value present). Causality is the
+     **false-positive gate**: the other two confirm for a securely-dropped write too.
+  2. **(B) Deterministic object-state gather** — `endpoint_catalog.select_object_state_endpoint`
+     (+ `attacked_resource_noun`), the target-agnostic mirror of B-1's HALF 1: resource-noun match +
+     object-scoped `{template}` bound to the attacked id, record/log endpoints excluded, the attack's
+     own path rejected, `None` rather than fabrication. The model found that path **0/5** unaided;
+     code now gathers it **5/5**. Genericity proven on a foreign spec (`test_m12b_state_gather.py`).
+  3. **(C) Prompt carve-out** — `SYSTEM_PROMPT` rule 5 (+ `_TURN2_TEMPLATE` + the options-block verdict
+     definitions) now names a **system-gathered** read of the attacked object's own state as decisive
+     alongside same-path and write-record. This closed a real **prompt/code contradiction**: the code
+     gathered and exempted a cross-path state read while the prompt still forbade concluding from a
+     different path, so the model held decisive evidence and answered `inconclusive` 2/5. VULN **3/5 → 5/5**.
+- **Live-measured** (shadow, N=5, gemini-2.5-pro, fresh-seeded per run; transcript
+  `scripts/audit/shadow_m12c_prompt_carveout_run.out.txt`): X-SILENT-VULN→`verified` **5/5**;
+  **X-SILENT-SAFE→`verified` 0/5** (causality `absent` 5/5 → no exemption → `inconclusive`);
+  **B-1 not regressed** (X-CROSS `verified` 5/5, X-SAFE 0 `verified`).
+- **Offline:** `test_m12_state_readback_exemption.py` (exemption both ways) + `test_m12b_state_gather.py`
+  (resolver, foreign-spec genericity, B-1 precedence, no-fabrication, and a model-chosen cross-path read
+  that stays `inconclusive`). New byte-verified target ground truth X-SILENT-VULN/SAFE in `test_vulns.py`.
+- **Known boundary (recorded, not fixed):** payload-causality assumes a **high-entropy** written value;
+  on boolean / small-int / enum fields, or under concurrent runs, it can collide. See ROADMAP §7.
+- **Optional hardening (recorded, NOT done):** the prompt restricts case (c) by *provenance*
+  (system-gathered) while the code gate keys on *evidence* (the three anchors). Aligning them = adding
+  `followup_is_code_gathered` to `_state_readback_decisive` — one line, only ever stricter.
+- **Still open (unchanged by M1.2):** D19 (verdict authority) and D21 (declared spec field).
 
 ### Scope-lock hardening (OPEN) — prerequisite for real targets
 - **What:** consolidate the duplicated host-scope checks — the fuzzer's `_send_request` /

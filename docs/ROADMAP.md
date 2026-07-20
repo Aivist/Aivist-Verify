@@ -68,11 +68,18 @@ exemption. **Live-measured** (shadow, N=5): X-CROSS→`verified` 5/5, X-SAFE→`
 5/5, no false verdict, reverse-guards intact — and **locked by an automated regression test**
 (`test_d18_b1_shadow_integration.py`, D22 closed).
 
-**Not yet:** it does not yet *act* (shadow-only — the persisted verdict is still the rule
-oracle's; making the AI verdict authoritative is D19); and it is proven on **one vuln shape**.
+**Now confirmed on two further shapes:** **M1.1** (read-type semantic-equivalence, equal-length —
+X-EQUIV-VULN→`verified` 5/5, X-EQUIV-SAFE→`failed` 5/5) and **M1.2** (silent write confirmed via a
+**code-gathered object-STATE** read-back — X-SILENT-VULN→`verified` 5/5, X-SILENT-SAFE→`verified`
+**0/5**, B-1 not regressed).
 
-**Bottom line:** the moat's hard-case proof point (B-1) **is met and committed**. What's left is
-breadth (more vuln shapes) and promotion (D19) — not the core "can it confirm?" question.
+**Not yet:** it does not yet *act* (shadow-only — the persisted verdict is still the rule
+oracle's; making the AI verdict authoritative is D19); and it is proven on **three vuln shapes,
+one target, N=5 each**.
+
+**Bottom line:** the moat's hard-case proof point is met and committed, and now generalizes across
+**three shapes with zero false positives**. What's left is further breadth (mass-assignment,
+delete-type) and promotion (D19) — not the core "can it confirm?" question.
 
 > Detailed current snapshot (maturity, API summary, run/verify checklist) lives in
 > [`PROJECT_OVERVIEW.md`](./PROJECT_OVERVIEW.md); known gaps in [`TECH_DEBT.md`](./TECH_DEBT.md);
@@ -92,23 +99,28 @@ breadth (more vuln shapes) and promotion (D19) — not the core "can it confirm?
      structured **`evidence_path` + code-computed `anchoring_result`** (AI makes the semantic call,
      code anchors it — corroboration, observe-only). Live-measured: X-EQUIV-VULN→`verified` 5/5,
      X-EQUIV-SAFE→`failed` 5/5 (**0 FP**), N=5, one target.
-   - **M1.2 (mechanism built + proven safe offline; NOT yet confirmed live):** cross-path **silent
-     write** confirmed via **read-back STATE** (not a write-record). Prerequisites done — anchoring
-     binds caller-identity + payload-causality (`2cac345`), object-scoped HALF-1 (`3e949cb`).
-     **M1.2(A) — state-readback exemption BUILT:** a SECOND, separate guard channel
-     (`STATE_READBACK_EXEMPTION_REASON`, **disjoint** from B-1, `verified`-only) that keeps a correct
-     cross-path STATE read `verified` **iff** code AND-confirms three anchors — owner==attacked ∧
-     caller!=owner **and** payload-causality (THIS attack's unique value present, the non-negotiable
-     false-positive gate). **Proven safe offline both ways, 0 FP** (`test_m12_state_readback_exemption.py`):
-     VULN→exempt→`verified`; SAFE (payload absent)→not exempt→stays `inconclusive` even if the model
-     raw-says `verified`. **But NOT exercised live:** gemini-2.5-pro never reaches the cross-path
-     object-state read on its own (`GET /api/gizmos/2` chosen **0/5**; it tried the same-path GET → 405
-     or the empty audit-log) — **the same wall as B-1** (decisive endpoint chosen 0/20). Live: both
-     X-SILENT cases `inconclusive` 5/5, **0 FP** (integrity floor held). So the exemption is safe & ready
-     but **has no inputs**. **Next = M1.2(B):** deterministically **code-gather** the attacked object's
-     own state read-back (target-agnostic, mirroring B-1's HALF-1) to feed the already-proven exemption,
-     then re-measure. *(A "forced-follow-up read" shape was rejected as a pseudo-problem — a read is
+   - **M1.2 (✅ done):** silent cross-path **write** confirmed via a **code-gathered object-STATE
+     read-back** (not a write-record). Prerequisites: caller-identity + payload-causality anchoring
+     (`2cac345`), object-scoped HALF-1 (`3e949cb`). Three parts landed:
+     **(A) state-readback exemption** — a SECOND guard channel (`STATE_READBACK_EXEMPTION_REASON`,
+     **disjoint** from B-1, `verified`-only) that keeps a correct cross-path STATE read `verified`
+     **iff** code AND-confirms three anchors: owner==attacked ∧ caller!=owner **and** payload-causality
+     (THIS attack's unique value present — the non-negotiable false-positive gate).
+     **(B) deterministic object-state gather** (`select_object_state_endpoint`) — target-agnostic
+     resource-noun + object-scoping resolver mirroring B-1's HALF-1; the model found that path **0/5**
+     on its own, code now gathers it **5/5**. The resolver is only a FETCHER; the three-AND gate stays
+     the VERIFIER, so a wrong gather degrades to `inconclusive`, never to a false positive.
+     **(C) prompt carve-out** — rule 5 (plus turn-2 and the options-block definitions) now names a
+     *system-gathered* read of the attacked object's own state as decisive alongside same-path and
+     write-record; this resolved a genuine prompt/code contradiction (the model held decisive evidence
+     but obeyed rule 5 and answered `inconclusive`) and lifted VULN **3/5 → 5/5**.
+     **Live-measured** (N=5, gemini-2.5-pro): X-SILENT-VULN→`verified` **5/5**; **X-SILENT-SAFE→
+     `verified` 0/5** (causality `absent` 5/5 → no exemption → `inconclusive`); B-1 X-CROSS still
+     `verified` 5/5. *(A "forced-follow-up read" shape was rejected as a pseudo-problem — a read is
      self-decisive or not a leak; do not pursue it.)*
+     **Optional hardening (recorded, NOT done):** the prompt restricts case (c) by *provenance*
+     (system-gathered) while the code gate keys on *evidence* (the three anchors). Aligning them =
+     adding `followup_is_code_gathered` to the gate — one line, only ever stricter.
    - **M1.x (later):** mass-assignment, delete-type, and further shapes.
 
    > **M2 — Shared Domain Model (later, NOT started):** a resource/endpoint relationship graph — sink
@@ -171,3 +183,78 @@ does the irreplaceable *semantic* read of what code fetched. Prompt-nudging the 
 decisive follow-up on its own was tried and measured — it chose it **0/20** at B-1 and **0/5** at
 M1.2(A) — so it is a proven dead end, not a tuning problem. New evidence types = new deterministic
 gatherers, never "ask the model to realize it should look."
+
+**Keep the prompt and the code in agreement.** M1.2 shipped a code path (gather a cross-path object
+state, exempt it structurally) that the prompt still forbade — the model held decisive evidence and
+answered `inconclusive` 2/5 because rule 5 told it to. When code learns a new decisive evidence
+shape, the decisive-evidence standard in the prompt must learn it too, or the two silently fight.
+
+---
+
+## 7. Future / deferred (RECORDED, NOT scheduled — do NOT act on these)
+
+> Parking lot, grouped by the phase that unlocks each item. Nothing here is approved work. Do not
+> start any of it without an explicit decision; it is written down so it is not rediscovered or
+> silently re-litigated.
+
+### Phase — next vuln shapes (M1.x, the near ones)
+- **Mass-assignment** — the next shape to attempt.
+- **Delete-type** — ⚠️ **needs a NEGATIVE-ASSERTION path.** A successful delete makes the object
+  **404**, so the object-state read-back returns 404 and the anchors find **no owner and no value** —
+  the current gate (owner==attacked ∧ caller!=owner ∧ payload-causality *present*) can never confirm
+  it. Confirmation must assert **absence** (the object existed before and is provably gone now, and
+  the caller was not its owner), not presence. **This is the delete shape's core design point** — not
+  a generic "v2" refactor, and not something the existing three-AND gate can be stretched to cover.
+
+### Phase — known gate boundary (applies now)
+- **Payload-causality can false-collide on LOW-ENTROPY values.** The anti-false-positive gate rests
+  on THIS attack's injected value being effectively unique. On boolean / small-integer / enum fields —
+  or with concurrent runs writing the same value — that assumption breaks and causality could confirm
+  a change this attack did not cause. A real boundary of the current gate, recorded honestly.
+
+### Phase — before public release
+- **Default `API_HOST` to `127.0.0.1`** (the user may override). Do **NOT** hard-lock or `sys.exit`
+  on a non-loopback bind — that would kill authorized remote testing, which is a legitimate use.
+- **A 2-minute "magic demo"** plus a **recorded HAR sample** of `vulnerable_target/`, so the value is
+  visible without a full manual setup.
+- **`run_in_executor` for the similarity computation** (minor; it is CPU-bound on the event loop).
+
+### Phase — before any real / non-lab target
+- **Scope-lock hardening** (also §4 node 3): consolidate the duplicated host-scope checks into one
+  audited implementation + an adversarial test suite + runtime out-of-scope probes.
+- **The UUID wall** — object ids in real APIs are frequently UUIDs, which cannot be enumerated by
+  incrementing. Let the **user supply the victim's alternative IDs** rather than guessing them.
+- **WAF circuit-breaker** — detect that a WAF/rate-limiter has started blocking and stop, instead of
+  hammering a target and poisoning every subsequent verdict.
+- **Multi-step auth-macro recording** — logins that are not a single request (multi-step / MFA /
+  token exchange) cannot currently be replayed.
+- **A two-account resource-ownership baseline.** The fuzzer today holds **one shared auth custody**
+  and has **no map proving `id=2` belongs to a different user** — it is inferred from the attack's own
+  path shape. Real targets need an explicit two-account ownership baseline.
+
+### Phase — M2 (later)
+- **Shared resource/dependency graph** (RESTler-style request-dependency graph from OpenAPI /
+  proxy / HAR), so every module can query which paths relate instead of guessing. **Still gated on**
+  M1 proving generalization across shapes. M1.2(B)'s object-state resolver is the minimal slice and
+  is already built — do **not** expand it into the full graph now.
+
+---
+
+## 8. Considered and rejected (do NOT re-propose without new evidence)
+
+> Each of these was evaluated — several were measured — and rejected for the recorded reason.
+> Re-proposing one costs a node's time re-deriving the same answer.
+
+- **Letting the model "realize" it should fetch other evidence.** Measured at B-1: the model chose
+  the decisive endpoint **0/20** unaided, and **0/5** again at M1.2(A). Code gathers the evidence
+  deterministically instead. (Now a standing discipline — see §6.)
+- **An external LLM "judge" over the whole process.** Pushes the trust problem up a layer: you would
+  then need to verify the judge. Determinism is the process check — the structural guard, the code-side
+  anchors, "a green test proves nothing unless something was allowed to fail", and regression tests.
+- **A JSON tree-edit-distance oracle / making the rule oracle smarter.** Conflicts with the deliberate
+  **equal-length** benchmark strategy, which exists precisely to force cases into the semantic gap where
+  only the AI can decide. A smarter size/diff oracle would paper over the gap the product must own.
+- **Multi-round reflection loops.** More cost and more hallucination surface for no demonstrated
+  verdict gain; the two-turn write-then-read plus deterministic gathering is the shape that works.
+- **Building the full dependency graph now.** The minimal object-state resolver is what M1.2 needed;
+  the full graph is M2 and stays gated.

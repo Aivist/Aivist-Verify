@@ -102,7 +102,7 @@ importable):
 ```powershell
 python -m pytest backend/tests -q
 ```
-Current suite: **145 tests**. See [`STATUS.md`](./STATUS.md).
+Current suite: **227 tests**. See [`STATUS.md`](./STATUS.md).
 - `test_pruner.py` — exposure scoring + determinism regression tests
 - `test_step8_custody.py` — auth custody / parallel engine
 - `test_step_d_hunter_link.py` — Step D extraction (column-first + legacy fallback)

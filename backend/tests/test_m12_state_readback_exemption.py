@@ -266,22 +266,38 @@ def test_safe_dropped_write_is_not_exempted_even_if_model_says_verified(monkeypa
     assert res.guard_override == CROSS_RESOURCE_OVERRIDE_REASON
 
 
-# ---- (guard) reading the caller's OWN object -> (2) fails -> NOT exempt -------------------
-def test_reading_callers_own_object_is_not_exempted(monkeypatch):
-    # The model reads the CALLER's own object (owner 1). The unique value IS there (Alice's own
-    # baseline self-write landed), so causality would confirm — but caller==owner, so this is
-    # not a cross-user leak. caller_identity must be "same_as_caller" -> (2) fails -> no exemption.
+# ---- (2) is still a hard blocker — pinned at UNIT level -----------------------------------
+def test_caller_owned_readback_never_satisfies_condition_2():
+    # A read-back owned by the CALLER yields "same_as_caller", which can NEVER satisfy the
+    # exemption's (1)+(2) requirement — even though the unique value IS present (the caller's
+    # own baseline self-write landed). Proves causality alone is not sufficient: the AND needs
+    # caller_identity == "confirmed". (Pinned at unit level because M1.2(B) now prevents the
+    # model from steering the follow-up to its own object at all — see the test below.)
+    body = json.dumps({"id": 1, "owner_id": 1, "code": UNIQUE})
+    assert dv._anchor_caller_identity(body, "2", "1") == "same_as_caller"     # (1)+(2) FAIL
+    assert dv._anchor_payload_causality(body, "code", [UNIQUE]) == "confirmed_at_path"  # (3) holds
+    # -> the AND is False, so no exemption could fire on such a read-back.
+
+
+# ---- M1.2(B): the code OVERRIDES a model that asks for the wrong (its own) object ----------
+def test_code_gather_overrides_model_choosing_its_own_object(monkeypatch):
+    # The model asks to read its OWN object (owner==caller), which would prove nothing. M1.2(B)
+    # OVERRIDES that choice and deterministically gathers the ATTACKED object's state instead —
+    # so the wrong-object failure mode is now structurally PREVENTED, not merely detected.
     res = _run(
         _GIZMO_WRITE, _BOLA,
-        state_path="/api/gizmos/1",
-        state_body=json.dumps({"id": 1, "owner_id": 1, "code": UNIQUE}),
-        turn1=_request_turn("/api/gizmos/1"),
+        state_path="/api/gizmos/2",                                # what the CODE gathers
+        state_body=json.dumps({"id": 2, "owner_id": 2, "code": UNIQUE}),
+        turn1=_request_turn("/api/gizmos/1"),                      # model asks for its OWN object
         turn2=_verdict_turn("verified", evidence_path="code"),
         monkeypatch=monkeypatch,
     )
-    assert res.caller_identity_anchor == "same_as_caller"        # (2) fails
-    assert res.ai_verdict != "verified"
-    assert res.guard_override == CROSS_RESOURCE_OVERRIDE_REASON
+    # The code-gathered ATTACKED object won over the model's own-object choice.
+    assert res.follow_up_request["path"] == "/api/gizmos/2"
+    assert res.follow_up_request["path"] != "/api/gizmos/1"
+    assert res.caller_identity_anchor == "confirmed"
+    assert res.ai_verdict == "verified"
+    assert res.guard_override == STATE_READBACK_EXEMPTION_REASON
 
 
 # ---- (guard) read-back exposes no owner/subject field -> (1) fails -> NOT exempt ----------

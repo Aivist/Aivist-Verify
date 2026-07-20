@@ -13,10 +13,12 @@
 
 | Metric | Count |
 |---|---|
-| Total cases | 13 (A, B, C, D, SAFE, T-REAL, T-TRAP, T-WEAK, T-SILENT2, X-CROSS, X-SAFE, X-EQUIV-VULN, X-EQUIV-SAFE) |
-| Ground truth: REAL vulnerabilities | 9 (A, B, C, D, T-REAL, T-WEAK, T-SILENT2, X-CROSS, X-EQUIV-VULN) |
-| Ground truth: SECURE controls | 4 (SAFE, T-TRAP, X-SAFE, X-EQUIV-SAFE) |
+| Total cases | 15 (A, B, C, D, SAFE, T-REAL, T-TRAP, T-WEAK, T-SILENT2, X-CROSS, X-SAFE, X-EQUIV-VULN, X-EQUIV-SAFE, X-SILENT-VULN, X-SILENT-SAFE) |
+| Ground truth: REAL vulnerabilities | 10 (A, B, C, D, T-REAL, T-WEAK, T-SILENT2, X-CROSS, X-EQUIV-VULN, X-SILENT-VULN) |
+| Ground truth: SECURE controls | 5 (SAFE, T-TRAP, X-SAFE, X-EQUIV-SAFE, X-SILENT-SAFE) |
 | **M1.1 read-type (equal-length, MEASURED)** | X-EQUIV-VULN `verified` 5/5 (anchoring `confirmed`) · X-EQUIV-SAFE `failed` 5/5 — **0 false positives**, judged by semantics not size |
+| **M1.2 silent-write / object-STATE (MEASURED)** | X-SILENT-VULN `verified` **5/5** (code-gathered state read; causality `confirmed_at_path` 5/5) · X-SILENT-SAFE **`verified` 0/5** (causality `absent` 5/5 → no exemption → `inconclusive`) — **0 false positives**; B-1 X-CROSS still `verified` 5/5 |
+| **Shapes confirmed with zero FP** | **3** — write→write-record (B-1), read-type semantic equivalence (M1.1), write→object-STATE (M1.2) |
 | **Post-B-1 update (not re-run here)** | X-CROSS is now `verified` (code-gathered audit-log + content-match exemption, N=5, `shadow_b1step3_code_gather_measure.out.txt`); the "deferred to B-1" rows below are historical (pre-B-1). |
 | **AI-in-the-loop cases evaluated** | 10 (B, C, D, SAFE, T-REAL, T-TRAP, T-WEAK, T-SILENT2, X-CROSS, X-SAFE) |
 | **AI confident-correct** (same-path; `verified`/`failed` matches truth) | 8 / 8 |
@@ -54,6 +56,8 @@ including declining to flag the SECURE look-alike (no false positive).
 | X-SAFE  | SECURE | `suspicious` | `inconclusive`                                            | ◐ floor only |
 | X-EQUIV-VULN | REAL   | `suspicious` | `verified` (5/5; evidence_path `owner_id`, anchoring `confirmed`) | ✅ |
 | X-EQUIV-SAFE | SECURE | `suspicious` | `failed` (5/5; 0 verified — zero false positives) | ✅ |
+| X-SILENT-VULN | REAL   | `suspicious` | `verified` (5/5; code-gathered state read, causality `confirmed_at_path`) | ✅ |
+| X-SILENT-SAFE | SECURE | `suspicious` | `inconclusive` (5/5; causality `absent` → no exemption; **0 verified**) | ✅ |
 
 > ◐ = **integrity floor met** (the system never emits a false verdict — no false-negative
 > on X-CROSS, no false-positive on X-SAFE), but a **confident** verdict (`verified`/`failed`)
@@ -420,6 +424,83 @@ including declining to flag the SECURE look-alike (no false positive).
   (planned as M1.2, the silent-write-via-read-back case).
 - **One target, N=5, single additional shape.** Generalization is *demonstrated* on one more
   shape, not *proven* broadly.
+
+---
+
+## M1.2 silent-write / object-STATE additions (MEASURED)
+
+> A THIRD vuln shape: a silent cross-path **write** whose only confirmation is the attacked
+> object's **own state on a different path** — there is no same-path GET and (unlike X-CROSS) no
+> audit row. The rule oracle stalls `suspicious` on the opaque `200 {"status":"ok"}`, so the case
+> reaches the AI verifier. What is new is **who fetches the evidence**: the model does **not** find
+> the object's state path unaided (measured **0/5**), so the CODE resolves and gathers it
+> (`select_object_state_endpoint`, M1.2(B)) and the model does the semantic read. 5 runs each,
+> shadow/observe-only, gemini-2.5-pro, real OpenAPI catalog, target **fresh-seeded per run** with a
+> fresh UNIQUE injected value. Transcript: `scripts/audit/shadow_m12c_prompt_carveout_run.out.txt`.
+
+### Case X-SILENT-VULN — REAL silent write, confirmed by the object's own STATE
+- **Endpoint / method:** `POST /api/users/{user_id}/gizmo` (state read-back: cross-path
+  `GET /api/gizmos/{gizmo_id}`; there is **no** same-path GET — a GET returns 405 — and **no** audit row)
+- **Vulnerability class:** silent cross-path BOLA / object-level write
+- **Ground truth:** **REAL**
+- **Evidence gap:** opaque `200 {"status":"ok"}`, byte-identical to the SECURE mirror. The written
+  object has no same-path GET and is not audited, so the ONLY decisive observation is the object's
+  own state on a different path.
+- **Rule-based oracle verdict:** **`suspicious`** 5/5 (200/200, length deviation 0 → stalls, as designed).
+- **AI-in-the-loop verdict:** **`verified` 5/5.** Follow-up: **code-gathered** `GET /api/gizmos/2`
+  5/5 (the model chose it 0/5 unaided). All three anchors confirmed 5/5 — caller-identity
+  `confirmed`, payload-causality **`confirmed_at_path`** — so the state-readback exemption fired
+  5/5 (`guard_override = state_readback_causally_decisive`).
+- **Correct?:** **Yes** (REAL). 0 misses.
+- **Measured progression:** code-gather absent → `inconclusive` 5/5 (exemption starved, M1.2(A)) →
+  code-gather added → `verified` **3/5** (prompt rule 5 still forbade a different path) → prompt
+  carve-out (M1.2(C)) → **`verified` 5/5**.
+- **AI reasoning (verbatim, run 4 — a run that was `inconclusive` before the carve-out):** *"The
+  initial attack was a POST to `/api/users/2/gizmo` attempting to set the gizmo code to
+  `m12a-gizmo-4-15870f18fb`. The system-provided follow-up read of the attacked object's state
+  confirms that the gizmo with `id: 2` and `owner_id: 2` now has its `code` field set to
+  `m12a-gizmo-4-15870f18fb`. This is the exact value sent in the unauthorized request, which
+  decisively proves the write operation was successful and the access control is broken."*
+
+### Case X-SILENT-SAFE — SECURE mirror (dropped write; the unique value is ABSENT)
+- **Endpoint / method:** `POST /api/users/{user_id}/sprocket` (state read-back: cross-path
+  `GET /api/sprockets/{sprocket_id}`)
+- **Vulnerability class:** silent-write look-alike, ownership enforced; cross-user write silently dropped
+- **Ground truth:** **NOT vulnerable (SECURE control)**
+- **Evidence gap:** the write response is **byte-identical** to X-SILENT-VULN. Owner-identity and
+  caller!=owner **confirm for this case too** (a dropped write still leaves the object owned by the
+  victim, attacked by the caller) — so ONLY payload-causality can separate REAL from SECURE.
+- **Rule-based oracle verdict:** **`suspicious`** 5/5.
+- **AI-in-the-loop verdict:** **`inconclusive` 5/5 — 0 `verified` (zero false positives).** Same
+  code-gathered state read (`GET /api/sprockets/2` 5/5). caller-identity `confirmed` 5/5 but
+  payload-causality **`absent` 5/5** → the exemption did **not** fire → the cross-resource guard
+  downgraded the model's raw `failed` to `inconclusive`.
+- **Correct?:** **Yes** (SECURE — ground truth allows `failed` or `inconclusive`, never `verified`).
+- **AI reasoning (verbatim, run 2):** *"The attack request to `POST /api/users/2/sprocket` received a
+  misleading 200 OK response. However, the system-provided follow-up read of the attacked object's
+  state (`GET /api/sprockets/2`) provides decisive evidence. The response shows the `code` field
+  still holds its original value (`"sprocket_bob_v0"`) and was not updated to the value sent in the
+  attack (`"m12a-sprocket-2-9053b73464"`). This proves the server correctly enforced authorization
+  and the unauthorized write did not succeed."*
+
+### B-1 no-regression (same run, 5 runs each)
+- **X-CROSS** (REAL, write-record channel) → **`verified` 5/5**, `guard_override =
+  write_record_readback_decisive` 5/5, follow-up code-gathered `GET /api/audit-log` 5/5.
+- **X-SAFE** (SECURE control) → **`inconclusive` 5/5, 0 `verified`.**
+- The two exemption channels stayed **disjoint**: the state exemption fired 0/5 on both B-1 cases.
+
+### M1.2 honest limits (do not over-read)
+- **Payload-causality assumes a HIGH-ENTROPY written value.** It separates VULN from SAFE by finding
+  THIS attack's unique value. On boolean / small-integer / enum fields — or with concurrent runs
+  writing the same value — the value can collide and causality could confirm a change this attack did
+  not cause. A real boundary of the gate.
+- **The resolver is a FETCHER, not an oracle.** `select_object_state_endpoint` guesses the object's
+  state endpoint structurally (resource-noun + object-scoping) and binds the attacked id. If it
+  guesses wrong, the anchors fail and the verdict degrades to `inconclusive` — the safe direction —
+  but it is not a proof that the endpoint it picked is the right one.
+- **One target, N=5, three shapes.** Generalization is demonstrated across three shapes, not proven
+  broadly. mass-assignment and delete-type are untested; **delete-type will need a negative-assertion
+  path** (a deleted object 404s, so there is no owner and no value to anchor on).
 
 ---
 

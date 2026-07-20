@@ -250,6 +250,16 @@ from the attack path. The result carries both verdicts for transparency — `ai_
 `guard_override` (the reason, or `None`). The shadow pass logs the **final guarded**
 verdict and **still never changes the persisted verdict**.
 
+Two **structural exemptions** can keep such a cross-path verdict decisive — both
+`verified`-only, both computed **in code** (never the model's say-so), and kept
+**disjoint** from each other: **B-1's write-record match**
+(`WRITE_RECORD_EXEMPTION_REASON`) and **M1.2's object-state read-back**
+(`STATE_READBACK_EXEMPTION_REASON`, gated on owner-identity ∧ caller≠owner ∧
+**payload-causality**). In both cases the decisive read-back is **gathered by the code**
+(`select_write_record_endpoint` / `select_object_state_endpoint`), not chosen by the
+model — measurement showed the model does not find it unaided (0/20, then 0/5). See
+[`DEEP_VERIFY.md`](./DEEP_VERIFY.md).
+
 Why it exists: the rule oracle stalls at `suspicious` on **silent** cases (opaque
 `200 {"status":"ok"}` writes — Rule 2's ≤5% length-deviation branch) because it
 cannot observe a side effect from a single response. The deep verifier's

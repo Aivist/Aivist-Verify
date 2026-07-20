@@ -308,3 +308,142 @@ def has_same_path_readback(entries: List[str], attack_path: str) -> bool:
         if _templates_match(entry_path(e), ap):
             return True
     return False
+
+
+# ==============================================================================
+# M1.2(B) — OBJECT-STATE read-back resolver (target-agnostic).
+#
+# THE MINIMAL SLICE of the future M2 dependency graph: it answers exactly ONE question —
+# "which GET reads back the STATE of the object this write targeted?" — and nothing else.
+# It is deliberately NOT a general request-dependency graph (that stays M2).
+#
+# WHY it exists: a silent write with no same-path read-back and no RELEVANT write-record can
+# only be confirmed by reading the attacked object's own state, and that state usually lives
+# on a DIFFERENT path (e.g. write POST /api/users/{id}/gizmo, state GET /api/gizmos/{id}).
+# Measurement showed the model does not find that path on its own (0/5 at M1.2(A); the same
+# wall as B-1's 0/20), so the CODE gathers it — the model still does the irreplaceable part,
+# semantically reading the state we fetched.
+#
+# GENERIC signal only — no concrete path/field/tag of any target is encoded:
+#   * the RESOURCE NOUN the write targeted = the write path's last non-id segment;
+#   * a candidate is a GET whose path carries that noun as a whole SEGMENT (singular/plural
+#     insensitive) and is OBJECT-SCOPED (has a {template} segment we can bind to the attacked
+#     object id — the same runtime-param binding select_write_record_endpoint already uses);
+#   * record/log-style endpoints are EXCLUDED (that is B-1's channel — the two stay disjoint);
+#   * a candidate that resolves to the attack's own path is rejected (not a cross-path read).
+#
+# SAFETY NOTE: this resolver is only a heuristic FETCHER. It never decides a verdict. If it
+# fetches the wrong object, the deep verifier's exemption gate (owner==attacked AND
+# caller!=owner AND payload-causality) simply fails to confirm and the verdict stays
+# "inconclusive" — a wrong gather degrades to the SAFE direction, never to a false positive.
+# ==============================================================================
+
+# Plural forms whose singular drops "es" (sibilant stems): boxes->box, matches->match.
+_PLURAL_SIBILANT_SUFFIXES = ("ses", "xes", "zes", "ches", "shes")
+
+
+def _singularize(token: str) -> str:
+    """Crude, LANGUAGE-level (not domain-level) singularizer for a path segment:
+    'gizmos'->'gizmo', 'policies'->'policy', 'boxes'->'box', 'status'->'status'.
+    Target-agnostic: it encodes English plural morphology, never any API's vocabulary."""
+    t = (token or "").lower()
+    if t.endswith("ies") and len(t) > 3:
+        return t[:-3] + "y"
+    if t.endswith(_PLURAL_SIBILANT_SUFFIXES) and len(t) > 3:
+        return t[:-2]
+    if t.endswith("s") and not t.endswith("ss") and len(t) > 1:
+        return t[:-1]
+    return t
+
+
+def _is_template_segment(seg: str) -> bool:
+    return seg.startswith("{") and seg.endswith("}")
+
+
+def _concrete_key(path: str) -> str:
+    """Comparison key for two concrete paths: drop query/fragment, strip a trailing slash."""
+    p = (path or "").split("?", 1)[0].split("#", 1)[0]
+    if len(p) > 1:
+        p = p.rstrip("/")
+    return p
+
+
+def _bind_template(path: str, object_id: Optional[str]) -> Optional[str]:
+    """Bind every {templated} segment to the attacked object id (the same runtime-param
+    binding select_write_record_endpoint uses). None when there is no id to bind."""
+    if "{" not in path:
+        return path
+    if object_id is None:
+        return None
+    return re.sub(r"\{[^}]+\}", str(object_id), path)
+
+
+def attacked_resource_noun(attack_path: str, attacked_object_id: Optional[str] = None) -> Optional[str]:
+    """The RESOURCE NOUN a write targeted: the last path segment that is not an id
+    (not templated, not the attacked id, not purely numeric), singularized.
+
+        '/api/users/2/gizmo' -> 'gizmo'      (the thing written)
+        '/api/gizmos/2'      -> 'gizmo'      (flat write on the object itself)
+
+    Returns None when the path carries no noun segment at all. Target-agnostic."""
+    segs = [s for s in (attack_path or "").split("?", 1)[0].split("/") if s]
+    for seg in reversed(segs):
+        if _is_template_segment(seg):
+            continue
+        if attacked_object_id is not None and seg == str(attacked_object_id):
+            continue
+        if seg.isdigit():
+            continue
+        return _singularize(seg)
+    return None
+
+
+def select_object_state_endpoint(
+    entries: List[str], attack_path: str, *, attacked_object_id: Optional[str] = None
+) -> Optional[str]:
+    """Deterministically choose ONE GET PATH that reads back the ATTACKED OBJECT'S OWN STATE,
+    or None.
+
+    Selection (generic, no hardcoding): among GET endpoints that are NOT record/log-style and
+    that are object-scoped (carry a {template} segment), keep those whose path contains the
+    attacked resource noun as a whole segment (singular/plural insensitive); bind the template
+    to the attacked object id; drop any candidate that resolves to the attack's own path.
+    Prefer the CANONICAL object read — the noun segment immediately followed by the templated
+    id (e.g. '/api/gizmos/{gizmo_id}') — then catalog order (already deterministic).
+
+    Returns a concrete relative path ready to fetch, or None when no such endpoint exists — in
+    which case the caller must NOT fabricate one (the flow stays inconclusive)."""
+    noun = attacked_resource_noun(attack_path, attacked_object_id)
+    if not noun:
+        return None
+    attack_key = _concrete_key(attack_path)
+
+    canonical: List[str] = []
+    other: List[str] = []
+    for e in (entries or []):
+        if entry_method(e) != "GET":
+            continue
+        if is_write_record_entry(e):
+            continue                      # B-1's channel — keep the two gathers disjoint
+        path = entry_path(e)
+        segs = [s for s in path.split("/") if s]
+        if not any(_is_template_segment(s) for s in segs):
+            continue                      # not object-scoped -> cannot target ONE object
+        hits = [
+            i for i, s in enumerate(segs)
+            if not _is_template_segment(s) and _singularize(s) == noun
+        ]
+        if not hits:
+            continue                      # this endpoint is not about the written resource
+        concrete = _bind_template(path, attacked_object_id)
+        if not concrete or _concrete_key(concrete) == attack_key:
+            continue                      # unbindable, or the attack's own path (not cross-path)
+        if any(i + 1 < len(segs) and _is_template_segment(segs[i + 1]) for i in hits):
+            canonical.append(concrete)
+        else:
+            other.append(concrete)
+
+    for bucket in (canonical, other):
+        if bucket:
+            return bucket[0]
+    return None

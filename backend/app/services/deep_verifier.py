@@ -54,9 +54,11 @@ from backend.app.services.fuzzer import (
 )
 # B-1: generic, target-agnostic catalog queries used to deterministically gather a
 # write-record read-back (HALF 1) — no concrete target path/field/tag is referenced.
+# M1.2(B) adds the parallel object-STATE resolver used when no RELEVANT write-record exists.
 from backend.app.services.endpoint_catalog import (
     has_same_path_readback,
     select_write_record_endpoint,
+    select_object_state_endpoint,
     _tokens as _catalog_tokens,
     _WRITE_RECORD_KEYWORDS,
 )
@@ -107,10 +109,18 @@ SYSTEM_PROMPT = (
     "decide.\" It is the honest answer ONLY in a genuine evidence gap — when you DO hold "
     "decisive read-back evidence, commit to \"verified\" or \"failed\" rather than hedging.\n"
     "5. SAME-RESOURCE RULE (this is what makes a read-back decisive): a read-back reflects the "
-    "targeted state ONLY if it queries the SAME resource/path the attack targeted — any HTTP "
-    "method on that same resource — or is an explicit record of that specific write. A "
-    "DIFFERENT endpoint that merely exposes a field with the SAME NAME as what you wrote is NOT "
-    "the same state: matching field names across different resources/paths do NOT make a "
+    "targeted state ONLY in one of these three cases — (a) it queries the SAME resource/path the "
+    "attack targeted (any HTTP method on that same resource); (b) it is an explicit record of that "
+    "specific write; or (c) it is a read of the ATTACKED OBJECT'S OWN CURRENT STATE that THE SYSTEM "
+    "ITSELF selected and executed and says so in the follow-up result — when the attacked resource "
+    "has no same-path read-back, the system may fetch the attacked object's state by another path, "
+    "and that response IS the state you attacked even though its path differs. In case (c) commit "
+    "only after checking BOTH that the object returned is the one the attack targeted AND what that "
+    "state now holds for the field your attack wrote: if the value your attack sent is present, the "
+    "unauthorized write landed (\"verified\"); if the state still holds a different/original value, "
+    "it did not (\"failed\"). Case (c) NEVER applies to a read YOU chose: a DIFFERENT endpoint you "
+    "picked yourself, or one that merely exposes a field with the SAME NAME as what you wrote, is "
+    "NOT the same state — matching field names across different resources/paths do NOT make a "
     "read-back decisive, so you MUST answer \"inconclusive\" (not \"failed\", not \"verified\"). "
     "A read-back of the SAME resource/path you attacked remains FULLY decisive — use it to "
     "commit to \"verified\" or \"failed\"."
@@ -161,15 +171,15 @@ Rules:
   bracket path from the root of that JSON body. null only when no field is decisive.
 - An opaque action-response status (e.g. 200 {"status":"ok"}) is NEVER, by itself, proof
   that the targeted state did or did not change.
-- "verified" = the attacked state was demonstrably changed (a read-back of the SAME resource/
-  path you attacked, or an explicit record of that write, shows your written value).
-- "failed" = the attacked state is demonstrably unchanged (a read-back of the SAME resource/
-  path you attacked shows the server enforced authorization).
+- "verified" = the attacked state was demonstrably changed — a read-back of the SAME resource/
+  path you attacked, an explicit record of that write, or a read of the attacked object's own
+  state THE SYSTEM ITSELF gathered, shows the value your attack sent.
+- "failed" = the attacked state is demonstrably unchanged — one of those same three decisive
+  read-backs shows the server enforced authorization (your value is absent; the original stands).
 - "inconclusive" = the evidence does not reflect the attacked state — it came from a DIFFERENT
-  resource/path than the one you attacked (even if that endpoint exposes a same-named field),
-  the written field is absent, or there was no decisive observation; you cannot confirm and a
-  human must. Do NOT downgrade it to "failed" or inflate it to "verified" on the action
-  status alone.
+  resource/path that YOU chose (even if that endpoint exposes a same-named field), the written
+  field is absent, or there was no decisive observation; you cannot confirm and a human must. Do
+  NOT downgrade it to "failed" or inflate it to "verified" on the action status alone.
 - "suspicious" = still ambiguous and you have not yet spent your one follow-up.
 """
 
@@ -184,12 +194,17 @@ I have executed the ONE follow-up request you asked for, against the live target
 
 Now deliver your FINAL verdict. You may NOT request more information this turn.
 Apply the decisive-evidence standard: return "verified" or "failed" ONLY if this read-back
-queries the SAME resource/path you attacked (any HTTP method on that same resource), or is an
-explicit record of that specific write. A DIFFERENT endpoint that merely exposes a field with
-the same NAME as what you wrote is NOT the same state — if that is all you have (or the written
-field is absent, or nothing decisive was observed), you MUST answer "inconclusive"; do not fall
-back to "failed", and do not return "verified" on the action status alone. A read-back of the
-SAME resource/path you attacked IS decisive — use it to commit.
+(a) queries the SAME resource/path you attacked (any HTTP method on that same resource), (b) is
+an explicit record of that specific write, or (c) is a read of the ATTACKED OBJECT'S OWN CURRENT
+STATE that the SYSTEM ITSELF selected and executed (a note above will say so explicitly) — in
+case (c) it IS the state you attacked even though its path differs, so check that the object
+returned is the one you targeted, compare the value your attack sent against what that state now
+holds, and commit ("verified" if your value is present, "failed" if the original value stands).
+A DIFFERENT endpoint YOU chose that merely exposes a field with the same NAME as what you wrote
+is NOT the same state — if that is all you have (or the written field is absent, or nothing
+decisive was observed), you MUST answer "inconclusive"; do not fall back to "failed", and do not
+return "verified" on the action status alone. A read-back of the SAME resource/path you attacked
+IS decisive — use it to commit.
 Respond with ONLY a JSON object of EXACTLY this shape (no markdown, no extra text):
 {{
   "decision": "verdict",
@@ -958,6 +973,7 @@ async def execute_deep_verification(
         )
         written_values = _written_values(attack_req)
         det_record_path: Optional[str] = None
+        det_state_path: Optional[str] = None
         if (
             payload
             and _is_write_method(attack_req.get("method"))
@@ -1009,8 +1025,40 @@ async def execute_deep_verification(
                     logger.info(
                         "[DEEP-VERIFY] HALF 1: candidate write-record %r is NOT about the attacked "
                         "object (it does not record the caller's own landed write) -> stepping back; "
-                        "the model chooses its own follow-up (e.g. the object's own state read).",
+                        "the code now resolves the object's OWN STATE read-back instead (M1.2(B)).",
                         _candidate,
+                    )
+
+            # --- M1.2(B) OBJECT-STATE GATHER (parallel to B-1's write-record gather) --------
+            # No RELEVANT write-record exists (none in the catalog, or the object-scope gate
+            # rejected the candidate). The only remaining confirmation for a silent write is the
+            # ATTACKED OBJECT'S OWN STATE — which lives on a DIFFERENT path. Measurement showed
+            # the model does not find that path on its own (0/5 at M1.2(A); B-1's wall was 0/20),
+            # so the CODE resolves and gathers it GENERICALLY (resource-noun + object-scoping;
+            # no target path/field/tag hardcoded). The model still does the irreplaceable part:
+            # semantically reading the state we fetched. If no state endpoint can be resolved we
+            # do NOT fabricate one -> the model chooses and the flow stays inconclusive.
+            #
+            # This only FEEDS the existing state-readback exemption; it changes no gate. The
+            # exemption still independently requires owner==attacked AND caller!=owner AND
+            # payload-causality, so a WRONG gather degrades to inconclusive, never to a verdict.
+            if det_record_path is None:
+                det_state_path = select_object_state_endpoint(
+                    available_endpoints or [], attack_req.get("path", ""),
+                    attacked_object_id=attacked_object_id,
+                )
+                if det_state_path:
+                    logger.info(
+                        "[DEEP-VERIFY] M1.2(B): write attack on %r has no same-path read-back and no "
+                        "relevant write-record; resolved the attacked object's OWN state read-back %r "
+                        "-> code will gather it (model choice not relied upon).",
+                        attack_req.get("path"), det_state_path,
+                    )
+                else:
+                    logger.info(
+                        "[DEEP-VERIFY] M1.2(B): no object-state read-back could be resolved generically "
+                        "for %r -> NOT fabricating one; the model chooses its own follow-up.",
+                        attack_req.get("path"),
                     )
 
         # Build the evidence block (single exchange for read-only cases).
@@ -1078,6 +1126,7 @@ async def execute_deep_verification(
         decision = turn1_obj.get("decision")
         next_request = turn1_obj.get("next_request") or {}
         followup_is_code_gathered = False
+        gathered_kind: Optional[str] = None
         if det_record_path:
             decision = "request_more"
             next_request = {
@@ -1091,6 +1140,23 @@ async def execute_deep_verification(
                 ),
             }
             followup_is_code_gathered = True
+            gathered_kind = "record"
+        elif det_state_path:
+            # M1.2(B): no relevant write-record — gather the attacked object's OWN state.
+            decision = "request_more"
+            next_request = {
+                "method": "GET",
+                "path": det_state_path,
+                "body": None,
+                "reason": (
+                    "code-gathered object-state read-back (deterministic; the attacked "
+                    "resource has no same-path read-back and no relevant record of writes, so "
+                    "the engine fetched the attacked object's own current state on its other "
+                    "path rather than relying on the model's choice)"
+                ),
+            }
+            followup_is_code_gathered = True
+            gathered_kind = "state"
 
         # ---------------- If verdict now, we're done ----------------
         if decision != "request_more" or not next_request.get("path"):
@@ -1187,15 +1253,23 @@ async def execute_deep_verification(
             raw_response=follow_up_feedback or "(no response captured)",
         )
         if followup_is_code_gathered:
-            # Be honest: this follow-up was selected and executed by the engine, not the
-            # model. The engine picked an explicit record-of-writes endpoint because the
-            # attacked resource has no same-path read-back.
-            turn2_msg = (
-                "NOTE: Because the resource you attacked has no same-path read-back, the "
-                "system itself selected and executed an explicit record-of-writes endpoint "
-                "as the follow-up (this was NOT your choice). Treat the verbatim result "
-                "below as that record of write activity.\n\n"
-            ) + turn2_msg
+            # Be honest about WHAT the engine fetched and that it was not the model's choice.
+            # The note states only what the response IS — it never suggests a verdict.
+            if gathered_kind == "state":
+                turn2_msg = (
+                    "NOTE: Because the resource you attacked has no same-path read-back and no "
+                    "relevant record of write activity, the system itself selected and executed a "
+                    "read of the ATTACKED OBJECT'S OWN CURRENT STATE on its other path (this was "
+                    "NOT your choice). Treat the verbatim result below as the current state of the "
+                    "object you attacked, and compare it against the value your attack sent.\n\n"
+                ) + turn2_msg
+            else:
+                turn2_msg = (
+                    "NOTE: Because the resource you attacked has no same-path read-back, the "
+                    "system itself selected and executed an explicit record-of-writes endpoint "
+                    "as the follow-up (this was NOT your choice). Treat the verbatim result "
+                    "below as that record of write activity.\n\n"
+                ) + turn2_msg
         contents.append(types.Content(role="model", parts=[types.Part(text=turn1_text)]))
         contents.append(types.Content(role="user", parts=[types.Part(text=turn2_msg)]))
 

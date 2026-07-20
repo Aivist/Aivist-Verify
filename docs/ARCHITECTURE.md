@@ -105,9 +105,11 @@ anti gravity/
 │  │     └─ endpoint_catalog.py   # D18: OpenAPI → "METHOD /path [tags/operationId]" catalog + write-record queries (B-1)
 │  ├─ scripts/
 │  │  └─ deep_verify_live_check.py  # Manual Gemini+target check (not pytest)
-│  └─ tests/                      # pytest (145): pruner, step8_custody,
+│  └─ tests/                      # pytest (227): pruner, step8_custody,
 │                                 # step_d_hunter_link, api_endpoints, step9_proxy, verdict_oracle,
-│                                 # endpoint_catalog, d18_phase2_crosspath, d18_b22_guard, d18_b1_write_record
+│                                 # endpoint_catalog, d18_phase2_crosspath, d18_b22_guard, d18_b1_write_record,
+│                                 # d18_b1_shadow_integration, m1_evidence_anchoring, m12_object_scope,
+│                                 # m12_state_readback_exemption (M1.2A), m12b_state_gather (M1.2B)
 ├─ vulnerable_target/            # Standalone ground-truth target (:8001), own DB, 14 pytest cases
 │  ├─ main.py
 │  ├─ test_vulns.py
@@ -158,7 +160,12 @@ POST /hunter/auth/dry-run       → test an Identity Provider Anchor (re-auth) b
 > `CROSS_RESOURCE_OVERRIDE_REASON`) downgrades a `verified`/`failed` that rests on a
 > follow-up read-back of a *different* path to `inconclusive`; the result preserves
 > the model's raw verdict and any override (`ai_verdict_raw` + `guard_override`,
-> with `ai_verdict` being the final post-guard value). See
+> with `ai_verdict` being the final post-guard value). Two **structural exemptions**
+> (both `verified`-only, cross-path-only, and disjoint) can keep such a verdict decisive:
+> **B-1's write-record** match (`WRITE_RECORD_EXEMPTION_REASON`) and **M1.2's object-state
+> read-back** (`STATE_READBACK_EXEMPTION_REASON`, gated on owner-identity ∧ caller!=owner ∧
+> **payload-causality** — the false-positive gate). The decisive read-back is **code-gathered**,
+> not model-chosen (`select_write_record_endpoint` / `select_object_state_endpoint`). See
 > [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md) §Phase 7 and
 > [`DEEP_VERIFY.md`](./DEEP_VERIFY.md).
 
@@ -303,11 +310,16 @@ agent must treat the following as deliberate-but-dangerous:
   discovery** is seeded by `services/endpoint_catalog.py` — `catalog_from_openapi`
   emits `"METHOD /path"` entries that now carry the operation's genuine
   `tags`/`operationId` when the spec declares them (enabling half of **B-1**);
-  `catalog_from_har` is a stub. The shadow pass reads its spec from
+  `catalog_from_har` is a stub. `endpoint_catalog.py` also holds the **structural catalog
+  queries** the verifier uses to gather evidence deterministically instead of trusting the
+  model to pick it: `has_same_path_readback`, `select_write_record_endpoint` (B-1) and
+  `select_object_state_endpoint` (**M1.2(B)** — resolves the attacked object's own state
+  endpoint by resource-noun + object-scoping; the minimal slice of the future M2 graph).
+  The shadow pass reads its spec from
   `settings.AI_DEEP_VERIFY_OPENAPI_SPEC` (via `getattr` — *not* a declared config
   field, D21), else falls back to a same-resource placeholder. The benchmark attack
-  surface is the 22-route `vulnerable_target/` app (`app.openapi()` lists 18 path
-  templates; the +4 over the pre-M1.1 surface are the X-EQUIV read-type routes). Two
+  surface is the 26-route `vulnerable_target/` app (`app.openapi()` lists 22 path
+  templates; the +4 over the pre-M1.2 surface are the X-SILENT gizmo/sprocket routes). Two
   known seams (auth-context, endpoint catalog/spec wiring) are tracked in
   [`TECH_DEBT.md`](./TECH_DEBT.md) D18.
 - When something "doesn't persist," suspect the **stale-SQLite-schema** trap
