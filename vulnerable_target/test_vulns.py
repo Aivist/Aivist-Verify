@@ -351,6 +351,93 @@ def test_x_silent_vuln_and_safe_write_responses_are_byte_identical(client):
 
 
 # -----------------------------------------------------------------------------
+# X-DELETE-VULN-HARD (M1.3) — physical delete BOLA. Alice deletes Bob's relic; the DELETE is an
+# opaque 200 and there is no same-path GET. The cross-path state read shows the object is GONE
+# (404). Ground truth: REAL. The pre-flight read (that it existed) is the coincidence anchor.
+# -----------------------------------------------------------------------------
+
+def test_x_delete_vuln_hard_cross_user_delete_removes_object(client):
+    # Pre-flight (the existence anchor): Bob's relic exists via the cross-path state read.
+    before = client.get("/api/relics/2", headers=_auth(ALICE_TOKEN))
+    assert before.status_code == 200
+    assert before.json() == {"id": 2, "owner_id": 2, "label": "relic_bob"}
+
+    # Alice (her token) deletes BOB'S relic. Opaque success — gives nothing away.
+    delete = client.delete("/api/users/2/relic", headers=_auth(ALICE_TOKEN))
+    assert delete.status_code == 200
+    assert delete.json() == {"status": "ok"}
+
+    # The ONLY proof: the cross-path STATE read now 404s — the object physically vanished.
+    after = client.get("/api/relics/2", headers=_auth(ALICE_TOKEN))
+    assert after.status_code == 404
+
+
+def test_x_delete_vuln_has_no_same_path_get(client):
+    # No GET on the DELETE path -> confirmation MUST be cross-path. FastAPI answers 405.
+    resp = client.get("/api/users/2/relic", headers=_auth(ALICE_TOKEN))
+    assert resp.status_code == 405
+
+
+# -----------------------------------------------------------------------------
+# X-DELETE-VULN-SOFT (M1.3) — logical (soft) delete BOLA. The row survives but a `status`
+# lifecycle field flips active -> revoked. Ground truth: REAL. Exercises the LOGICAL track.
+# -----------------------------------------------------------------------------
+
+def test_x_delete_vuln_soft_cross_user_delete_flips_status(client):
+    before = client.get("/api/badges/2", headers=_auth(ALICE_TOKEN))
+    assert before.status_code == 200
+    assert before.json() == {"id": 2, "owner_id": 2, "status": "active", "label": "badge_bob"}
+
+    delete = client.delete("/api/users/2/badge", headers=_auth(ALICE_TOKEN))
+    assert delete.status_code == 200
+    assert delete.json() == {"status": "ok"}
+
+    # Still present (200) but the lifecycle field now reads a deleted value.
+    after = client.get("/api/badges/2", headers=_auth(ALICE_TOKEN))
+    assert after.status_code == 200
+    assert after.json()["status"] == "revoked"
+
+
+# -----------------------------------------------------------------------------
+# X-DELETE-SAFE (M1.3) — SECURE mirror. SAME opaque 200 on the delete, but ownership IS enforced:
+# a cross-user delete is silently dropped, so the object is STILL PRESENT and unchanged.
+# Ground truth: SECURE — a `verified` is a FALSE POSITIVE.
+# -----------------------------------------------------------------------------
+
+def test_x_delete_safe_cross_user_delete_does_not_land(client):
+    before = client.get("/api/seals/2", headers=_auth(ALICE_TOKEN))
+    assert before.status_code == 200
+    assert before.json() == {"id": 2, "owner_id": 2, "label": "seal_bob"}
+
+    delete = client.delete("/api/users/2/seal", headers=_auth(ALICE_TOKEN))
+    assert delete.status_code == 200
+    assert delete.json() == {"status": "ok"}  # NOT a 403 — that is the trap
+
+    # Cross-path STATE read: the object is STILL PRESENT — the delete was dropped.
+    after = client.get("/api/seals/2", headers=_auth(ALICE_TOKEN))
+    assert after.status_code == 200
+    assert after.json() == {"id": 2, "owner_id": 2, "label": "seal_bob"}
+
+
+def test_x_delete_safe_owner_delete_does_land(client):
+    # Sanity: the SAFE endpoint is functional — the legitimate owner CAN delete his own seal.
+    delete = client.delete("/api/users/2/seal", headers=_auth(BOB_TOKEN))
+    assert delete.status_code == 200
+    after = client.get("/api/seals/2", headers=_auth(BOB_TOKEN))
+    assert after.status_code == 404
+
+
+def test_x_delete_responses_are_byte_identical_vuln_vs_safe(client):
+    # A single-shot oracle cannot tell the REAL delete from the SECURE one: same status, same
+    # bytes on the delete response. Only the cross-path STATE read separates them.
+    vuln = client.delete("/api/users/2/relic", headers=_auth(ALICE_TOKEN))
+    safe = client.delete("/api/users/2/seal", headers=_auth(ALICE_TOKEN))
+    soft = client.delete("/api/users/2/badge", headers=_auth(ALICE_TOKEN))
+    assert vuln.status_code == safe.status_code == soft.status_code == 200
+    assert vuln.content == safe.content == soft.content  # identical {"status":"ok"}
+
+
+# -----------------------------------------------------------------------------
 # Auth is still required (the bugs are authorization bugs, not "no auth at all").
 # -----------------------------------------------------------------------------
 

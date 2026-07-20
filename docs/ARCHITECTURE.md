@@ -105,11 +105,12 @@ anti gravity/
 │  │     └─ endpoint_catalog.py   # D18: OpenAPI → "METHOD /path [tags/operationId]" catalog + write-record queries (B-1)
 │  ├─ scripts/
 │  │  └─ deep_verify_live_check.py  # Manual Gemini+target check (not pytest)
-│  └─ tests/                      # pytest (227): pruner, step8_custody,
+│  └─ tests/                      # pytest (250): pruner, step8_custody,
 │                                 # step_d_hunter_link, api_endpoints, step9_proxy, verdict_oracle,
 │                                 # endpoint_catalog, d18_phase2_crosspath, d18_b22_guard, d18_b1_write_record,
 │                                 # d18_b1_shadow_integration, m1_evidence_anchoring, m12_object_scope,
-│                                 # m12_state_readback_exemption (M1.2A), m12b_state_gather (M1.2B)
+│                                 # m12_state_readback_exemption (M1.2A), m12b_state_gather (M1.2B),
+│                                 # m13_delete (M1.3 delete-shape negative assertion)
 ├─ vulnerable_target/            # Standalone ground-truth target (:8001), own DB, 14 pytest cases
 │  ├─ main.py
 │  ├─ test_vulns.py
@@ -160,12 +161,16 @@ POST /hunter/auth/dry-run       → test an Identity Provider Anchor (re-auth) b
 > `CROSS_RESOURCE_OVERRIDE_REASON`) downgrades a `verified`/`failed` that rests on a
 > follow-up read-back of a *different* path to `inconclusive`; the result preserves
 > the model's raw verdict and any override (`ai_verdict_raw` + `guard_override`,
-> with `ai_verdict` being the final post-guard value). Two **structural exemptions**
-> (both `verified`-only, cross-path-only, and disjoint) can keep such a verdict decisive:
-> **B-1's write-record** match (`WRITE_RECORD_EXEMPTION_REASON`) and **M1.2's object-state
+> with `ai_verdict` being the final post-guard value). Three **structural exemptions**
+> (all `verified`-only, cross-path-only, and mutually disjoint) can keep such a verdict decisive:
+> **B-1's write-record** match (`WRITE_RECORD_EXEMPTION_REASON`), **M1.2's object-state
 > read-back** (`STATE_READBACK_EXEMPTION_REASON`, gated on owner-identity ∧ caller!=owner ∧
-> **payload-causality** — the false-positive gate). The decisive read-back is **code-gathered**,
-> not model-chosen (`select_write_record_endpoint` / `select_object_state_endpoint`). See
+> **payload-causality** — the false-positive gate), and **M1.3's delete read-back**
+> (`DELETE_READBACK_EXEMPTION_REASON`, gated on a **pre-flight existence proof** ∧ a dual-track
+> **negative assertion** — physical 404/403 *or* a logical soft-delete status flip). The decisive
+> read-back is **code-gathered**, not model-chosen (`select_write_record_endpoint` /
+> `select_object_state_endpoint`); for a DELETE the code additionally takes a **pre-flight read
+> before the attack**, so an absence can be attributed to it. See
 > [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md) §Phase 7 and
 > [`DEEP_VERIFY.md`](./DEEP_VERIFY.md).
 
@@ -318,8 +323,8 @@ agent must treat the following as deliberate-but-dangerous:
   The shadow pass reads its spec from
   `settings.AI_DEEP_VERIFY_OPENAPI_SPEC` (via `getattr` — *not* a declared config
   field, D21), else falls back to a same-resource placeholder. The benchmark attack
-  surface is the 26-route `vulnerable_target/` app (`app.openapi()` lists 22 path
-  templates; the +4 over the pre-M1.2 surface are the X-SILENT gizmo/sprocket routes). Two
+  surface is the 32-route `vulnerable_target/` app (`app.openapi()` lists 28 path
+  templates; the +6 over the pre-M1.3 surface are the X-DELETE relic/badge/seal routes). Two
   known seams (auth-context, endpoint catalog/spec wiring) are tracked in
   [`TECH_DEBT.md`](./TECH_DEBT.md) D18.
 - When something "doesn't persist," suspect the **stale-SQLite-schema** trap

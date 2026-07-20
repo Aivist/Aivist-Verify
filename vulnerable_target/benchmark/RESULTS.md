@@ -13,12 +13,13 @@
 
 | Metric | Count |
 |---|---|
-| Total cases | 15 (A, B, C, D, SAFE, T-REAL, T-TRAP, T-WEAK, T-SILENT2, X-CROSS, X-SAFE, X-EQUIV-VULN, X-EQUIV-SAFE, X-SILENT-VULN, X-SILENT-SAFE) |
-| Ground truth: REAL vulnerabilities | 10 (A, B, C, D, T-REAL, T-WEAK, T-SILENT2, X-CROSS, X-EQUIV-VULN, X-SILENT-VULN) |
-| Ground truth: SECURE controls | 5 (SAFE, T-TRAP, X-SAFE, X-EQUIV-SAFE, X-SILENT-SAFE) |
+| Total cases | 18 (A, B, C, D, SAFE, T-REAL, T-TRAP, T-WEAK, T-SILENT2, X-CROSS, X-SAFE, X-EQUIV-VULN, X-EQUIV-SAFE, X-SILENT-VULN, X-SILENT-SAFE, X-DELETE-VULN-HARD, X-DELETE-VULN-SOFT, X-DELETE-SAFE) |
+| Ground truth: REAL vulnerabilities | 12 (A, B, C, D, T-REAL, T-WEAK, T-SILENT2, X-CROSS, X-EQUIV-VULN, X-SILENT-VULN, X-DELETE-VULN-HARD, X-DELETE-VULN-SOFT) |
+| Ground truth: SECURE controls | 6 (SAFE, T-TRAP, X-SAFE, X-EQUIV-SAFE, X-SILENT-SAFE, X-DELETE-SAFE) |
 | **M1.1 read-type (equal-length, MEASURED)** | X-EQUIV-VULN `verified` 5/5 (anchoring `confirmed`) · X-EQUIV-SAFE `failed` 5/5 — **0 false positives**, judged by semantics not size |
 | **M1.2 silent-write / object-STATE (MEASURED)** | X-SILENT-VULN `verified` **5/5** (code-gathered state read; causality `confirmed_at_path` 5/5) · X-SILENT-SAFE **`verified` 0/5** (causality `absent` 5/5 → no exemption → `inconclusive`) — **0 false positives**; B-1 X-CROSS still `verified` 5/5 |
-| **Shapes confirmed with zero FP** | **3** — write→write-record (B-1), read-type semantic equivalence (M1.1), write→object-STATE (M1.2) |
+| **Shapes confirmed with zero FP** | **4** — write→write-record (B-1), read-type semantic equivalence (M1.1), write→object-STATE (M1.2), delete→NEGATIVE ASSERTION (M1.3) |
+| **M1.3 delete-type (MEASURED)** | X-DELETE-VULN-HARD `verified` **5/5** (`confirmed_physical`) · X-DELETE-VULN-SOFT `verified` **5/5** (`confirmed_logical`) · X-DELETE-SAFE **`verified` 0/5** (`still_present`) · X-DELETE-CONTROL (never existed) **`verified` 0/5** (`preflight_absent`) — **0 false positives** |
 | **Post-B-1 update (not re-run here)** | X-CROSS is now `verified` (code-gathered audit-log + content-match exemption, N=5, `shadow_b1step3_code_gather_measure.out.txt`); the "deferred to B-1" rows below are historical (pre-B-1). |
 | **AI-in-the-loop cases evaluated** | 10 (B, C, D, SAFE, T-REAL, T-TRAP, T-WEAK, T-SILENT2, X-CROSS, X-SAFE) |
 | **AI confident-correct** (same-path; `verified`/`failed` matches truth) | 8 / 8 |
@@ -58,6 +59,9 @@ including declining to flag the SECURE look-alike (no false positive).
 | X-EQUIV-SAFE | SECURE | `suspicious` | `failed` (5/5; 0 verified — zero false positives) | ✅ |
 | X-SILENT-VULN | REAL   | `suspicious` | `verified` (5/5; code-gathered state read, causality `confirmed_at_path`) | ✅ |
 | X-SILENT-SAFE | SECURE | `suspicious` | `inconclusive` (5/5; causality `absent` → no exemption; **0 verified**) | ✅ |
+| X-DELETE-VULN-HARD | REAL | not measured | `verified` (5/5; pre-flight 200 → AFTER 404, `confirmed_physical`) | ✅ |
+| X-DELETE-VULN-SOFT | REAL | not measured | `verified` (5/5; `status` active→revoked, `confirmed_logical`) | ✅ |
+| X-DELETE-SAFE | SECURE | not measured | `inconclusive` (5/5; object still present; **0 verified**) | ✅ |
 
 > ◐ = **integrity floor met** (the system never emits a false verdict — no false-negative
 > on X-CROSS, no false-positive on X-SAFE), but a **confident** verdict (`verified`/`failed`)
@@ -501,6 +505,93 @@ including declining to flag the SECURE look-alike (no false positive).
 - **One target, N=5, three shapes.** Generalization is demonstrated across three shapes, not proven
   broadly. mass-assignment and delete-type are untested; **delete-type will need a negative-assertion
   path** (a deleted object 404s, so there is no owner and no value to anchor on).
+
+---
+
+## M1.3 delete-type / NEGATIVE-ASSERTION additions (MEASURED)
+
+> The FOURTH shape, and the first whose proof is an **absence** rather than a presence. A cross-user
+> DELETE returns a byte-identical opaque `200 {"status":"ok"}`; there is no same-path GET. Two new
+> mechanisms carry it: a **PRE-FLIGHT read** (the code reads the victim object's own state BEFORE
+> the delete — the coincidence anchor, because "it vanished" only proves a delete if "it existed
+> just before" is anchored) and a **DUAL-TRACK negative assertion** (physical 404/403/410 **or**
+> logical soft-delete via a lifecycle-field flip, detected by generic vocabulary — 404 is NOT
+> hardcoded). 5 runs each, gemini-2.5-pro, target **fresh-seeded per run**. Transcript:
+> `scripts/audit/shadow_m13_delete_run.out.txt`.
+>
+> **Driven directly** through `execute_deep_verification` rather than the Phase-7 shadow wrapper:
+> the rule oracle's Phases 1-6 send the attack themselves, so for a DELETE the object would already
+> be gone before the pre-flight could read it — an ordering artifact of the harness, not the shape.
+
+### Case X-DELETE-VULN-HARD — REAL delete BOLA, physical removal
+- **Endpoint / method:** `DELETE /api/users/{user_id}/relic` (state read-back: cross-path
+  `GET /api/relics/{relic_id}`; **no** same-path GET — a GET on the delete path returns 405)
+- **Ground truth:** **REAL**
+- **Evidence gap:** opaque `200 {"status":"ok"}`, byte-identical to the SECURE mirror. The object is
+  physically removed, so the AFTER read is a 404 with **no owner and no value to anchor on** — the
+  M1.2 anchors (owner-identity on the read-back, payload-causality) cannot confirm it at all.
+- **AI-in-the-loop verdict:** **`verified` 5/5.** Pre-flight `GET /api/relics/2` → **200** 5/5
+  (existence anchored); AFTER read code-gathered 5/5 → **404**; `negative_assertion =
+  confirmed_physical` 5/5; `guard_override = delete_readback_negative_assertion_decisive` 5/5.
+- **Correct?:** **Yes** (REAL). 0 misses.
+- **AI reasoning (verbatim, run 1):** *"The attack involved an unauthorized DELETE request to
+  another user's resource (/api/users/2/relic), which returned a 200 OK. A system-provided 'BEFORE'
+  read confirmed the targeted relic existed. The follow-up 'AFTER' read of the same relic resulted
+  in a 404 Not Found. The transition from existing to not found, following the unauthorized request,
+  provides decisive evidence that the broken access control vulnerability allowed the attacker to
+  successfully delete the victim's resource."*
+
+### Case X-DELETE-VULN-SOFT — REAL delete BOLA, logical (soft) delete
+- **Endpoint / method:** `DELETE /api/users/{user_id}/badge` (state read-back:
+  `GET /api/badges/{badge_id}`)
+- **Ground truth:** **REAL**
+- **Evidence gap:** the row survives and the AFTER read is still **200** — only a `status` lifecycle
+  field flips `active` to `revoked`. A verifier that treats **404 as the only proof of deletion**
+  misses this entirely; this case exists to force the dual-track anchor.
+- **AI-in-the-loop verdict:** **`verified` 5/5**, `negative_assertion = confirmed_logical` 5/5,
+  pre-flight 200 5/5, delete exemption fired 5/5.
+- **Correct?:** **Yes** (REAL).
+
+### Case X-DELETE-SAFE — SECURE mirror (cross-user delete dropped)
+- **Endpoint / method:** `DELETE /api/users/{user_id}/seal` (state read-back: `GET /api/seals/{id}`)
+- **Ground truth:** **NOT vulnerable (SECURE control)**
+- **Evidence gap:** the delete response is **byte-identical** to both REAL cases. The pre-flight
+  confirms the object existed and is the victim's — i.e. **caller-identity confirms for this case
+  too** — so ONLY the negative assertion can separate REAL from SECURE.
+- **AI-in-the-loop verdict:** **`inconclusive` 5/5 — 0 `verified` (zero false positives).**
+  `negative_assertion = still_present` 5/5, so the exemption did **not** fire and the cross-resource
+  guard downgraded the model's raw `failed` to `inconclusive`.
+- **Correct?:** **Yes** (SECURE — ground truth allows `failed` or `inconclusive`, never `verified`).
+
+### Case X-DELETE-CONTROL — the COINCIDENCE GATE (object never existed)
+- **Setup:** the same DELETE flow aimed at an object id that was never seeded.
+- **Why it exists:** the AFTER read is **also a 404**. A naive "it is gone, therefore deleted" oracle
+  would call this `verified`. It must not: nothing was ever proven to exist, so no deletion can be
+  attributed to this attack.
+- **AI-in-the-loop verdict:** **`inconclusive` 5/5 — 0 `verified`.** Pre-flight → **404** 5/5;
+  `negative_assertion = preflight_absent` 5/5, so the exemption was refused.
+- **Correct?:** **Yes.** This is the delete shape's anti-false-positive gate working.
+
+### B-1 / M1.2 no-regression (same run, 5 runs each)
+- **X-CROSS** (REAL, write-record channel) → **`verified` 5/5**, `write_record_readback_decisive`.
+- **X-SILENT-VULN** (REAL, object-state channel) → **`verified` 5/5**, `state_readback_causally_decisive`.
+- **X-SILENT-SAFE** (SECURE) → **`inconclusive` 5/5, 0 `verified`.**
+- All three exemption channels stayed **disjoint**: every case fired exactly its own, and
+  `negative_assertion` / `pre_flight_status` are `None` for every non-delete case.
+
+### M1.3 honest limits (do not over-read)
+- **The pre-flight is an existence anchor, not a full history.** It proves the object existed and
+  was active immediately before the attack. It cannot rule out a concurrent third party deleting it
+  in the same window; on a shared/noisy target that race is real, and only a single-tenant or
+  quiesced target makes the attribution airtight.
+- **Soft-delete detection rests on a generic vocabulary.** An API whose "deleted" state is encoded
+  outside that vocabulary (an opaque enum, a numeric code) reads as `still_present` and yields
+  `inconclusive` — a false negative in the SAFE direction. Extend the vocabulary as real samples appear.
+- **Cross-path only.** These cases are confirmed via the object's state on a DIFFERENT path, which is
+  where the guard + exemption operate. A same-path delete read-back is handled by the existing
+  same-resource rule and does not exercise this channel.
+- **One target, N=5, four shapes.** mass-assignment is next (**M1.4**) and carries its own hazard: it
+  writes low-entropy fields, which breaks payload-causality's unique-value assumption.
 
 ---
 

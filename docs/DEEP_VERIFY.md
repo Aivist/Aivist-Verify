@@ -11,10 +11,11 @@
 > defaults, nothing here runs and behavior is byte-identical to before. The
 > rule-based HTTP verify still uses `fuzzer.py`.
 >
-> **Confirms three vuln shapes, zero false positives** (each live-measured N=5, shadow):
+> **Confirms four vuln shapes, zero false positives** (each live-measured N=5, shadow):
 > **M1.0/B-1** silent cross-path write via a code-gathered **write-record**; **M1.1** read-type
 > **semantic equivalence**; **M1.2** silent cross-path write via a code-gathered **object-STATE**
-> read-back. The verdict is still **observe-only** — promoting it to authoritative is **D19**.
+> read-back; **M1.3** **delete**-type via a **NEGATIVE ASSERTION** (pre-flight existence + dual-track
+> absence). The verdict is still **observe-only** — promoting it to authoritative is **D19**.
 
 ---
 
@@ -57,7 +58,7 @@ Only stable, side-effect-free helpers are imported from `fuzzer.py`:
 - `ScopeViolationError` for host lock enforcement
 
 No changes to the fuzzer's verdict path; the rule-oracle tests stay green (backend
-suite: **227 passed** — see [`STATUS.md`](./STATUS.md)).
+suite: **250 passed** — see [`STATUS.md`](./STATUS.md)).
 
 ---
 
@@ -144,6 +145,7 @@ never sufficient — and passed into the guard as booleans:
 |---|---|---|---|
 | **B-1 write-record** | `WRITE_RECORD_EXEMPTION_REASON` | `_write_record_content_match` finds the attacked object id **and** a value this attack wrote **in one record** (D23/D23b-hardened) | follow-up paths that ARE record/log-style |
 | **M1.2(A) state read-back** | `STATE_READBACK_EXEMPTION_REASON` | all three anchors AND: owner==attacked ∧ caller!=owner (`caller_identity == "confirmed"`) **and** payload-causality confirmed | follow-up paths that are **not** record/log-style |
+| **M1.3 delete read-back** | `DELETE_READBACK_EXEMPTION_REASON` | caller-identity **on the PRE-FLIGHT body** is `confirmed` **and** the negative assertion is `confirmed_physical`/`confirmed_logical` | **DELETE** attacks only (no written value, so the other two can never fire) |
 
 They are kept **disjoint** by `_path_is_write_record(follow_up_path)`, so D23/D23b remain the sole
 authority on record paths. If both were somehow set, the write-record channel takes precedence, so
@@ -159,6 +161,52 @@ false positives**.
 > **Known boundary:** causality assumes the written value is high-entropy. On boolean / small-int /
 > enum fields — or with concurrent runs writing the same value — it can collide. See
 > [`ROADMAP.md`](./ROADMAP.md) §7.
+
+---
+
+## M1.3 — the DELETE shape: pre-flight + negative assertion
+
+A delete's proof is a **from-EXISTS-to-ABSENT jump**, not a value appearing, so payload-causality
+does not apply. Two mechanisms, both target-agnostic:
+
+**1. PRE-FLIGHT READ — the coincidence gate.** For a DELETE attack the code reads the victim
+object's own state **before** issuing the delete (scope-locked, reusing
+`select_object_state_endpoint`) and caches `{status, body}`. "It vanished" only proves a delete if
+"it existed and was active just before" is anchored — otherwise the object may never have existed,
+or was already deleted. **No pre-flight existence proof → never `verified`.** A pre-flight
+failure/scope-refusal is *not* fatal: it simply leaves existence unproven, so the verdict stays
+`inconclusive` (the safe direction).
+
+**2. DUAL-TRACK ABSENCE** (`_anchor_negative_assertion`), returning one of
+`confirmed_physical` | `confirmed_logical` | `still_present` | `no_preflight` | `preflight_absent`
+| `preflight_already_deleted` | `indeterminate`:
+
+- **Physical**: the post-attack read is `404/403/410`.
+- **Logical (soft delete)**: the post-attack read is `200` but a lifecycle field flipped to a
+  deleted value — detected generically by `_deletion_signal` (string statuses via
+  `_DELETED_VALUE_KEYWORDS`/`_ACTIVE_VALUE_KEYWORDS`, boolean flags `is_deleted`/`is_active`, and
+  timestamp markers like `deleted_at`). **404 is deliberately NOT hardcoded as the only proof of
+  vanishing** — real APIs mostly soft-delete.
+
+Only the two `confirmed_*` results are decisive; every other value means the delete cannot be
+attributed to this attack, so the caller must not exempt.
+
+> **A DELETE never takes B-1's write-record gather.** A delete carries no written value, so
+> `_write_record_content_match` (which *requires* written values) is unreachable for it — gathering
+> a record would be useless *and* would preempt the object-state gather this shape needs. HALF 1 is
+> therefore skipped for `DELETE`. (This was a real bug: with no written values the M1.2 object-scope
+> probe was skipped and `_object_scoped` defaulted to the B-1-safe `True`, so HALF 1 wrongly grabbed
+> the audit-log.)
+
+> **Auditability:** the result surfaces `pre_flight_status`, `negative_assertion_anchor`, and
+> `preflight_caller_identity_anchor` — the last because the general-purpose `caller_identity_anchor`
+> is computed on the AFTER read, which for a physical delete is a 404 with no owner to anchor on
+> (it reads `owner_not_found`) and would misrepresent the evidence chain in a transcript.
+
+**Measured** (N=5 each, gemini-2.5-pro, fresh-seeded per run): X-DELETE-VULN-HARD →`verified` 5/5
+(`confirmed_physical`); X-DELETE-VULN-SOFT →`verified` 5/5 (`confirmed_logical`); X-DELETE-SAFE
+→`verified` **0/5** (`still_present`); X-DELETE-CONTROL (object never existed) →`verified` **0/5**
+(`preflight_absent` — the AFTER read was *also* 404, but nothing was proven to exist).
 
 ---
 

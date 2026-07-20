@@ -105,6 +105,9 @@ class User(Base):
     ledger = relationship("Ledger", back_populates="owner", uselist=False)
     gizmo = relationship("Gizmo", back_populates="owner", uselist=False)
     sprocket = relationship("Sprocket", back_populates="owner", uselist=False)
+    relic = relationship("Relic", back_populates="owner", uselist=False)
+    badge = relationship("Badge", back_populates="owner", uselist=False)
+    seal = relationship("Seal", back_populates="owner", uselist=False)
 
 
 class Order(Base):
@@ -303,6 +306,53 @@ class Sprocket(Base):
     owner = relationship("User", back_populates="sprocket")
 
 
+class Relic(Base):
+    """Object behind X-DELETE-VULN-HARD (M1.3): a HARD-delete BOLA. DELETE
+    /api/users/{id}/relic has NO ownership check (REAL) and PHYSICALLY removes the row, but
+    returns the SAME opaque 200 {"status":"ok"} as the secure mirror. There is NO same-path
+    GET; the cross-path state read GET /api/relics/{relic_id} returns the object while it
+    exists and 404 once it is gone. Confirmation is a from-EXISTS-to-ABSENT jump. id == owner_id."""
+    __tablename__ = "relics"
+
+    id = Column(Integer, primary_key=True)  # == owner_id for predictability
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    label = Column(String(128), nullable=False, default="")
+
+    owner = relationship("User", back_populates="relic")
+
+
+class Badge(Base):
+    """Object behind X-DELETE-VULN-SOFT (M1.3): a SOFT-delete BOLA. DELETE
+    /api/users/{id}/badge has NO ownership check (REAL) but instead of removing the row it
+    flips a `status` lifecycle field active -> revoked, still returning the SAME opaque 200.
+    The cross-path state read GET /api/badges/{badge_id} stays 200 but its `status` shows the
+    deletion — exercising the LOGICAL (soft) track of the negative assertion. id == owner_id."""
+    __tablename__ = "badges"
+
+    id = Column(Integer, primary_key=True)  # == owner_id for predictability
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    status = Column(String(32), nullable=False, default="active")
+    label = Column(String(128), nullable=False, default="")
+
+    owner = relationship("User", back_populates="badge")
+
+
+class Seal(Base):
+    """Object behind X-DELETE-SAFE (M1.3): the SECURE mirror of Relic. DELETE
+    /api/users/{id}/seal returns the SAME opaque 200 {"status":"ok"} but ownership IS enforced
+    — a cross-user delete is SILENTLY DROPPED (the row is NOT removed). Like Relic there is NO
+    same-path GET; the cross-path state read GET /api/seals/{seal_id} still returns the object
+    UNCHANGED after a cross-user attempt. Correct verdict: NOT vulnerable — a `verified` here is
+    a FALSE POSITIVE. id == owner_id."""
+    __tablename__ = "seals"
+
+    id = Column(Integer, primary_key=True)  # == owner_id for predictability
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    label = Column(String(128), nullable=False, default="")
+
+    owner = relationship("User", back_populates="seal")
+
+
 # ------------------------------------------------------------------------------
 # Seed data — Alice (id=1, user) and Bob (id=2, user) are normal users; Carol
 # (id=3, admin) is the privileged account used by the Vuln C test case. Each user
@@ -335,6 +385,10 @@ SEED_USERS = [
         # M1.2(A): gizmo (X-SILENT-VULN) + sprocket (X-SILENT-SAFE). Seeded `code`.
         "gizmo": {"code": "gizmo_alice_v0"},
         "sprocket": {"code": "sprocket_alice_v0"},
+        # M1.3: relic (X-DELETE-VULN-HARD) + badge (X-DELETE-VULN-SOFT) + seal (X-DELETE-SAFE).
+        "relic": {"label": "relic_alice"},
+        "badge": {"label": "badge_alice"},
+        "seal": {"label": "seal_alice"},
     },
     {
         "id": 2,
@@ -369,6 +423,9 @@ SEED_USERS = [
         "ledger": {"account_ref": "22222222-2222-2222-2222-2222222222bb"},
         "gizmo": {"code": "gizmo_bob_v0"},
         "sprocket": {"code": "sprocket_bob_v0"},
+        "relic": {"label": "relic_bob"},
+        "badge": {"label": "badge_bob"},
+        "seal": {"label": "seal_bob"},
     },
     {
         "id": 3,
@@ -388,6 +445,9 @@ SEED_USERS = [
         "ledger": {"account_ref": "33333333-3333-3333-3333-3333333333cc"},
         "gizmo": {"code": "gizmo_carol_v0"},
         "sprocket": {"code": "sprocket_carol_v0"},
+        "relic": {"label": "relic_carol"},
+        "badge": {"label": "badge_carol"},
+        "seal": {"label": "seal_carol"},
     },
 ]
 
@@ -412,6 +472,9 @@ async def _seed(session: AsyncSession) -> None:
         session.add(Ledger(id=u["id"], owner_id=u["id"], **u["ledger"]))
         session.add(Gizmo(id=u["id"], owner_id=u["id"], **u["gizmo"]))
         session.add(Sprocket(id=u["id"], owner_id=u["id"], **u["sprocket"]))
+        session.add(Relic(id=u["id"], owner_id=u["id"], **u["relic"]))
+        session.add(Badge(id=u["id"], owner_id=u["id"], **u["badge"]))
+        session.add(Seal(id=u["id"], owner_id=u["id"], **u["seal"]))
     await session.commit()
     logger.info("Seeded users: %s", ", ".join(u["username"] for u in SEED_USERS))
 
@@ -588,6 +651,25 @@ class SprocketResponse(BaseModel):
     id: int
     owner_id: int
     code: str
+
+
+class RelicResponse(BaseModel):
+    id: int
+    owner_id: int
+    label: str
+
+
+class BadgeResponse(BaseModel):
+    id: int
+    owner_id: int
+    status: str
+    label: str
+
+
+class SealResponse(BaseModel):
+    id: int
+    owner_id: int
+    label: str
 
 
 # ------------------------------------------------------------------------------
@@ -1195,6 +1277,133 @@ async def get_sprocket(
     return SprocketResponse(id=sprocket.id, owner_id=sprocket.owner_id, code=sprocket.code)
 
 
+# ------------------------------------------------------------------------------
+# X-DELETE-VULN-HARD — REAL delete BOLA, PHYSICAL delete (M1.3).
+#
+# DELETE /api/users/{user_id}/relic has NO ownership check (REAL) and removes the row, but
+# returns the SAME opaque 200 {"status":"ok"} as the secure mirror. There is NO same-path GET;
+# whether the cross-user delete landed is observable ONLY via the cross-path state read
+# GET /api/relics/{relic_id}, which returns the object while it exists and 404 once it is gone.
+# Confirmation is a from-EXISTS-to-ABSENT jump. Planted: REAL.
+# ------------------------------------------------------------------------------
+@app.delete("/api/users/{user_id}/relic", tags=["relics"])
+async def delete_relic(
+    user_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    relic = (
+        await db.execute(select(Relic).where(Relic.owner_id == user_id))
+    ).scalars().first()
+
+    # VULNERABLE: no check that user_id == current_user.id. The delete lands for whatever
+    # {user_id} was requested; only the cross-path STATE read reveals whose object vanished.
+    if relic is not None:
+        await db.delete(relic)      # HARD delete — the row is physically removed
+        await db.flush()
+
+    # Opaque, constant response — byte-identical to the SAFE seal endpoint below.
+    return {"status": "ok"}
+
+
+@app.get("/api/relics/{relic_id}", response_model=RelicResponse, tags=["relics"])
+async def get_relic(
+    relic_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # STATE read-back (the cross-path observation point), permissive like the other state reads.
+    # Returns 404 once the object has been (physically) deleted.
+    relic = (
+        await db.execute(select(Relic).where(Relic.id == relic_id))
+    ).scalars().first()
+    if relic is None:
+        raise HTTPException(status_code=404, detail="Relic not found")
+    return RelicResponse(id=relic.id, owner_id=relic.owner_id, label=relic.label)
+
+
+# ------------------------------------------------------------------------------
+# X-DELETE-VULN-SOFT — REAL delete BOLA, LOGICAL (soft) delete (M1.3).
+#
+# DELETE /api/users/{user_id}/badge has NO ownership check (REAL) but instead of removing the
+# row it flips a `status` lifecycle field from "active" to "revoked", returning the SAME opaque
+# 200 {"status":"ok"}. The cross-path state read GET /api/badges/{badge_id} stays 200 but its
+# `status` shows the deletion — the LOGICAL track of the negative assertion. Planted: REAL.
+# ------------------------------------------------------------------------------
+@app.delete("/api/users/{user_id}/badge", tags=["badges"])
+async def delete_badge(
+    user_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    badge = (
+        await db.execute(select(Badge).where(Badge.owner_id == user_id))
+    ).scalars().first()
+
+    # VULNERABLE: no ownership check. Soft-delete: flip the lifecycle field, keep the row.
+    if badge is not None:
+        badge.status = "revoked"
+        await db.flush()
+
+    return {"status": "ok"}
+
+
+@app.get("/api/badges/{badge_id}", response_model=BadgeResponse, tags=["badges"])
+async def get_badge(
+    badge_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    badge = (
+        await db.execute(select(Badge).where(Badge.id == badge_id))
+    ).scalars().first()
+    if badge is None:
+        raise HTTPException(status_code=404, detail="Badge not found")
+    return BadgeResponse(id=badge.id, owner_id=badge.owner_id, status=badge.status, label=badge.label)
+
+
+# ------------------------------------------------------------------------------
+# X-DELETE-SAFE — SECURE mirror of X-DELETE-VULN (M1.3).
+#
+# DELETE /api/users/{user_id}/seal returns the SAME opaque 200 {"status":"ok"} but ownership IS
+# enforced: a cross-user delete is SILENTLY DROPPED (the row is NOT removed), never a 403. Like
+# the relic there is NO same-path GET; the cross-path state read GET /api/seals/{seal_id} still
+# returns the object UNCHANGED after a cross-user attempt. Correct verdict: NOT vulnerable — a
+# `verified` here is a FALSE POSITIVE.
+# ------------------------------------------------------------------------------
+@app.delete("/api/users/{user_id}/seal", tags=["seals"])
+async def delete_seal(
+    user_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # SECURE: ownership IS enforced. Only the owner's own seal is ever deleted; a cross-user
+    # attempt falls through with NO delete — but the SAME opaque 200, never a 403.
+    if user_id == current_user.id:
+        seal = (
+            await db.execute(select(Seal).where(Seal.owner_id == user_id))
+        ).scalars().first()
+        if seal is not None:
+            await db.delete(seal)
+            await db.flush()
+
+    return {"status": "ok"}
+
+
+@app.get("/api/seals/{seal_id}", response_model=SealResponse, tags=["seals"])
+async def get_seal(
+    seal_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    seal = (
+        await db.execute(select(Seal).where(Seal.id == seal_id))
+    ).scalars().first()
+    if seal is None:
+        raise HTTPException(status_code=404, detail="Seal not found")
+    return SealResponse(id=seal.id, owner_id=seal.owner_id, label=seal.label)
+
+
 @app.get("/", tags=["meta"])
 async def root():
     return {
@@ -1222,6 +1431,12 @@ async def root():
             "GET /api/gizmos/{gizmo_id}         (cross-path STATE read-back for gizmo)",
             "POST /api/users/{user_id}/sprocket (X-SILENT-SAFE: SECURE mirror)",
             "GET /api/sprockets/{sprocket_id}   (cross-path STATE read-back for sprocket)",
+            "DELETE /api/users/{user_id}/relic  (X-DELETE-VULN-HARD: physical delete BOLA)",
+            "GET /api/relics/{relic_id}         (cross-path STATE read-back for relic; 404 once gone)",
+            "DELETE /api/users/{user_id}/badge  (X-DELETE-VULN-SOFT: soft delete BOLA, status flips)",
+            "GET /api/badges/{badge_id}         (cross-path STATE read-back for badge)",
+            "DELETE /api/users/{user_id}/seal   (X-DELETE-SAFE: SECURE mirror)",
+            "GET /api/seals/{seal_id}           (cross-path STATE read-back for seal)",
         ],
     }
 

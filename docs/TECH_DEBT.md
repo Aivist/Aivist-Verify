@@ -82,7 +82,7 @@
   radar tests added; Nuclei pipeline still bare.
 - **Where:** `backend/tests/test_api_endpoints.py` (API smoke); `test_step9_proxy.py`
   (proxy radar, Step 9); plus pruner, custody, Step D extraction in other files.
-  Total backend suite: **227 tests** (grew from an old 73 via the verdict-oracle, B-2.2
+  Total backend suite: **250 tests** (grew from an old 73 via the verdict-oracle, B-2.2
   guard, cross-path, catalog, and B-1 write-record + shadow-integration tests). See
   [`STATUS.md`](./STATUS.md).
 - **Covered:** FastAPI `TestClient` over isolated per-test SQLite with Gemini,
@@ -185,7 +185,7 @@
   when the spec declares them, `summary`/`description` deliberately not surfaced — + HAR
   stub raising `NotImplementedError` + dispatch) is wired into `_shadow_endpoint_catalog`
   via an optional `catalog_source`. With **no source configured the output is byte-identical
-  to the old placeholder (zero regression)**; the real 26-route surface is used only when
+  to the old placeholder (zero regression)**; the real 32-route surface is used only when
   a spec source is explicitly provided. Human-owned tests (`test_endpoint_catalog.py`)
   cover this; the B1/B2 pair is the allowed-to-fail proof (placeholder has 0 cross-resource
   endpoints; real catalog reaches them, incl. `GET /api/invoices/{invoice_id}`).
@@ -425,6 +425,46 @@
   (system-gathered) while the code gate keys on *evidence* (the three anchors). Aligning them = adding
   `followup_is_code_gathered` to `_state_readback_decisive` — one line, only ever stricter.
 - **Still open (unchanged by M1.2):** D19 (verdict authority) and D21 (declared spec field).
+
+### M1.3 (✅ DONE) — delete-type confirmed by a NEGATIVE ASSERTION
+- **What:** the FOURTH confirmed vuln shape, and the first whose proof is an **absence** rather
+  than a presence. A cross-user DELETE returns an opaque 200; the only decisive evidence is that
+  the victim's object went from EXISTING to GONE. Achieved with **0 false positives**.
+- **Landed:**
+  1. **PRE-FLIGHT READ (the coincidence gate)** — for a DELETE attack the code GETs the victim
+     object's own state (scope-locked, reusing `select_object_state_endpoint`) **before** issuing
+     the delete, and caches it. "It vanished" only proves a delete if "it existed and was active
+     just before" is anchored; otherwise the object may never have existed or was already deleted.
+     **No pre-flight existence proof → NEVER `verified`.** A pre-flight failure is non-fatal: it
+     leaves existence unproven, so the verdict stays `inconclusive`.
+  2. **DUAL-TRACK negative assertion** (`_anchor_negative_assertion` + `_deletion_signal`) —
+     decisive on **physical** removal (404/403/410) **or** **logical/soft** deletion (200 with a
+     lifecycle field flipped, detected by generic vocabulary: string statuses, boolean
+     `is_deleted`/`is_active`, timestamp `deleted_at`). **404 is deliberately NOT hardcoded** as
+     the only proof of vanishing — real APIs mostly soft-delete.
+  3. **A THIRD, DISJOINT exemption channel** (`DELETE_READBACK_EXEMPTION_REASON`), `verified`-only,
+     cross-path-only, gated on caller-identity computed on the **PRE-FLIGHT body** (the AFTER read
+     of a physical delete is a 404 with no owner) **AND** the negative assertion. Disjoint by
+     construction: a DELETE has no written value, so the M1.2 state channel (payload-causality) and
+     B-1's write-record channel can never fire for it.
+- **Bug fixed in passing:** a DELETE no longer triggers B-1's HALF-1 write-record gather. With no
+  written values the M1.2 object-scope probe was skipped and `_object_scoped` defaulted to the
+  B-1-safe `True`, so HALF 1 wrongly grabbed the audit-log and preempted the object-state gather.
+  Provably safe: `_write_record_content_match` *requires* written values, so B-1's exemption was
+  unreachable for a delete anyway; B-1's own cases are POST writes.
+- **Live-measured** (N=5 each, gemini-2.5-pro, fresh-seeded per run; transcript
+  `scripts/audit/shadow_m13_delete_run.out.txt`): X-DELETE-VULN-HARD→`verified` **5/5**
+  (`confirmed_physical`); X-DELETE-VULN-SOFT→`verified` **5/5** (`confirmed_logical`);
+  **X-DELETE-SAFE→`verified` 0/5** (`still_present`); **X-DELETE-CONTROL→`verified` 0/5**
+  (`preflight_absent`). **No regression:** B-1 X-CROSS `verified` 5/5, X-SILENT-VULN `verified` 5/5,
+  X-SILENT-SAFE 0 `verified`.
+- **Offline:** `test_m13_delete.py` (negative-assertion truth table, `_deletion_signal` variants,
+  guard channel, **foreign-spec genericity**, integrated both-ways + the coincidence gate). New
+  byte-verified target ground truth X-DELETE-VULN-HARD/SOFT + X-DELETE-SAFE in `test_vulns.py`.
+- **Auditability (additive, observe-only):** the result surfaces `preflight_caller_identity_anchor`
+  so the transcript shows the anchor the gate ACTUALLY used, not the AFTER-read one.
+- **Next (M1.4):** mass-assignment — ⚠️ it writes low-entropy fields, which breaks
+  payload-causality's unique-value assumption; expect it to need its own anchor (ROADMAP §7).
 
 ### Scope-lock hardening (OPEN) — prerequisite for real targets
 - **What:** consolidate the duplicated host-scope checks — the fuzzer's `_send_request` /

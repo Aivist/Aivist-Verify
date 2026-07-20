@@ -12,19 +12,20 @@
 A single-tenant, locally-run access-control verification engine whose core is
 **built, wired into the pipeline as a read-only shadow pass, and dormant by
 default**. The integrity floor (never emit a false verdict) is proven. The engine now
-confirms the hard case on **three distinct vuln shapes with zero false positives** —
+confirms the hard case on **four distinct vuln shapes with zero false positives** —
 **M1.0/B-1** (silent cross-path *write*, confirmed via a write-record), **M1.1**
 (read-type *semantic-equivalence*, equal-length, confirmed by semantics + evidence
-anchoring), and **M1.2** (silent cross-path *write* confirmed via a code-gathered
-object-**STATE** read-back). It is still shadow-only (not authoritative — that's **D19**)
-and proven on three shapes / one target.
+anchoring), **M1.2** (silent cross-path *write* confirmed via a code-gathered
+object-**STATE** read-back), and **M1.3** (**delete**-type, confirmed by a **NEGATIVE
+ASSERTION** — a code-anchored from-EXISTS-to-ABSENT jump). It is still shadow-only (not
+authoritative — that's **D19**) and proven on four shapes / one target.
 
 ## Test suite
 
 | Suite | Command (from repo root) | Result |
 |---|---|---|
-| Backend | `python -m pytest backend/tests -q` | **227 passed** |
-| Ground-truth target | `python -m pytest vulnerable_target -q` | **19 passed** |
+| Backend | `python -m pytest backend/tests -q` | **250 passed** |
+| Ground-truth target | `python -m pytest vulnerable_target -q` | **25 passed** |
 
 ## The main line (three nodes)
 
@@ -34,7 +35,7 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
 
 | Node | Goal | State |
 |---|---|---|
-| **1. Judge correctly (= M1)** | Never a false verdict; confirm the hard case across *shapes* | **In progress — 3 shapes done, 0 FP.** See the M1 breakdown below. |
+| **1. Judge correctly (= M1)** | Never a false verdict; confirm the hard case across *shapes* | **In progress — 4 shapes done, 0 FP.** See the M1 breakdown below. |
 | **2. Act** (`D19`) | Promote the AI verdict from observe-only/log to **authoritative** | **Not started.** The persisted verdict is still the rule oracle's; the AI verdict is shadow-only. Gated on M1 proving generalization. |
 | **3. Be safe on real targets** | Consolidate scope-lock checks + adversarial tests before any non-localhost use | **Not started.** HARD prerequisite before any real / non-lab target. |
 
@@ -44,8 +45,10 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
 |---|---|---|
 | **M1.0 (B-1)** | silent cross-path **write**, confirmed via a **write-record** | **DONE, committed `37769b3`.** X-CROSS→`verified` 5/5, X-SAFE→safe 5/5; regression test locks it. |
 | **M1.1** | read-type **semantic-equivalence**, equal-length, confirmed by **semantics + evidence anchoring** | **DONE, committed `002b33c`.** X-EQUIV-VULN→`verified` 5/5, X-EQUIV-SAFE→`failed` 5/5 — **0 FP**, N=5, one target. |
-| **M1.2** | silent cross-path **write** confirmed via a code-gathered object-**STATE** read-back (not a write-record) | **DONE (this commit).** Three parts: **(A)** a SECOND guard exemption channel (`STATE_READBACK_EXEMPTION_REASON`, **disjoint from B-1**, `verified`-only) gated on three structural anchors AND-ed — owner==attacked ∧ caller!=owner (`caller_identity=confirmed`) **and payload-causality** (THIS attack's UNIQUE value present; causality is the false-positive gate). **(B)** a **deterministic object-state gather** (`select_object_state_endpoint`, target-agnostic resource-noun + object-scoping; mirrors B-1's HALF-1) — the model never found that path on its own (**0/5**), code now gathers it **5/5**. **(C)** a **prompt carve-out** (rule 5 / turn-2 / options-block) so a *system-gathered* read of the attacked object's own state counts as decisive — lifted VULN **3/5 → 5/5**. **Live-measured** (shadow, N=5, gemini-2.5-pro): X-SILENT-VULN→`verified` **5/5** (all 3 anchors confirmed, causality `confirmed_at_path` 5/5); **X-SILENT-SAFE→`verified` 0/5** (causality `absent` 5/5 → no exemption → `inconclusive`); B-1 X-CROSS still `verified` 5/5 — `scripts/audit/shadow_m12c_prompt_carveout_run.out.txt`. Offline both ways: `test_m12_state_readback_exemption.py`, `test_m12b_state_gather.py` (incl. a foreign-spec genericity proof). |
-| **M1.x (later)** | mass-assignment, delete-type, and further shapes | Not started — each is one more格 of generalization. See ROADMAP "Future / deferred" (delete-type needs a **negative-assertion** path). |
+| **M1.2** | silent cross-path **write** confirmed via a code-gathered object-**STATE** read-back (not a write-record) | **DONE, committed `e4d5317`.** Three parts: **(A)** a SECOND guard exemption channel (`STATE_READBACK_EXEMPTION_REASON`, **disjoint from B-1**, `verified`-only) gated on three structural anchors AND-ed — owner==attacked ∧ caller!=owner (`caller_identity=confirmed`) **and payload-causality** (THIS attack's UNIQUE value present; causality is the false-positive gate). **(B)** a **deterministic object-state gather** (`select_object_state_endpoint`, target-agnostic resource-noun + object-scoping; mirrors B-1's HALF-1) — the model never found that path on its own (**0/5**), code now gathers it **5/5**. **(C)** a **prompt carve-out** (rule 5 / turn-2 / options-block) so a *system-gathered* read of the attacked object's own state counts as decisive — lifted VULN **3/5 → 5/5**. **Live-measured** (shadow, N=5, gemini-2.5-pro): X-SILENT-VULN→`verified` **5/5** (all 3 anchors confirmed, causality `confirmed_at_path` 5/5); **X-SILENT-SAFE→`verified` 0/5** (causality `absent` 5/5 → no exemption → `inconclusive`); B-1 X-CROSS still `verified` 5/5 — `scripts/audit/shadow_m12c_prompt_carveout_run.out.txt`. Offline both ways: `test_m12_state_readback_exemption.py`, `test_m12b_state_gather.py` (incl. a foreign-spec genericity proof). |
+| **M1.3** | **delete-type**, confirmed by a **NEGATIVE ASSERTION** (from-EXISTS-to-ABSENT), dual-track physical *or* logical | **DONE (this commit).** Two new mechanisms: a **PRE-FLIGHT read** (code GETs the victim object, scope-locked, BEFORE the DELETE — the **coincidence gate**: "it vanished" only proves a delete if "it existed & was active just before" is anchored) and a **dual-track negative-assertion anchor** (`_anchor_negative_assertion`) accepting **physical** removal (404/403/410) **or** **logical/soft** deletion (200 with a lifecycle field flipped, by generic vocabulary — **404 is NOT hardcoded**). A **third, disjoint** exemption channel (`DELETE_READBACK_EXEMPTION_REASON`) gated on pre-flight caller-identity **AND** the negative assertion. **Live-measured** (N=5, gemini-2.5-pro, fresh-seeded per run): X-DELETE-VULN-HARD→`verified` **5/5** (`confirmed_physical`), X-DELETE-VULN-SOFT→`verified` **5/5** (`confirmed_logical`), **X-DELETE-SAFE→`verified` 0/5** (`still_present`), **X-DELETE-CONTROL (object never existed)→`verified` 0/5** (`preflight_absent` — the coincidence gate held even though the AFTER read was also 404) — `scripts/audit/shadow_m13_delete_run.out.txt`. Offline: `test_m13_delete.py` (incl. foreign-spec genericity). |
+| **M1.4 (next)** | **mass-assignment** | Not started. ⚠️ Known hazard: **payload-causality's unique-value assumption breaks on low-entropy writes** (owner-field / boolean flips) — see ROADMAP §7. |
+| **M1.x (later)** | further shapes | Not started — each is one more格 of generalization. |
 
 > **M2 — Shared Domain Model (later, NOT started):** a resource/endpoint relationship graph —
 > sink upstream observations (proxy/HAR/spec) into a shared layer every module can query, so the
@@ -95,7 +98,7 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
   B-1 content-match unchanged with the caller's id); otherwise it **steps back** and the model
   reads the object's own state. B-1 preserved (X-CROSS/X-SAFE audit carries the caller row);
   offline-tested both ways (`test_m12_object_scope.py`). No guard / content-match / verdict change.
-- **M1.2 — silent write confirmed via a code-gathered object-STATE read-back** (this commit).
+- **M1.2 — silent write confirmed via a code-gathered object-STATE read-back** (`e4d5317`).
   Three parts, all target-agnostic:
   - **(A) state-readback exemption** (`STATE_READBACK_EXEMPTION_REASON`) — a SECOND guard-exemption
     channel, **DISJOINT** from B-1's write-record exemption (never fires on a write-record path),
@@ -133,15 +136,51 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
     Aligning them = adding `followup_is_code_gathered` to `_state_readback_decisive` — one line, and it
     could only ever make the gate **stricter**. Not required for correctness (a unique fuzzer value can
     only appear in the victim's object if this attack put it there, whoever chose the path).
+- **M1.3 — delete-type confirmed by a NEGATIVE ASSERTION** (this commit). The proof is a
+  from-EXISTS-to-ABSENT jump, not a value appearing, so payload-causality does not apply:
+  - **PRE-FLIGHT read (the coincidence gate).** For a DELETE attack the CODE reads the victim
+    object's own state BEFORE issuing the delete (scope-locked, reusing the M1.2(B) resolver) and
+    caches it. "It vanished" only proves a delete if "it existed and was active just before" is
+    anchored. **No pre-flight existence proof -> NEVER `verified`.** A pre-flight failure is not
+    fatal: it just leaves existence unproven, so the verdict stays `inconclusive`.
+  - **DUAL-TRACK negative assertion** (`_anchor_negative_assertion`): decisive on **physical**
+    removal (404/403/410) **or** **logical/soft** deletion (200 with a lifecycle field flipped to a
+    deleted value — detected by a generic vocabulary via `_deletion_signal`: string statuses,
+    boolean flags `is_deleted`/`is_active`, timestamp markers `deleted_at`). **404 is deliberately
+    NOT hardcoded as the only proof of vanishing** — real APIs mostly soft-delete.
+  - **A THIRD, DISJOINT exemption channel** (`DELETE_READBACK_EXEMPTION_REASON`), `verified`-only,
+    cross-path-only, gated on caller-identity computed on the **PRE-FLIGHT body** (the AFTER read of
+    a physical delete is a 404 with no owner to anchor on) **AND** the negative assertion. Disjoint
+    by construction: a DELETE carries no written value, so the M1.2 state channel (payload-causality)
+    and B-1's write-record channel can never fire for it.
+  - **Also fixed:** a DELETE no longer triggers B-1's write-record gather. With no written values the
+    M1.2 object-scope probe was skipped and `_object_scoped` defaulted to the B-1-safe `True`, so
+    HALF-1 wrongly grabbed the audit-log and preempted the object-state gather. Provably safe:
+    B-1's exemption *requires* written values, so that channel was unreachable for a delete anyway.
+  - **Live-measured** (N=5 each, gemini-2.5-pro, fresh-seeded per run,
+    `scripts/audit/shadow_m13_delete_run.out.txt`): X-DELETE-VULN-HARD→`verified` **5/5**
+    (`confirmed_physical`, pre-flight 200); X-DELETE-VULN-SOFT→`verified` **5/5**
+    (`confirmed_logical`); **X-DELETE-SAFE→`verified` 0/5** (`still_present`);
+    **X-DELETE-CONTROL→`verified` 0/5** (`preflight_absent`: the AFTER read was *also* 404, but
+    nothing was proven to exist — the coincidence gate held). **No regression**: B-1 X-CROSS
+    `verified` 5/5, X-SILENT-VULN `verified` 5/5, X-SILENT-SAFE 0 `verified`. All three exemption
+    channels stayed disjoint (each case fired exactly its own).
+  - **Auditability (observe-only):** the result also surfaces `preflight_caller_identity_anchor` —
+    the caller-identity value the delete gate ACTUALLY used (pre-flight body), because the
+    general-purpose `caller_identity_anchor` is computed on the AFTER read and reads
+    `owner_not_found` on a 404, which would misrepresent the evidence chain in a transcript.
+  - New target ground truth: X-DELETE-VULN-HARD (`DELETE /api/users/{id}/relic`),
+    X-DELETE-VULN-SOFT (`.../badge`), X-DELETE-SAFE (`.../seal`), byte-verified in
+    `vulnerable_target/test_vulns.py`. Offline: `test_m13_delete.py` (incl. foreign-spec genericity).
 - **Same-path cases resolve correctly** — AI **8/8**, 0 false-pos / 0 false-neg. See
   `vulnerable_target/benchmark/RESULTS.md`.
 
 ## Honest limits (do not over-read the green)
 
-- **Three vuln shapes, one target, N=5 each.** X-CROSS (write→write-record), X-EQUIV (read-type
-  semantic equivalence), X-SILENT (write→object-state). mass-assignment, delete-type, nested-object,
-  multi-step, and noisier real audit logs are untested. "Mechanism proven on these classes," not
-  "verifier finished."
+- **Four vuln shapes, one target, N=5 each.** X-CROSS (write→write-record), X-EQUIV (read-type
+  semantic equivalence), X-SILENT (write→object-state), X-DELETE (delete→negative assertion).
+  mass-assignment, nested-object, multi-step, and noisier real audit logs are untested.
+  "Mechanism proven on these classes," not "verifier finished."
 - **Black-box boundary (mapped, M1.2):** a silent write with **no same-path GET and no relevant
   write-record** is **NOT confirmable by the model's unaided follow-up** — the model does not, on its
   own, fetch a *different* resource path that exposes the attacked object's state (measured 0/5; it
@@ -195,15 +234,17 @@ deployment, the nuclei keep-vs-cut decision — parked until a benchmark justifi
 
 ## Immediate next steps
 
-> M1.2 is **done** (A/B/C landed, live-measured, 0 FP). The design principle it proved —
+> M1.2 and M1.3 are **done** (live-measured, 0 FP). The design principle they proved —
 > **code deterministically gathers the evidence; the model only does the irreplaceable semantic
-> read** — is now recorded as a standing discipline in [`ROADMAP.md`](./ROADMAP.md) §6. The full
-> deferred/rejected register lives in ROADMAP "Future / deferred" and "Considered and rejected".
+> read** — is a standing discipline in [`ROADMAP.md`](./ROADMAP.md) §6. The full deferred/rejected
+> register lives in ROADMAP "Future / deferred" and "Considered and rejected".
 
-1. **M1.x — the next vuln shapes: mass-assignment, then delete-type.** Each is one more格 of
-   generalization. **delete-type needs a NEGATIVE-ASSERTION path**: a successful delete makes the
-   object 404, so the object-state read-back returns 404 and the anchors find no owner — confirmation
-   must assert *absence*, not presence. That is the delete shape's core design point (see ROADMAP).
+1. **M1.4 — mass-assignment (the next shape).** ⚠️ **Known hazard, decide it up front:** this shape
+   writes *existing, low-entropy* fields (an owner/role id, a boolean flag), which **breaks
+   payload-causality's unique-value assumption** — the injected value can collide with a value that
+   was already there, so "the value is present" would no longer prove *this* attack caused it. Like
+   the delete shape, it likely needs its own decisive-evidence anchor (e.g. a pre-flight
+   before/after diff of the specific field) rather than reusing causality as-is. See ROADMAP §7.
 2. **D21** — promote the spec source to a declared config field (currently the `getattr`
    seam), so the real catalog can be wired for normal use, not just harnesses.
 4. **D19** — only after generalization is proven: promote the AI verdict from observe-only to

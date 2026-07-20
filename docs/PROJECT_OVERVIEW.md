@@ -23,7 +23,7 @@
 | 形态 | **单租户、本地运行的原型(prototype)**,功能链路完整,尚未上线/未做多用户化 |
 | 核心链路 | Hunter→验证 全链路 **已端到端跑通**(真实服务 + 真实本地靶机 + 真实数据库,详见 §7) |
 | 鉴权 | **暂无任何鉴权**(刻意延后,仅限本地/可信网络使用,见 §8 / D2) |
-| 测试 | **后端 227 个自动化测试全绿**(pytest)+ 靶机 19 个(独立套件),覆盖核心服务 + API 层 + 被动代理雷达 + 验证判定层(含 B-1 影子路径回归测试 + M1.1/M1.2 判定与豁免测试) |
+| 测试 | **后端 250 个自动化测试全绿**(pytest)+ 靶机 25 个(独立套件),覆盖核心服务 + API 层 + 被动代理雷达 + 验证判定层(含 B-1 影子路径回归测试 + M1.1/M1.2 判定与豁免测试) |
 | 前端 | 主用单文件仪表盘已联通后端(含 Step 9 代理雷达页,该页 UI 接线**尚未提交**——属后续前端阶段);另有一个遗留的 Vite 前端(mock 数据,非产品基线) |
 | 版本管理 | 已纳入 git,提交历史清晰;密钥/数据库已隔离出版本库。B-1 已提交(`37769b3`);当前**唯一**未提交改动是代理雷达前端页,见 [`STATUS.md`](./STATUS.md) |
 
@@ -142,7 +142,7 @@ anti gravity/
 │  │  └─ services/                # nuclei.py / traffic_parser.py / pruner.py / fuzzer.py(核心)
 │  │                              # + proxy_manager.py(进程状态机) / proxy_pipeline.py(队列+SSE+统一写者)
 │  │                              # + deep_verifier.py(AI 深度验证,影子 Phase 7) / endpoint_catalog.py(D18 端点目录)
-│  └─ tests/                      # pytest（227 个）
+│  └─ tests/                      # pytest（250 个）
 ├─ vulnerable_target/             # 独立的地面真值靶机（:8001，14 个 pytest 用例）
 ├─ scripts/audit/                 # 判定准确率的测量脚本/记录（非产品代码）
 ├─ docs/                          # 全部项目文档（本文 + ROADMAP/STATUS/架构/各管线/API/技术债）
@@ -234,7 +234,7 @@ anti gravity/
 
 ## 7. 质量与工程化（可验收的证据）
 
-- **自动化测试:后端 227 个,全部通过**(本会话亲测;`python -m pytest backend/tests -q`)。另有靶机独立套件 19 个。覆盖:
+- **自动化测试:后端 250 个,全部通过**(本会话亲测;`python -m pytest backend/tests -q`)。另有靶机独立套件 25 个。覆盖:
   - `test_pruner.py` — 剪枝评分 + 去除非确定性(随机种子下稳定);
   - `test_step8_custody.py` — auth 自愈托管 / 并行引擎;
   - `test_step_d_hunter_link.py` — Hunter→验证 数据桥接(列优先 + 旧格式回退);
@@ -297,7 +297,7 @@ python backend/run.py
 ```
 
 ### 验收清单（建议逐项打勾）
-- [ ] **测试全绿**:仓库根目录运行 `python -m pytest backend/tests -q` → 应见 `227 passed`。
+- [ ] **测试全绿**:仓库根目录运行 `python -m pytest backend/tests -q` → 应见 `250 passed`。
 - [ ] **服务健康**:`GET http://127.0.0.1:8000/` 返回 `status: online` 与诊断信息。
 - [ ] **API 文档**:`/api/docs` 能看到全部端点与请求/响应模型。
 - [ ] **逻辑狩猎链路**:在前端粘贴一段原始 HTTP 报文 → analyze 出报告与 payloads → 保存为 finding → 触发 verify → 在结果里看到带判定(verified/suspicious/failed)的验证记录。

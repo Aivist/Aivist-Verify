@@ -68,18 +68,21 @@ exemption. **Live-measured** (shadow, N=5): X-CROSS→`verified` 5/5, X-SAFE→`
 5/5, no false verdict, reverse-guards intact — and **locked by an automated regression test**
 (`test_d18_b1_shadow_integration.py`, D22 closed).
 
-**Now confirmed on two further shapes:** **M1.1** (read-type semantic-equivalence, equal-length —
-X-EQUIV-VULN→`verified` 5/5, X-EQUIV-SAFE→`failed` 5/5) and **M1.2** (silent write confirmed via a
+**Now confirmed on three further shapes:** **M1.1** (read-type semantic-equivalence, equal-length —
+X-EQUIV-VULN→`verified` 5/5, X-EQUIV-SAFE→`failed` 5/5), **M1.2** (silent write confirmed via a
 **code-gathered object-STATE** read-back — X-SILENT-VULN→`verified` 5/5, X-SILENT-SAFE→`verified`
-**0/5**, B-1 not regressed).
+**0/5**), and **M1.3** (**delete**-type confirmed by a **NEGATIVE ASSERTION** — X-DELETE-VULN
+hard+soft→`verified` 5/5 each, X-DELETE-SAFE and the never-existed CONTROL→`verified` **0/5**).
+B-1 not regressed throughout.
 
 **Not yet:** it does not yet *act* (shadow-only — the persisted verdict is still the rule
-oracle's; making the AI verdict authoritative is D19); and it is proven on **three vuln shapes,
+oracle's; making the AI verdict authoritative is D19); and it is proven on **four vuln shapes,
 one target, N=5 each**.
 
 **Bottom line:** the moat's hard-case proof point is met and committed, and now generalizes across
-**three shapes with zero false positives**. What's left is further breadth (mass-assignment,
-delete-type) and promotion (D19) — not the core "can it confirm?" question.
+**four shapes with zero false positives** — including one (delete) whose proof is an *absence*
+rather than a presence. What's left is further breadth (mass-assignment) and promotion (D19) —
+not the core "can it confirm?" question.
 
 > Detailed current snapshot (maturity, API summary, run/verify checklist) lives in
 > [`PROJECT_OVERVIEW.md`](./PROJECT_OVERVIEW.md); known gaps in [`TECH_DEBT.md`](./TECH_DEBT.md);
@@ -121,7 +124,19 @@ delete-type) and promotion (D19) — not the core "can it confirm?" question.
      **Optional hardening (recorded, NOT done):** the prompt restricts case (c) by *provenance*
      (system-gathered) while the code gate keys on *evidence* (the three anchors). Aligning them =
      adding `followup_is_code_gathered` to the gate — one line, only ever stricter.
-   - **M1.x (later):** mass-assignment, delete-type, and further shapes.
+   - **M1.3 (✅ done):** **delete-type**, whose confirmation is a **NEGATIVE ASSERTION** — the proof
+     is a from-EXISTS-to-ABSENT jump, not a value appearing, so payload-causality does not apply.
+     Two mechanisms: **(1) a PRE-FLIGHT read** — code GETs the victim object (scope-locked) BEFORE
+     the DELETE to prove it existed and was active. This is the **coincidence gate**: "it vanished"
+     only proves a delete if "it existed just before" is anchored; no pre-flight existence proof →
+     **never** `verified`. **(2) a DUAL-TRACK absence anchor** — decisive on **physical** removal
+     (404/403/410) **or** **logical/soft** deletion (200 with a lifecycle field flipped, by generic
+     vocabulary); **404 is deliberately not hardcoded**, because real APIs mostly soft-delete. A
+     **third, disjoint** exemption channel is gated on pre-flight caller-identity AND the negative
+     assertion. Live (N=5): VULN hard+soft `verified` 5/5 each; **SAFE 0**; **CONTROL (object never
+     existed) 0** — the AFTER read was also 404, but nothing was proven to exist.
+   - **M1.4 (next):** **mass-assignment**. ⚠️ Carries a known hazard — see §7.
+   - **M1.x (later):** further shapes.
 
    > **M2 — Shared Domain Model (later, NOT started):** a resource/endpoint relationship graph — sink
    > upstream observations (proxy / HAR / spec) into a shared layer every module can query, so the
@@ -198,19 +213,26 @@ shape, the decisive-evidence standard in the prompt must learn it too, or the tw
 > silently re-litigated.
 
 ### Phase — next vuln shapes (M1.x, the near ones)
-- **Mass-assignment** — the next shape to attempt.
-- **Delete-type** — ⚠️ **needs a NEGATIVE-ASSERTION path.** A successful delete makes the object
-  **404**, so the object-state read-back returns 404 and the anchors find **no owner and no value** —
-  the current gate (owner==attacked ∧ caller!=owner ∧ payload-causality *present*) can never confirm
-  it. Confirmation must assert **absence** (the object existed before and is provably gone now, and
-  the caller was not its owner), not presence. **This is the delete shape's core design point** — not
-  a generic "v2" refactor, and not something the existing three-AND gate can be stretched to cover.
+- **Mass-assignment — this is M1.4, the next shape to attempt.** ⚠️ **Known hazard, decide it up
+  front:** this shape writes *existing, low-entropy* fields (an owner/role id, a boolean flag), which
+  **breaks payload-causality's unique-value assumption**. The injected value can equal a value that
+  was already there (or that another run wrote), so "the value is present in the read-back" would no
+  longer prove *this* attack caused it — the anti-false-positive gate would be asserting a
+  coincidence. Like the delete shape, it will likely need **its own decisive-evidence anchor** (e.g.
+  a pre-flight before/after diff of the *specific* field, proving it changed *and* changed to what we
+  sent) rather than reusing payload-causality as-is. Do not assume the M1.2 gate transfers.
+- **Delete-type — ✅ DONE (M1.3).** Kept here only as the worked precedent: its confirmation is a
+  **negative assertion** (pre-flight existence + dual-track absence), which is why a new shape may
+  need a new anchor rather than a stretch of the existing one.
 
 ### Phase — known gate boundary (applies now)
 - **Payload-causality can false-collide on LOW-ENTROPY values.** The anti-false-positive gate rests
   on THIS attack's injected value being effectively unique. On boolean / small-integer / enum fields —
   or with concurrent runs writing the same value — that assumption breaks and causality could confirm
   a change this attack did not cause. A real boundary of the current gate, recorded honestly.
+  **This is precisely what M1.4 (mass-assignment) will hit head-on**, since that shape writes exactly
+  such fields — treat it as M1.4's central design problem, not an afterthought. (M1.3's delete shape
+  sidesteps it entirely: its anchor is existence/absence, not a value.)
 
 ### Phase — before public release
 - **Default `API_HOST` to `127.0.0.1`** (the user may override). Do **NOT** hard-lock or `sys.exit`

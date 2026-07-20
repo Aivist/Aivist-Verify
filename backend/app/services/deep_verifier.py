@@ -70,6 +70,12 @@ def _is_write_method(method: Optional[str]) -> bool:
     return str(method or "").upper() in _WRITE_METHODS
 
 
+def _is_delete_method(method: Optional[str]) -> bool:
+    """M1.3: the delete shape is special — its proof is a from-EXISTS-to-ABSENT jump, not a
+    value appearing — so it takes the pre-flight + negative-assertion path, not payload-causality."""
+    return str(method or "").upper() == "DELETE"
+
+
 def _path_is_write_record(path: Optional[str]) -> bool:
     """Generic check that a CONCRETE follow-up path reads like a record/log/history
     endpoint (same vocabulary as the catalog classifier). Target-agnostic."""
@@ -109,21 +115,30 @@ SYSTEM_PROMPT = (
     "decide.\" It is the honest answer ONLY in a genuine evidence gap — when you DO hold "
     "decisive read-back evidence, commit to \"verified\" or \"failed\" rather than hedging.\n"
     "5. SAME-RESOURCE RULE (this is what makes a read-back decisive): a read-back reflects the "
-    "targeted state ONLY in one of these three cases — (a) it queries the SAME resource/path the "
+    "targeted state ONLY in one of these cases — (a) it queries the SAME resource/path the "
     "attack targeted (any HTTP method on that same resource); (b) it is an explicit record of that "
-    "specific write; or (c) it is a read of the ATTACKED OBJECT'S OWN CURRENT STATE that THE SYSTEM "
+    "specific write; (c) it is a read of the ATTACKED OBJECT'S OWN CURRENT STATE that THE SYSTEM "
     "ITSELF selected and executed and says so in the follow-up result — when the attacked resource "
     "has no same-path read-back, the system may fetch the attacked object's state by another path, "
-    "and that response IS the state you attacked even though its path differs. In case (c) commit "
+    "and that response IS the state you attacked even though its path differs; or (d) for a DELETE "
+    "attack, a PAIR of reads THE SYSTEM ITSELF took — a BEFORE read (taken before your attack) "
+    "showing the attacked object existed and was active, and an AFTER read of that SAME object "
+    "showing it is now gone (HTTP 404/403) OR its status/lifecycle field flipped to a "
+    "deleted/archived value. In case (c) commit "
     "only after checking BOTH that the object returned is the one the attack targeted AND what that "
     "state now holds for the field your attack wrote: if the value your attack sent is present, the "
     "unauthorized write landed (\"verified\"); if the state still holds a different/original value, "
-    "it did not (\"failed\"). Case (c) NEVER applies to a read YOU chose: a DIFFERENT endpoint you "
-    "picked yourself, or one that merely exposes a field with the SAME NAME as what you wrote, is "
-    "NOT the same state — matching field names across different resources/paths do NOT make a "
-    "read-back decisive, so you MUST answer \"inconclusive\" (not \"failed\", not \"verified\"). "
-    "A read-back of the SAME resource/path you attacked remains FULLY decisive — use it to "
-    "commit to \"verified\" or \"failed\"."
+    "it did not (\"failed\"). In case (d) commit only after checking BOTH that the BEFORE read "
+    "proves the object existed and was the victim's AND that the AFTER read shows it gone or "
+    "flipped to deleted/archived: a missing or deleted AFTER WITHOUT the system's BEFORE existence "
+    "proof is NOT decisive (the object may never have existed, or was already deleted) -> answer "
+    "\"inconclusive\"; if the AFTER read shows the object still present and unchanged, the delete "
+    "did not land (\"failed\"). Cases (c) and (d) NEVER apply to a read YOU chose: a DIFFERENT "
+    "endpoint you picked yourself, or one that merely exposes a field with the SAME NAME as what "
+    "you wrote, is NOT the same state — matching field names across different resources/paths do "
+    "NOT make a read-back decisive, so you MUST answer \"inconclusive\" (not \"failed\", not "
+    "\"verified\"). A read-back of the SAME resource/path you attacked remains FULLY decisive — "
+    "use it to commit to \"verified\" or \"failed\"."
 )
 
 _OPTIONS_BLOCK = """\
@@ -195,11 +210,16 @@ I have executed the ONE follow-up request you asked for, against the live target
 Now deliver your FINAL verdict. You may NOT request more information this turn.
 Apply the decisive-evidence standard: return "verified" or "failed" ONLY if this read-back
 (a) queries the SAME resource/path you attacked (any HTTP method on that same resource), (b) is
-an explicit record of that specific write, or (c) is a read of the ATTACKED OBJECT'S OWN CURRENT
+an explicit record of that specific write, (c) is a read of the ATTACKED OBJECT'S OWN CURRENT
 STATE that the SYSTEM ITSELF selected and executed (a note above will say so explicitly) — in
 case (c) it IS the state you attacked even though its path differs, so check that the object
 returned is the one you targeted, compare the value your attack sent against what that state now
-holds, and commit ("verified" if your value is present, "failed" if the original value stands).
+holds, and commit ("verified" if your value is present, "failed" if the original value stands) —
+or (d) for a DELETE attack, the SYSTEM's BEFORE read (in the note above, showing the object
+existed and was active) paired with this AFTER read: if the object is now gone (404/403) or its
+status/lifecycle field flipped to a deleted/archived value, the unauthorized delete landed
+("verified"); if it is still present and unchanged, it did not ("failed"). Without the system's
+BEFORE existence proof, a missing/deleted AFTER is NOT decisive — answer "inconclusive".
 A DIFFERENT endpoint YOU chose that merely exposes a field with the same NAME as what you wrote
 is NOT the same state — if that is all you have (or the written field is absent, or nothing
 decisive was observed), you MUST answer "inconclusive"; do not fall back to "failed", and do not
@@ -254,6 +274,20 @@ class DeepVerificationResult:
     # Both are logged and stored, NEVER used to change the verdict or gate anything.
     caller_identity_anchor: Optional[str] = None
     payload_causality_anchor: Optional[str] = None
+    # M1.3 delete-shape (observe-first, gates ONLY the delete exemption):
+    #   pre_flight_status         — HTTP status of the code's pre-attack existence read (or None)
+    #   negative_assertion_anchor — "confirmed_physical" | "confirmed_logical" | "still_present"
+    #                               | "no_preflight" | "preflight_absent"
+    #                               | "preflight_already_deleted" | "indeterminate" | None
+    #   preflight_caller_identity_anchor — the caller-identity anchor computed on the PRE-FLIGHT
+    #     body, i.e. the one the delete gate ACTUALLY uses. Surfaced separately because
+    #     `caller_identity_anchor` above is computed on the AFTER read, which for a physical
+    #     delete is a 404 with no owner to anchor on (it reads "owner_not_found") — that would
+    #     misrepresent the evidence chain in an audit transcript. Same values as
+    #     caller_identity_anchor. OBSERVE-ONLY: reported, never used to change a verdict here.
+    pre_flight_status: Optional[int] = None
+    negative_assertion_anchor: Optional[str] = None
+    preflight_caller_identity_anchor: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -280,6 +314,13 @@ WRITE_RECORD_EXEMPTION_REASON = "write_record_readback_decisive"
 # leak and a securely-dropped write; only the unique value landing separates them. Computed by
 # the caller from the M1.2 anchors and passed in as a boolean (see execute_deep_verification).
 STATE_READBACK_EXEMPTION_REASON = "state_readback_causally_decisive"
+# M1.3: a THIRD exemption channel, for the DELETE shape (negative assertion). A cross-path
+# "verified" is exempted ONLY when code has structurally confirmed the from-EXISTS-to-ABSENT jump:
+# a PRE-FLIGHT read (taken before the attack) proved the object EXISTED and was active AND was the
+# victim's (owner==attacked, caller!=owner), AND the post-attack read-back shows it GONE (404/403)
+# or soft-deleted (status flipped). The pre-flight existence proof is the coincidence gate — a
+# missing/deleted read-back alone is never enough. Computed by the caller and passed as a boolean.
+DELETE_READBACK_EXEMPTION_REASON = "delete_readback_negative_assertion_decisive"
 
 
 def _normalize_path(path: Optional[str]) -> str:
@@ -301,6 +342,7 @@ def _apply_cross_resource_guard(
     follow_up_performed: bool,
     write_record_decisive: bool = False,
     state_readback_decisive: bool = False,
+    delete_readback_decisive: bool = False,
 ):
     """Structural backstop. Returns (final_verdict, decision_reason).
 
@@ -334,8 +376,16 @@ def _apply_cross_resource_guard(
     The two channels are DISJOINT (the caller never sets this for a write-record path), and
     the write-record exemption takes precedence when both are set — so B-1 is unaffected.
 
-    Method-agnostic and target-agnostic: compares path strings; both `write_record_decisive`
-    and `state_readback_decisive` are computed by the caller and passed in as booleans.
+    M1.3 DELETE-READBACK EXEMPTION (a THIRD, separate channel): a cross-path "verified" is ALSO
+    kept decisive when `delete_readback_decisive` is True — i.e. the caller has structurally
+    confirmed the from-EXISTS-to-ABSENT jump for a DELETE attack: a pre-flight read proved the
+    object existed, was active, and was the victim's, AND the post-attack read-back shows it gone
+    (404/403) or soft-deleted. Like the others it applies ONLY to "verified" and ONLY on a
+    cross-path read-back, and is DISJOINT (this shape has no written value, so the state-readback
+    channel — which requires payload-causality — never fires for it, and vice versa).
+
+    Method-agnostic and target-agnostic: compares path strings; `write_record_decisive`,
+    `state_readback_decisive` and `delete_readback_decisive` are computed by the caller as booleans.
     """
     if verdict not in ("verified", "failed"):
         return verdict, None
@@ -348,6 +398,8 @@ def _apply_cross_resource_guard(
         return verdict, WRITE_RECORD_EXEMPTION_REASON
     if verdict == "verified" and state_readback_decisive:
         return verdict, STATE_READBACK_EXEMPTION_REASON
+    if verdict == "verified" and delete_readback_decisive:
+        return verdict, DELETE_READBACK_EXEMPTION_REASON
     return "inconclusive", CROSS_RESOURCE_OVERRIDE_REASON
 
 
@@ -850,6 +902,127 @@ def _anchor_payload_causality(
     return "absent"
 
 
+# ==============================================================================
+# M1.3 — DELETE-shape negative-assertion anchor (target-agnostic, observe-first then gates the
+# delete exemption). A delete's proof is a from-EXISTS-to-ABSENT jump, NOT a value appearing, so
+# payload-causality does not apply. Two facts must both hold, structurally, in code:
+#   * EXISTENCE (the coincidence gate): a PRE-FLIGHT read taken BEFORE the attack showed the
+#     object existed and was active — otherwise "it's gone now" proves nothing (it may never
+#     have existed, or was already deleted).
+#   * ABSENCE (dual-track): the post-attack read-back is EITHER physically gone (404/403/410)
+#     OR the SAME object with a status/lifecycle field flipped to a deleted/archived value
+#     (soft delete). We must NOT hardcode 404 as the only proof of vanishing.
+# The status-flip is detected by a GENERIC vocabulary (same sanctioned pattern as the D23
+# owner-key vocabulary) — no target field name or value is hardcoded.
+# ==============================================================================
+_ABSENT_STATUS_CODES = frozenset({403, 404, 410})
+
+# Field NAMES that carry an object's lifecycle/deletion state (generic, target-agnostic).
+_STATUS_FIELD_KEYWORDS = frozenset({
+    "status", "state", "lifecycle", "phase", "stage",
+    "deleted", "archived", "removed", "active", "inactive",
+    "enabled", "disabled", "visible", "trashed", "revoked", "voided",
+})
+# VALUES that mean "this object has been deleted / retired" (string status values).
+_DELETED_VALUE_KEYWORDS = frozenset({
+    "deleted", "archived", "removed", "inactive", "disabled", "trashed",
+    "revoked", "gone", "expired", "void", "voided", "cancelled", "canceled",
+    "closed", "terminated", "purged", "retired", "softdeleted", "tombstoned",
+})
+# VALUES that mean "this object is live / present".
+_ACTIVE_VALUE_KEYWORDS = frozenset({
+    "active", "enabled", "visible", "open", "live", "present", "ok", "valid",
+    "available", "current", "published", "created",
+})
+# Field-name tokens whose BOOLEAN True means deleted, and whose True means active.
+_BOOL_DELETE_TOKENS = frozenset({"deleted", "archived", "removed", "trashed", "revoked",
+                                 "disabled", "inactive", "voided"})
+_BOOL_ACTIVE_TOKENS = frozenset({"active", "enabled", "visible"})
+
+
+def _deletion_signal(read_back_body: Optional[str]) -> str:
+    """Classify an object's read-back as 'deleted' | 'active' | 'unknown' from its lifecycle
+    field(s), GENERICALLY. Handles string status values, boolean flags (is_deleted / is_active),
+    and timestamp markers (deleted_at non-null). 'unknown' when the object carries no lifecycle
+    field at all (a hard-deletable object may simply have none — its existence is the 200 itself).
+    Scans every record; returns 'deleted' as soon as any lifecycle field reads deleted. Never raises."""
+    if not read_back_body:
+        return "unknown"
+    try:
+        parsed = json.loads(read_back_body)
+    except Exception:
+        return "unknown"
+    saw_active = False
+    for rec in _iter_records(parsed):
+        for k, v in rec.items():
+            tokens = _field_tokens(k)
+            if not (tokens & _STATUS_FIELD_KEYWORDS):
+                continue
+            # (a) boolean lifecycle flags: is_deleted=True -> deleted; is_active=False -> deleted.
+            if isinstance(v, bool):
+                if tokens & _BOOL_DELETE_TOKENS:
+                    if v:
+                        return "deleted"
+                    saw_active = True
+                elif tokens & _BOOL_ACTIVE_TOKENS:
+                    if not v:
+                        return "deleted"
+                    saw_active = True
+                continue
+            # (b) timestamp / marker fields: deleted_at / archived_on non-null -> deleted.
+            if (tokens & {"deleted", "archived", "removed", "trashed"}) and (
+                tokens & {"at", "on", "date", "time", "ts", "timestamp"}
+            ):
+                if v not in (None, "", 0, False):
+                    return "deleted"
+                saw_active = True
+                continue
+            # (c) string status values.
+            sval = _scalar_str(v).lower()
+            if not sval:
+                continue
+            if sval in _DELETED_VALUE_KEYWORDS:
+                return "deleted"
+            if sval in _ACTIVE_VALUE_KEYWORDS:
+                saw_active = True
+    return "active" if saw_active else "unknown"
+
+
+def _anchor_negative_assertion(
+    pre_status: Optional[int], pre_body: Optional[str],
+    post_status: Optional[int], post_body: Optional[str],
+) -> str:
+    """The delete-shape decisive-evidence anchor (replaces payload-causality for a DELETE).
+    Confirms a from-exists-to-absent jump. Returns:
+      "confirmed_physical"        — pre-flight EXISTED & active AND post is 404/403/410 (gone);
+      "confirmed_logical"         — pre-flight EXISTED & active AND post is 200 with a lifecycle
+                                    field flipped to a deleted/archived value (soft delete);
+      "still_present"             — pre-flight existed & active AND post is still present & active
+                                    (a securely-DROPPED delete — the SAFE case);
+      "no_preflight"              — no pre-flight was taken / it did not return 200 (existence
+                                    unproven -> the COINCIDENCE GATE forbids "verified");
+      "preflight_absent"          — pre-flight showed the object did NOT exist (nothing to delete);
+      "preflight_already_deleted" — pre-flight existed but was ALREADY deleted (can't attribute it);
+      "indeterminate"             — post neither clearly gone nor clearly present.
+    THE COINCIDENCE GATE: only the two 'confirmed_*' results are decisive; every other result
+    means the delete cannot be attributed to this attack -> the caller must NOT exempt. Never raises."""
+    # Existence anchor first — this is the coincidence gate.
+    if pre_status is None:
+        return "no_preflight"
+    if pre_status in _ABSENT_STATUS_CODES:
+        return "preflight_absent"
+    if pre_status != 200:
+        return "no_preflight"          # existence could not be established
+    if _deletion_signal(pre_body) == "deleted":
+        return "preflight_already_deleted"
+    # The object provably EXISTED and was active before the attack. Now assert absence.
+    if post_status in _ABSENT_STATUS_CODES:
+        return "confirmed_physical"
+    if post_status == 200:
+        return "confirmed_logical" if _deletion_signal(post_body) == "deleted" else "still_present"
+    return "indeterminate"
+
+
 async def execute_deep_verification(
     parsed_request: Dict[str, Any],
     payload: Optional[Dict[str, Any]],
@@ -930,14 +1103,61 @@ async def execute_deep_verification(
         pool=settings.FUZZER_HTTP_TIMEOUT_CONNECT,
     )
 
+    # M1.3: the DELETE shape needs the attacked object's state read BEFORE the attack (the
+    # existence/coincidence anchor). These hold that pre-flight read across the flow.
+    pre_flight_result: Optional[Dict[str, Any]] = None
+    pre_flight_path: Optional[str] = None
+
     async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
-        # ---------------- Step 1: real baseline + attack ----------------
+        # ---------------- Step 1: real baseline (+ M1.3 pre-flight) + attack ----------------
         try:
             baseline_result = await _send_request(client, baseline_req, base_url)
             if payload:
                 attack_req = await mutate_request(baseline_req, payload)
             else:
                 attack_req = baseline_req  # read-only case: no mutation
+
+            # --- M1.3 PRE-FLIGHT READ (delete shape only) -----------------------------------
+            # A delete's proof is a from-EXISTS-to-ABSENT jump, so "it vanished" only proves a
+            # delete if the object provably EXISTED and was active BEFORE the attack. For a DELETE
+            # attack the CODE reads the victim object's OWN state first and caches it (the
+            # existence/coincidence anchor). Target-agnostic: reuses the M1.2(B) object-state
+            # resolver. Scope-locked like every code-issued request. A failure/absence here is NOT
+            # fatal — it just means existence is unproven, so the negative assertion cannot confirm
+            # and the verdict stays inconclusive (never a false "verified").
+            if payload and _is_delete_method(attack_req.get("method")):
+                _pf_attacked_id = _attacked_object_id(
+                    baseline_req.get("path"), attack_req.get("path"), payload
+                )
+                pre_flight_path = select_object_state_endpoint(
+                    available_endpoints or [], attack_req.get("path", ""),
+                    attacked_object_id=_pf_attacked_id,
+                )
+                if pre_flight_path and pre_flight_path.startswith("/"):
+                    _pf_req = {"method": "GET", "path": pre_flight_path, "query_params": {},
+                               "headers": dict(auth_context), "body": None}
+                    if approved and _host_of(_reconstruct_url(_pf_req, base_url)) != approved:
+                        logger.warning(
+                            "[DEEP-VERIFY] M1.3 pre-flight %r is outside approved scope %r -> skipped "
+                            "(existence unproven -> the delete cannot reach 'verified').",
+                            pre_flight_path, approved,
+                        )
+                        pre_flight_path = None
+                    else:
+                        try:
+                            pre_flight_result = await _send_request(client, _pf_req, base_url)
+                            logger.info(
+                                "[DEEP-VERIFY] M1.3 pre-flight: read victim object state %r BEFORE the "
+                                "DELETE -> status=%s (existence anchor for the negative assertion).",
+                                pre_flight_path, (pre_flight_result or {}).get("status_code"),
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "[DEEP-VERIFY] M1.3 pre-flight read of %r failed (%s); existence unproven "
+                                "-> the delete cannot reach 'verified'.", pre_flight_path, e,
+                            )
+                            pre_flight_result = None
+
             attack_result = await _send_request(client, attack_req, base_url)
         except Exception as e:
             logger.warning(f"[DEEP-VERIFY] Baseline/attack send failed: {e}")
@@ -982,6 +1202,18 @@ async def execute_deep_verification(
             _candidate = select_write_record_endpoint(
                 available_endpoints or [], attacked_object_id=attacked_object_id
             )
+            # M1.3: HALF 1 is for VALUE-writes. A DELETE carries no written value, so B-1's
+            # write-record exemption (`_write_record_content_match`, which REQUIRES written
+            # values) can never fire for it — gathering a record would be useless AND would
+            # preempt the object-state gather this shape actually needs. Skip it for deletes.
+            # B-1's own cases are POST writes, so this cannot regress them.
+            if _candidate and _is_delete_method(attack_req.get("method")):
+                logger.info(
+                    "[DEEP-VERIFY] M1.3: attack is a DELETE (no written value) -> skipping the "
+                    "write-record gather (its exemption is unreachable without a written value); "
+                    "the object-STATE negative assertion is this shape's evidence.",
+                )
+                _candidate = None
             if _candidate:
                 # --- M1.2 OBJECT-SCOPE GATE ---------------------------------------------
                 # Only HIJACK the follow-up with this record endpoint if it is plausibly ABOUT
@@ -1143,20 +1375,27 @@ async def execute_deep_verification(
             gathered_kind = "record"
         elif det_state_path:
             # M1.2(B): no relevant write-record — gather the attacked object's OWN state.
+            # M1.3: for a DELETE with a pre-flight, this same gather is the AFTER read of the
+            # from-exists-to-absent pair (the BEFORE read was taken pre-attack).
+            _is_delete_gather = _is_delete_method(attack_req.get("method")) and pre_flight_result is not None
             decision = "request_more"
             next_request = {
                 "method": "GET",
                 "path": det_state_path,
                 "body": None,
                 "reason": (
-                    "code-gathered object-state read-back (deterministic; the attacked "
-                    "resource has no same-path read-back and no relevant record of writes, so "
-                    "the engine fetched the attacked object's own current state on its other "
-                    "path rather than relying on the model's choice)"
+                    ("code-gathered object-state read-back AFTER a delete (deterministic; the "
+                     "engine read the attacked object's own state before the delete and reads it "
+                     "again here to confirm a present->absent transition)")
+                    if _is_delete_gather else
+                    ("code-gathered object-state read-back (deterministic; the attacked "
+                     "resource has no same-path read-back and no relevant record of writes, so "
+                     "the engine fetched the attacked object's own current state on its other "
+                     "path rather than relying on the model's choice)")
                 ),
             }
             followup_is_code_gathered = True
-            gathered_kind = "state"
+            gathered_kind = "delete_state" if _is_delete_gather else "state"
 
         # ---------------- If verdict now, we're done ----------------
         if decision != "request_more" or not next_request.get("path"):
@@ -1201,6 +1440,13 @@ async def execute_deep_verification(
                 anchoring_result=_anchor,
                 caller_identity_anchor=_caller_anchor,
                 payload_causality_anchor=_causality_anchor,
+                pre_flight_status=(pre_flight_result or {}).get("status_code") if pre_flight_result else None,
+                negative_assertion_anchor=None,   # no follow-up -> no from-exists-to-absent pair
+                preflight_caller_identity_anchor=(
+                    _anchor_caller_identity(
+                        pre_flight_result.get("response_body"), attacked_object_id, caller_object_id
+                    ) if pre_flight_result is not None else None
+                ),
             )
 
         # ---------------- Execute the follow-up (scope-locked) ----------------
@@ -1255,7 +1501,23 @@ async def execute_deep_verification(
         if followup_is_code_gathered:
             # Be honest about WHAT the engine fetched and that it was not the model's choice.
             # The note states only what the response IS — it never suggests a verdict.
-            if gathered_kind == "state":
+            if gathered_kind == "delete_state":
+                _pf_status = (pre_flight_result or {}).get("status_code")
+                _pf_body = (pre_flight_result or {}).get("response_body")
+                turn2_msg = (
+                    "NOTE: Your attack was a DELETE. BEFORE issuing it, the system read the "
+                    "ATTACKED OBJECT'S OWN state and it EXISTED and was active:\n"
+                    f"  BEFORE (system-taken): HTTP {_pf_status} | "
+                    f"{(_pf_body or '')[:_EVIDENCE_BODY_MAX]}\n"
+                    "AFTER your attack, the system read that SAME object's state again (verbatim "
+                    "below, also NOT your choice). A transition from present/active (BEFORE) to "
+                    "gone (404/403) — or to the same object with a status/lifecycle field flipped "
+                    "to a deleted/archived value — is decisive proof the object was deleted by the "
+                    "unauthorized actor. If the object is STILL present and unchanged, the delete "
+                    "did not land. The BEFORE read is what makes a missing/deleted AFTER decisive: "
+                    "the object provably existed first.\n\n"
+                ) + turn2_msg
+            elif gathered_kind == "state":
                 turn2_msg = (
                     "NOTE: Because the resource you attacked has no same-path read-back and no "
                     "relevant record of write activity, the system itself selected and executed a "
@@ -1357,6 +1619,37 @@ async def execute_deep_verification(
             and _causality_anchor in ("confirmed_at_path", "confirmed_in_body")
         )
 
+        # M1.3 DELETE-READBACK EXEMPTION — a THIRD, separate channel (negative assertion), for the
+        # DELETE shape. Decisive ONLY when code confirms the from-EXISTS-to-ABSENT jump:
+        #   * the PRE-FLIGHT read (taken before the attack) is the VICTIM's object — owner==attacked
+        #     AND caller!=owner (`_anchor_caller_identity` on the PRE-FLIGHT body, since the AFTER
+        #     read may be a 404 with no owner to anchor on); AND
+        #   * the negative assertion is confirmed_physical (gone) or confirmed_logical (soft-deleted).
+        # The pre-flight EXISTENCE proof is the coincidence gate baked into `_anchor_negative_assertion`
+        # (no pre-flight existence -> no_preflight/preflight_absent -> not decisive). DISJOINT from the
+        # other channels: a DELETE has no written value, so the state-readback (payload-causality) and
+        # write-record channels never fire for it.
+        _neg_assertion: Optional[str] = None
+        _preflight_caller_anchor: Optional[str] = None
+        _is_delete_attack = _is_delete_method(attack_req.get("method"))
+        if _is_delete_attack and pre_flight_result is not None:
+            _pf_body = pre_flight_result.get("response_body")
+            _preflight_caller_anchor = _anchor_caller_identity(
+                _pf_body, attacked_object_id, caller_object_id
+            )
+            _neg_assertion = _anchor_negative_assertion(
+                pre_flight_result.get("status_code"), _pf_body,
+                (follow_up_response or {}).get("status_code"),
+                (follow_up_response or {}).get("body"),
+            )
+        _delete_readback_decisive = (
+            _follow_up_performed
+            and not _fu_is_write_record
+            and _is_delete_attack
+            and _preflight_caller_anchor == "confirmed"
+            and _neg_assertion in ("confirmed_physical", "confirmed_logical")
+        )
+
         _final_verdict, _override = _apply_cross_resource_guard(
             _raw_verdict,
             attack_req.get("path", ""),
@@ -1364,6 +1657,7 @@ async def execute_deep_verification(
             follow_up_performed=_follow_up_performed,
             write_record_decisive=_content_match,
             state_readback_decisive=_state_readback_decisive,
+            delete_readback_decisive=_delete_readback_decisive,
         )
         if _override == WRITE_RECORD_EXEMPTION_REASON:
             logger.info(
@@ -1381,6 +1675,15 @@ async def execute_deep_verification(
                 _normalize_path(_fu_path), _caller_anchor, _causality_anchor,
                 _final_verdict, attacked_object_id, caller_object_id,
             )
+        elif _override == DELETE_READBACK_EXEMPTION_REASON:
+            logger.info(
+                "[DEEP-VERIFY] Delete-readback exemption: pre-flight proved the VICTIM's object "
+                "existed (caller_identity=%r) and the post-attack read shows it GONE/deleted "
+                "(negative_assertion=%r) -> verdict %r kept decisive (NOT downgraded). "
+                "attacked_id=%r caller_id=%r follow_up=%r.",
+                _preflight_caller_anchor, _neg_assertion, _final_verdict,
+                attacked_object_id, caller_object_id, _normalize_path(_fu_path),
+            )
         elif _override:
             logger.info(
                 "[DEEP-VERIFY] Structural guard: model verdict=%r downgraded to %r "
@@ -1394,10 +1697,11 @@ async def execute_deep_verification(
         logger.info(
             "[DEEP-VERIFY] Evidence anchoring (turn-2 verdict): ai_verdict=%r evidence_path=%r "
             "attacked_id=%r caller_id=%r -> object=%r caller_identity=%r payload_causality=%r "
-            "(state_readback_exempt=%r).",
+            "negative_assertion=%r (state_readback_exempt=%r delete_readback_exempt=%r).",
             _final_verdict, _evidence_path, attacked_object_id, caller_object_id,
-            _anchor, _caller_anchor, _causality_anchor,
+            _anchor, _caller_anchor, _causality_anchor, _neg_assertion,
             _override == STATE_READBACK_EXEMPTION_REASON,
+            _override == DELETE_READBACK_EXEMPTION_REASON,
         )
         return DeepVerificationResult(
             status="completed",
@@ -1418,4 +1722,7 @@ async def execute_deep_verification(
             caller_identity_anchor=_caller_anchor,
             payload_causality_anchor=_causality_anchor,
             anchoring_result=_anchor,
+            pre_flight_status=(pre_flight_result or {}).get("status_code") if pre_flight_result else None,
+            negative_assertion_anchor=_neg_assertion,
+            preflight_caller_identity_anchor=_preflight_caller_anchor,
         )
