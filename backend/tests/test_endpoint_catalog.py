@@ -16,7 +16,7 @@
 # the SET of "METHOD /path" prefixes (extracted here via `_prefix`). EXPECTED_CATALOG
 # below is byte-identical to before — only the extraction adapts to the new format.
 #
-# KEY A — catalog_from_openapi(app.openapi()) correctness (exact 32-endpoint surface
+# KEY A — catalog_from_openapi(app.openapi()) correctness (exact 36-endpoint surface
 #         by prefix; genuine metadata faithfully surfaced, nothing invented).
 # KEY B — cross-resource reach (teeth): the placeholder _shadow_endpoint_catalog
 #         offers only the finding's own path; the real catalog reaches other paths.
@@ -45,6 +45,7 @@ EXPECTED_CATALOG = {
     "GET /api/documents/{document_id}",
     "GET /api/gizmos/{gizmo_id}",
     "GET /api/invoices/{invoice_id}",
+    "GET /api/memberships/{membership_id}",
     "GET /api/ledgers/{ledger_id}",
     "GET /api/notes/{note_id}",
     "GET /api/orders/{order_id}",
@@ -52,11 +53,14 @@ EXPECTED_CATALOG = {
     "GET /api/seals/{seal_id}",
     "GET /api/sprockets/{sprocket_id}",
     "GET /api/statements/{statement_id}",
+    "GET /api/subscriptions/{subscription_id}",
     "GET /api/users/{user_id}/avatar",
     "POST /api/users/{user_id}/avatar",
     "DELETE /api/users/{user_id}/badge",
     "POST /api/users/{user_id}/display-name",
     "POST /api/users/{user_id}/gizmo",
+    "PATCH /api/users/{user_id}/membership",
+    "PATCH /api/users/{user_id}/subscription",
     "DELETE /api/users/{user_id}/relic",
     "DELETE /api/users/{user_id}/seal",
     "GET /api/users/{user_id}/ledger",
@@ -102,7 +106,7 @@ def test_A1_exact_set_equality_and_count():
     catalog = catalog_from_openapi(app.openapi())
     # Human-owned ground truth is the SET of "METHOD /path" prefixes.
     assert {_prefix(e) for e in catalog} == EXPECTED_CATALOG
-    assert len(catalog) == 32
+    assert len(catalog) == 36
 
 
 def test_A2_well_formed_no_dupes_no_metadata():

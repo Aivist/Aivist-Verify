@@ -23,7 +23,7 @@
 | 形态 | **单租户、本地运行的原型(prototype)**,功能链路完整,尚未上线/未做多用户化 |
 | 核心链路 | Hunter→验证 全链路 **已端到端跑通**(真实服务 + 真实本地靶机 + 真实数据库,详见 §7) |
 | 鉴权 | **暂无任何鉴权**(刻意延后,仅限本地/可信网络使用,见 §8 / D2) |
-| 测试 | **后端 250 个自动化测试全绿**(pytest)+ 靶机 25 个(独立套件),覆盖核心服务 + API 层 + 被动代理雷达 + 验证判定层(含 B-1 影子路径回归测试 + M1.1/M1.2 判定与豁免测试) |
+| 测试 | **后端 285 个自动化测试全绿**(pytest)+ 靶机 31 个(独立套件),覆盖核心服务 + API 层 + 被动代理雷达 + 验证判定层(含 B-1 影子路径回归测试 + M1.1/M1.2 判定与豁免测试) |
 | 前端 | 主用单文件仪表盘已联通后端(含 Step 9 代理雷达页,该页 UI 接线**尚未提交**——属后续前端阶段);另有一个遗留的 Vite 前端(mock 数据,非产品基线) |
 | 版本管理 | 已纳入 git,提交历史清晰;密钥/数据库已隔离出版本库。B-1 已提交(`37769b3`);当前**唯一**未提交改动是代理雷达前端页,见 [`STATUS.md`](./STATUS.md) |
 
@@ -142,7 +142,7 @@ anti gravity/
 │  │  └─ services/                # nuclei.py / traffic_parser.py / pruner.py / fuzzer.py(核心)
 │  │                              # + proxy_manager.py(进程状态机) / proxy_pipeline.py(队列+SSE+统一写者)
 │  │                              # + deep_verifier.py(AI 深度验证,影子 Phase 7) / endpoint_catalog.py(D18 端点目录)
-│  └─ tests/                      # pytest（250 个）
+│  └─ tests/                      # pytest（285 个）
 ├─ vulnerable_target/             # 独立的地面真值靶机（:8001，14 个 pytest 用例）
 ├─ scripts/audit/                 # 判定准确率的测量脚本/记录（非产品代码）
 ├─ docs/                          # 全部项目文档（本文 + ROADMAP/STATUS/架构/各管线/API/技术债）
@@ -176,7 +176,10 @@ anti gravity/
 - ⚪ **AI 深度验证（影子模式 / Phase 7，只读观测）**:新增独立组件 `services/deep_verifier.py`——两轮式 AI-in-the-loop「写后读」(Gemini),用于解决规则预言机在"沉默型"越权(写接口恒返回 `200 {"status":"ok"}`)上只能停在 `suspicious` 的盲区。其判定为**四值**(`verified`/`failed`/`inconclusive`/`suspicious`),比规则预言机 `_differential_verdict` 的**三值**(`verified`/`suspicious`/`failed`,保持不变)多出 `inconclusive`——证据不足(如跨资源回读未反映被攻击对象)时如实给出。另有确定性**结构化跨资源守卫**(B-2.2,`_apply_cross_resource_guard`):当 `verified`/`failed` 依赖的回读路径与攻击路径不同,降级为 `inconclusive`;结果同时保留模型原始判定与改写痕迹(`ai_verdict_raw` + `guard_override`,`ai_verdict` 为守卫后的最终值)。已作为**纯增量、只读**的 Phase 7 接入 `execute_parallel_fuzzing`:批次结束后对 `suspicious` 记录复核,**仅写日志**(`AI_shadow_verdict=…`),**不改写** `verification_status`/`diff_details`、不影响用户所见、失败即吞。受两个默认关闭的开关门控:`AI_DEEP_VERIFY_ENABLED` 与 `AI_DEEP_VERIFY_SHADOW`(两者都为 True 才会真正调用 Gemini)。端点目录由 `services/endpoint_catalog.py`(`catalog_from_openapi`)提供:每条以 `"METHOD /path"` 打头,并**携带该操作在 spec 里真实声明的 `tags` 与 `operationId`**(有则附,无则退回裸 `"METHOD /path"`——不臆造),让模型能判断某端点「是什么」(例如识别一个审计/日志端点是写记录)。spec 来源走 `settings.AI_DEEP_VERIFY_OPENAPI_SPEC`(`getattr` 读取,并非已声明配置项,见 [`TECH_DEBT.md`](./TECH_DEBT.md) D21),未配置时回退到同资源占位目录。相关接缝(auth 上下文、端点目录/spec 接线)见 [`TECH_DEBT.md`](./TECH_DEBT.md) D18;尚未作为权威判定见 D19。准确率基准见 [`../vulnerable_target/benchmark/RESULTS.md`](../vulnerable_target/benchmark/RESULTS.md)(共 11 个用例:AI 同路径置信判定 **8/8** 正确,2 个跨路径达"完整性下限"判 `inconclusive`,**0 误报 / 0 漏报**)。
   - 🟢 **B-1「跨路径自信判定」(✅ 已完成并提交 `37769b3`)**:让 ④ 不止停在 `inconclusive`,而是**自信地**判定跨路径写越权。机制:目录携带语义(上)+ **确定性写记录回读采集**(代码而非模型选定审计/日志端点)+ **写记录豁免守卫**(结构化核对回读确系「本次攻击」的记录才放行 `verified`)。**离线单测 + 线上影子复测均已通过**(N=5:X-CROSS→`verified` 5/5、X-SAFE→`inconclusive`/安全 5/5 零误报、同路径反向 guard 不回归),并有**自动化回归测试**锁定(`test_d18_b1_shadow_integration.py`,D22 已闭合)。守卫加固(D23 绑定 owner/subject 键 + D23b 绑定非主键内容字段)**均已完成**。**后续(非 B-1 阻塞)**:D21(声明 spec 配置项)、更多漏洞形态、更新 RESULTS.md、D19。详见 [`STATUS.md`](./STATUS.md) 与 [`DEEP_VERIFY.md`](./DEEP_VERIFY.md)。
   - 🟢 **M1.1「读型语义等价」(✅ 已完成 `002b33c`)**:两条读路径暴露同一对象,响应刻意做成**等长**,规则预言机无法凭大小判定而停在 `suspicious`,**必须由 AI 依语义判断**。判定同时携带 `evidence_path` 与代码计算的 `anchoring_result`(AI 做语义判断、代码做锚定核对;仅观测,不作预言机)。线上影子 N=5:X-EQUIV-VULN→`verified` 5/5、X-EQUIV-SAFE→`failed` 5/5,**零误报**。
-  - 🟢 **M1.2「沉默写 · 对象自身状态回读」(✅ 已完成)**:第三种被确认的漏洞形态。攻击是沉默写,**既无同路径 GET、也无相关写记录**,唯一决定性证据是**被攻击对象自身的状态(位于另一条路径)**。三部分:**(A)** 第二条守卫豁免通道 `STATE_READBACK_EXEMPTION_REASON`(与 B-1 写记录通道**互斥**,仅对 `verified`),仅当代码同时确认三个锚点才放行——owner==被攻击 ∧ caller≠owner **且 payload-causality**(本次攻击注入的**唯一值**确实出现);**causality 是防误报的关键闸门**,因为前两者对「被安全丢弃的写」同样成立。**(B)** **确定性对象状态采集** `select_object_state_endpoint`(目标无关:资源名词 + 对象作用域模板绑定被攻击 id;排除日志类端点;找不到就不臆造)——模型自己**0/5**找不到该路径,代码采集后 **5/5**。**(C)** **提示词豁免**(rule 5 / turn-2 / options-block):把「**系统自行采集**的被攻击对象状态读」也列为决定性证据,解决了代码与提示词互相打架的问题(模型手握决定性证据却因 rule 5 判 `inconclusive`),使 VULN 从 **3/5 → 5/5**。线上影子 N=5:X-SILENT-VULN→`verified` **5/5**、**X-SILENT-SAFE→`verified` 0/5**(causality `absent` → 不豁免 → `inconclusive`)、B-1 X-CROSS **未回归**(仍 `verified` 5/5)。**已知边界**:payload-causality 假设写入值是**高熵**的,布尔/小整数/枚举字段或并发运行下可能碰撞。
+  - 🟢 **M1.2「沉默写 · 对象自身状态回读」(✅ 已完成)**:第三种被确认的漏洞形态。攻击是沉默写,**既无同路径 GET、也无相关写记录**,唯一决定性证据是**被攻击对象自身的状态(位于另一条路径)**。三部分:**(A)** 第二条守卫豁免通道 `STATE_READBACK_EXEMPTION_REASON`(与 B-1 写记录通道**互斥**,仅对 `verified`),仅当代码同时确认三个锚点才放行——owner==被攻击 ∧ caller≠owner **且 payload-causality**(本次攻击注入的**唯一值**确实出现);**causality 是防误报的关键闸门**,因为前两者对「被安全丢弃的写」同样成立。**(B)** **确定性对象状态采集** `select_object_state_endpoint`(目标无关:资源名词 + 对象作用域模板绑定被攻击 id;排除日志类端点;找不到就不臆造)——模型自己**0/5**找不到该路径,代码采集后 **5/5**。**(C)** **提示词豁免**(rule 5 / turn-2 / options-block):把「**系统自行采集**的被攻击对象状态读」也列为决定性证据,解决了代码与提示词互相打架的问题(模型手握决定性证据却因 rule 5 判 `inconclusive`),使 VULN 从 **3/5 → 5/5**。线上影子 N=5:X-SILENT-VULN→`verified` **5/5**、**X-SILENT-SAFE→`verified` 0/5**(causality `absent` → 不豁免 → `inconclusive`)、B-1 X-CROSS **未回归**(仍 `verified` 5/5)。**已知边界**:payload-causality 假设写入值是**高熵**的,布尔/小整数/枚举字段或并发运行下可能碰撞(该边界已由 M1.4 收口,见下)。
+  - 🟢 **M1.3「删除型 · 否定式断言」(✅ 已完成)**:第四种被确认的形态,也是第一个**以「不存在」而非「存在」为证据**的形态。跨用户 DELETE 返回不透明的 `200 {"status":"ok"}`,唯一决定性证据是受害者对象**从存在变为消失**。两个新机制:**(1) 前置读(pre-flight,巧合闸门)**——代码在发出 DELETE **之前**先读受害者对象自身状态(作用域锁定,复用 `select_object_state_endpoint`)并缓存;「它消失了」只有在「它此前确实存在且有效」被锚定后才能证明删除,**没有前置存在证明就绝不 `verified`**。**(2) 双轨否定式断言** `_anchor_negative_assertion`——**物理**移除(404/403/410)**或**逻辑/软删除(仍 200,但生命周期字段翻转,靠通用词表识别),**404 绝不硬编码**为唯一证据(真实 API 多数是软删除)。第三条互斥豁免通道 `DELETE_READBACK_EXEMPTION_REASON`(caller-identity 取自**前置读**的 body,因为物理删除后的 AFTER 读是 404 无 owner 可锚)。线上 N=5:X-DELETE-VULN-HARD→`verified` **5/5**(`confirmed_physical`)、X-DELETE-VULN-SOFT→`verified` **5/5**(`confirmed_logical`)、**X-DELETE-SAFE→`verified` 0/5**(`still_present`)、**X-DELETE-CONTROL(对象从未存在)→`verified` 0/5**(`preflight_absent`——AFTER 读同样是 404,但巧合闸门守住了)。
+  - 🟢 **M1.4「批量赋值 · 低熵状态跳变」(✅ 已完成 —— M1 收官)**:第五种也是最后一种 M1 形态。攻击者把特权字段(`role`/`is_admin`/`tier`)夹带进对**受害者对象**的写入。**这里 payload-causality 本身失效**:它假设写入值是唯一的,而 `"admin"` 是**低熵**值——「读到 role 是 admin」无法区分「是我写的」和「本来就是」。因果改由 **STATE JUMP(状态跳变)** 证明:攻击发出的**每一个字段**都必须从**已知的前置状态**跳变到注入值。**MISSING(在一次成功 2xx 读里字段不存在)是合法的原始状态**(特权字段常被隐藏),所以 `missing→injected` 成立(隐藏字段提权);但**请求失败/非 2xx/JSON 畸形是 UNKNOWN**,永远不能确认跳变、永远不会 `verified`、也绝不崩。第四条互斥通道 `STATE_JUMP_EXEMPTION_REASON`。**顺带修掉了一个真实误报**:在「特权字段被白名单剥离、但合法字段确实落地」的安全用例上,旧的 causality 闸门会放行一个**安全**端点;现在**只要存在前置状态基线,就一律由 state-jump 闸门接管**(按证据而非按声明的攻击类型路由)——这是**收窄**而非削弱,只会产生更少的豁免,其余四种形态判定不变(离线 285 个测试全绿证明)。线上 N=5:X-MASS-VULN(有值 / MISSING→注入)→`verified` **5/5 各**、**X-MASS-SAFE(有值 + 缺失)→`verified` 0/5**、**CONTROL(注入值==原值,无跳变)→`verified` 0/5**。安全用例上模型**原始判定说 `verified`**,而闸门**每一次都拒绝了**——守住底线的是代码,不是模型的听话程度。**修复后线上回归复测:四种既有形态全部确认无回归**(N=5 各,**30/30 次全部干净、零降级**,`scripts/audit/shadow_m14_regress_run.out.txt`):B-1 X-CROSS→`verified` **5/5**(仍走 `write_record` 通道)、X-SILENT-VULN→`verified` **5/5**、X-DELETE-VULN-HARD/SOFT→`verified` **5/5 各**(`confirmed_physical`/`confirmed_logical`)、**X-SILENT-SAFE 与 X-DELETE-SAFE 均 0 次 `verified`**。其中 X-SILENT-VULN 的豁免通道从 `state_readback` 变为 `state_jump`——这**正是路由修复按设计生效**(存在前置状态基线时由更严的闸门接管),判定本身未变。(首轮复测曾因 Gemini 月度支出上限中断:55 次里 27 次 `429 RESOURCE_EXHAUSTED` → `status=degraded` 不出判定;预算恢复后**完整重跑**,而非当作「仅离线覆盖」的缺口交付。)
+  - ✅ **M1 完成**:五种形态、零误报。下一条线是 D21(声明 spec 配置项)→ D19(把 AI 判定提升为权威)→ 发布前清单 → 真实靶标前清单。
 
 ### D. 被动流量摄取 · 代理雷达(Step 9)
 - 🟡 **托管式拦截代理**:`POST /hunter/proxy/start` 启动并监督一个 `mitmdump` 子进程;浏览器把 HTTP 代理指向 `127.0.0.1`,即可被动捕获流量。`/proxy/stop` 跨平台强制清杀整个进程树(Windows `taskkill /F /T`、Unix 进程组信号),不漏端口。
@@ -234,7 +237,7 @@ anti gravity/
 
 ## 7. 质量与工程化（可验收的证据）
 
-- **自动化测试:后端 250 个,全部通过**(本会话亲测;`python -m pytest backend/tests -q`)。另有靶机独立套件 25 个。覆盖:
+- **自动化测试:后端 285 个,全部通过**(本会话亲测;`python -m pytest backend/tests -q`)。另有靶机独立套件 31 个。覆盖:
   - `test_pruner.py` — 剪枝评分 + 去除非确定性(随机种子下稳定);
   - `test_step8_custody.py` — auth 自愈托管 / 并行引擎;
   - `test_step_d_hunter_link.py` — Hunter→验证 数据桥接(列优先 + 旧格式回退);
@@ -297,7 +300,7 @@ python backend/run.py
 ```
 
 ### 验收清单（建议逐项打勾）
-- [ ] **测试全绿**:仓库根目录运行 `python -m pytest backend/tests -q` → 应见 `250 passed`。
+- [ ] **测试全绿**:仓库根目录运行 `python -m pytest backend/tests -q` → 应见 `285 passed`。
 - [ ] **服务健康**:`GET http://127.0.0.1:8000/` 返回 `status: online` 与诊断信息。
 - [ ] **API 文档**:`/api/docs` 能看到全部端点与请求/响应模型。
 - [ ] **逻辑狩猎链路**:在前端粘贴一段原始 HTTP 报文 → analyze 出报告与 payloads → 保存为 finding → 触发 verify → 在结果里看到带判定(verified/suspicious/failed)的验证记录。

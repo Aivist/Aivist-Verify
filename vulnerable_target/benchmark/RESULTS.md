@@ -13,12 +13,12 @@
 
 | Metric | Count |
 |---|---|
-| Total cases | 18 (A, B, C, D, SAFE, T-REAL, T-TRAP, T-WEAK, T-SILENT2, X-CROSS, X-SAFE, X-EQUIV-VULN, X-EQUIV-SAFE, X-SILENT-VULN, X-SILENT-SAFE, X-DELETE-VULN-HARD, X-DELETE-VULN-SOFT, X-DELETE-SAFE) |
-| Ground truth: REAL vulnerabilities | 12 (A, B, C, D, T-REAL, T-WEAK, T-SILENT2, X-CROSS, X-EQUIV-VULN, X-SILENT-VULN, X-DELETE-VULN-HARD, X-DELETE-VULN-SOFT) |
-| Ground truth: SECURE controls | 6 (SAFE, T-TRAP, X-SAFE, X-EQUIV-SAFE, X-SILENT-SAFE, X-DELETE-SAFE) |
+| Total cases | 20 (A, B, C, D, SAFE, T-REAL, T-TRAP, T-WEAK, T-SILENT2, X-CROSS, X-SAFE, X-EQUIV-VULN, X-EQUIV-SAFE, X-SILENT-VULN, X-SILENT-SAFE, X-DELETE-VULN-HARD, X-DELETE-VULN-SOFT, X-DELETE-SAFE, X-MASS-VULN, X-MASS-SAFE) |
+| Ground truth: REAL vulnerabilities | 13 (A, B, C, D, T-REAL, T-WEAK, T-SILENT2, X-CROSS, X-EQUIV-VULN, X-SILENT-VULN, X-DELETE-VULN-HARD, X-DELETE-VULN-SOFT, X-MASS-VULN) |
+| Ground truth: SECURE controls | 7 (SAFE, T-TRAP, X-SAFE, X-EQUIV-SAFE, X-SILENT-SAFE, X-DELETE-SAFE, X-MASS-SAFE) |
 | **M1.1 read-type (equal-length, MEASURED)** | X-EQUIV-VULN `verified` 5/5 (anchoring `confirmed`) · X-EQUIV-SAFE `failed` 5/5 — **0 false positives**, judged by semantics not size |
 | **M1.2 silent-write / object-STATE (MEASURED)** | X-SILENT-VULN `verified` **5/5** (code-gathered state read; causality `confirmed_at_path` 5/5) · X-SILENT-SAFE **`verified` 0/5** (causality `absent` 5/5 → no exemption → `inconclusive`) — **0 false positives**; B-1 X-CROSS still `verified` 5/5 |
-| **Shapes confirmed with zero FP** | **4** — write→write-record (B-1), read-type semantic equivalence (M1.1), write→object-STATE (M1.2), delete→NEGATIVE ASSERTION (M1.3) |
+| **Shapes confirmed with zero FP** | **5 — M1 COMPLETE.** write→write-record (B-1), read-type semantic equivalence (M1.1), write→object-STATE (M1.2), delete→NEGATIVE ASSERTION (M1.3), mass-assignment→LOW-ENTROPY STATE JUMP (M1.4) |
 | **M1.3 delete-type (MEASURED)** | X-DELETE-VULN-HARD `verified` **5/5** (`confirmed_physical`) · X-DELETE-VULN-SOFT `verified` **5/5** (`confirmed_logical`) · X-DELETE-SAFE **`verified` 0/5** (`still_present`) · X-DELETE-CONTROL (never existed) **`verified` 0/5** (`preflight_absent`) — **0 false positives** |
 | **Post-B-1 update (not re-run here)** | X-CROSS is now `verified` (code-gathered audit-log + content-match exemption, N=5, `shadow_b1step3_code_gather_measure.out.txt`); the "deferred to B-1" rows below are historical (pre-B-1). |
 | **AI-in-the-loop cases evaluated** | 10 (B, C, D, SAFE, T-REAL, T-TRAP, T-WEAK, T-SILENT2, X-CROSS, X-SAFE) |
@@ -62,6 +62,8 @@ including declining to flag the SECURE look-alike (no false positive).
 | X-DELETE-VULN-HARD | REAL | not measured | `verified` (5/5; pre-flight 200 → AFTER 404, `confirmed_physical`) | ✅ |
 | X-DELETE-VULN-SOFT | REAL | not measured | `verified` (5/5; `status` active→revoked, `confirmed_logical`) | ✅ |
 | X-DELETE-SAFE | SECURE | not measured | `inconclusive` (5/5; object still present; **0 verified**) | ✅ |
+| X-MASS-VULN | REAL | not measured | `verified` (5/5 present-value and 5/5 MISSING→injected; `confirmed_jump`) | ✅ |
+| X-MASS-SAFE | SECURE | not measured | `inconclusive` (5/5 present + 5/5 missing; `role` never moved; **0 verified**) | ✅ |
 
 > ◐ = **integrity floor met** (the system never emits a false verdict — no false-negative
 > on X-CROSS, no false-positive on X-SAFE), but a **confident** verdict (`verified`/`failed`)
@@ -578,6 +580,12 @@ including declining to flag the SECURE look-alike (no false positive).
 - **X-SILENT-SAFE** (SECURE) → **`inconclusive` 5/5, 0 `verified`.**
 - All three exemption channels stayed **disjoint**: every case fired exactly its own, and
   `negative_assertion` / `pre_flight_status` are `None` for every non-delete case.
+  > **Superseded by M1.4 (code wins):** the routing fix widened the pre-flight read to **all write
+  > methods**, so `pre_flight_status` is now populated on non-delete writes too, and the cross-path
+  > write cases (X-CROSS, X-SILENT-VULN) exempt via the **state-jump** channel instead of the
+  > write-record / payload-causality one. **Verdicts are unchanged** (still `verified` 5/5 each,
+  > SAFE still 0) — only the `guard_override` reason differs, and it is the stricter gate. The
+  > channels remain disjoint by construction. See the M1.4 section below.
 
 ### M1.3 honest limits (do not over-read)
 - **The pre-flight is an existence anchor, not a full history.** It proves the object existed and
@@ -590,8 +598,120 @@ including declining to flag the SECURE look-alike (no false positive).
 - **Cross-path only.** These cases are confirmed via the object's state on a DIFFERENT path, which is
   where the guard + exemption operate. A same-path delete read-back is handled by the existing
   same-resource rule and does not exercise this channel.
-- **One target, N=5, four shapes.** mass-assignment is next (**M1.4**) and carries its own hazard: it
-  writes low-entropy fields, which breaks payload-causality's unique-value assumption.
+- **One target, N=5, four shapes.** mass-assignment was next (**M1.4**, now done) and carried its own
+  hazard: it writes low-entropy fields, which breaks payload-causality's unique-value assumption —
+  the hazard was real and is documented in the M1.4 section below.
+
+---
+
+## M1.4 mass-assignment / LOW-ENTROPY STATE JUMP additions (MEASURED)
+
+> The FIFTH and final M1 shape. The attacker sneaks a privileged field (`role: "admin"`) into a
+> write on the VICTIM's object; the response is a byte-identical opaque `200 {"status":"ok"}` and
+> there is no same-path GET. What breaks here is **payload-causality itself**: it assumes the
+> written value is UNIQUE ("my value is in the object, so I wrote it"), but `"admin"` is
+> **LOW-ENTROPY** — its presence cannot separate *I set it* from *it was already that*. Causality is
+> proven instead by a **STATE JUMP**: **every** field the attack sent must have moved from a **KNOWN
+> pre-flight state** to the injected value. 5 runs each, gemini-2.5-pro, target fresh-seeded per
+> run, driven directly through `execute_deep_verification` (same ordering reason as M1.3 — the rule
+> oracle's earlier phases would consume the pre-flight baseline). Transcripts:
+> `scripts/audit/shadow_m14_mass_assignment_run.out.txt`, `…_topup_run.out.txt`,
+> `…_postfix_run.out.txt`.
+
+### Case X-MASS-VULN — REAL mass-assignment BOLA (membership, present-value)
+- **Endpoint / method:** `PATCH /api/users/{user_id}/membership` (state read-back: cross-path
+  `GET /api/memberships/{id}`; no same-path GET). The route binds **every writable column with no
+  allow-list** — that is the bug.
+- **Ground truth:** **REAL**
+- **Evidence gap:** the response is byte-identical to the SECURE mirror, and the injected value is
+  low-entropy, so the AFTER read alone proves nothing.
+- **AI-in-the-loop verdict:** **`verified` 5/5.** Pre-flight `GET /api/memberships/2` → **200** 5/5
+  (`plan:"basic"`, `role:"member"` — the baseline); after the attack **both sent fields jumped**;
+  `state_jump_anchor = confirmed_jump` 5/5; `guard_override = state_jump_causally_decisive` 5/5.
+- **Correct?:** **Yes** (REAL).
+
+### Case X-MASS-VULN (MISSING variant) — hidden-field escalation
+- **Setup:** carol's `role` is seeded `NULL`, and the state read **omits** a NULL `role`, so the
+  pre-flight body has **no `role` key at all**.
+- **Why it exists:** privileged fields are commonly hidden from reads. **MISSING is a legal original
+  state** — `missing → "admin"` is a real jump and must verify — while a **failed / non-2xx /
+  unparseable** pre-flight is **UNKNOWN** and must never verify. The distinction is safety-critical:
+  collapsing them would turn every unreadable object into a confirmed escalation.
+- **AI-in-the-loop verdict:** **`verified` 5/5**, `confirmed_jump` from MISSING.
+- **Correct?:** **Yes** (REAL).
+
+### Case X-MASS-SAFE — SECURE mirror (allow-list strips the privileged field)
+- **Endpoint / method:** `PATCH /api/users/{user_id}/subscription` (state read-back:
+  `GET /api/subscriptions/{id}`). An explicit allow-list binds `plan` and **strips `role`**.
+- **Ground truth:** **NOT vulnerable (SECURE control)**
+- **Evidence gap — and the reason M1.2 had to be narrowed:** the legitimate co-submitted field
+  (`plan`) **does** land. So on this SECURE case the observed anchors were
+  `caller_identity = confirmed` **and** `payload_causality = confirmed_in_body` — meaning **M1.2's
+  channel would have exempted a secure endpoint.** This is a real false positive that was
+  demonstrated empirically, not hypothesized.
+- **AI-in-the-loop verdict:** **`inconclusive` 5/5 (present) and 5/5 (missing variant) — 0
+  `verified`.** `role` never moved, so `state_jump_anchor ≠ confirmed_jump`, so no exemption fired.
+- **Notable:** on these SAFE runs the model's **raw** verdict was `verified` — and **the gate refused
+  every single time**. The line is held by code, not by model compliance.
+- **Correct?:** **Yes** (SECURE).
+
+### Case X-MASS-CONTROL — no jump (injected value == pre-flight value)
+- **Setup:** the attack sends `{"role":"member"}`, which is what the object already held.
+- **Why it exists:** the write lands and the AFTER read shows the attacker's value — the exact
+  shape that presence-based causality misreads. Movement is absent, so causality is unproven.
+- **AI-in-the-loop verdict:** **`verified` 0/5.**
+- **Correct?:** **Yes.** This is the low-entropy anti-false-positive gate working.
+
+### The residual routing fix (measured after the fix)
+The first implementation chose the state-jump gate by the **declared attack type**, so an attack
+**mistyped** as plain `BOLA` — but carrying a body that co-submits a low-entropy field — would still
+have fallen back to payload-causality and re-opened the same false positive. Routing now keys on
+**evidence, not declaration**: whenever a pre-flight baseline exists, the state-jump gate governs.
+The pre-flight read was widened from delete-or-mass to **all write methods** to make that baseline
+available. This is **strictly a narrowing** — it can only ever produce *fewer* exemptions.
+
+### Post-fix live NO-REGRESSION sweep (MEASURED — all four prior shapes, N=5 each)
+
+Run with the routing fix in place, fresh-seeded per run, **30/30 runs clean (zero degraded)** —
+`scripts/audit/shadow_m14_regress_run.out.txt`. (A first attempt was truncated by the Gemini
+project's monthly spending cap — 27/55 runs `429 RESOURCE_EXHAUSTED` → `status=degraded` with no
+verdict, graceful but not data. It was re-run in full once budget was restored rather than shipped
+as an offline-only gap.)
+
+| Case | Truth | FINAL verdict | `guard_override` | Anchors |
+|---|---|---|---|---|
+| B-1 X-CROSS | REAL | **`verified` 5/5** | `write_record_readback_decisive` | pre-flight `None` 5/5 — a record path resolves no object state, as designed |
+| X-SILENT-VULN | REAL | **`verified` 5/5** | `state_jump_causally_decisive` | `confirmed_jump` 5/5, pre-flight 200 5/5 |
+| X-SILENT-SAFE | SECURE | `inconclusive` 5/5 — **0 `verified`** | `cross_resource_readback_not_decisive` | `no_jump` 5/5 |
+| X-DELETE-VULN-HARD | REAL | **`verified` 5/5** | `delete_readback_negative_assertion_decisive` | `confirmed_physical` 5/5 |
+| X-DELETE-VULN-SOFT | REAL | **`verified` 5/5** | `delete_readback_negative_assertion_decisive` | `confirmed_logical` 5/5 |
+| X-DELETE-SAFE | SECURE | `inconclusive` 5/5 — **0 `verified`** | `cross_resource_readback_not_decisive` | `still_present` 5/5 |
+
+**One channel shifted, by design.** X-SILENT-VULN now exempts via `state_jump_causally_decisive`
+rather than `state_readback_causally_decisive`: it is a POST with a JSON body whose object-state
+endpoint resolves, so a pre-flight baseline exists and the **stricter** gate governs. The verdict is
+unchanged. This is the routing fix doing exactly what it was written to do — had it still reported
+`state_readback`, the fix would not have taken. The DELETE cases keep their own channel (no body →
+`no_sent_fields` → the jump cannot govern), so the four channels stay **disjoint** under the new
+routing, and every SAFE case still lands 0.
+
+Offline this is additionally locked by
+`test_HAZARD_m12_causality_would_false_positive_on_mass_assignment_safe` and
+`test_RESIDUAL_FIX_mass_assignment_mistyped_as_BOLA_safe_stays_inconclusive`.
+
+### M1.4 honest limits (do not over-read)
+- **The jump proves movement, not authorship.** It proves the field went from a known prior state to
+  the attacker's value across the attack window. On a shared or busy target a concurrent writer
+  could produce the same movement; single-tenant / quiesced targets make the attribution airtight.
+  This is the same caveat as M1.3's pre-flight, and it is inherent to black-box observation.
+- **A readable pre-flight is required.** If the victim's object cannot be read (no state endpoint, a
+  non-2xx, unparseable JSON), the baseline is UNKNOWN and the shape degrades to `inconclusive` —
+  a false negative by design. Safe direction, but a real ceiling.
+- **All sent fields must jump.** This is stricter than checking one named field (chosen because the
+  `path_segment` attack shape keeps ids derivable but does not name the injected field). A target
+  that silently normalizes one co-submitted field will therefore read as `no_jump` → `inconclusive`.
+- **One target, N=5, five shapes.** M1's goal — prove the mechanism generalizes — is met. Nested
+  objects, multi-step flows, and noisier real audit logs remain untested.
 
 ---
 

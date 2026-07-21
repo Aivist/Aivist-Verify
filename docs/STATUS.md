@@ -12,20 +12,22 @@
 A single-tenant, locally-run access-control verification engine whose core is
 **built, wired into the pipeline as a read-only shadow pass, and dormant by
 default**. The integrity floor (never emit a false verdict) is proven. The engine now
-confirms the hard case on **four distinct vuln shapes with zero false positives** —
+confirms the hard case on **five distinct vuln shapes with zero false positives** —
 **M1.0/B-1** (silent cross-path *write*, confirmed via a write-record), **M1.1**
 (read-type *semantic-equivalence*, equal-length, confirmed by semantics + evidence
 anchoring), **M1.2** (silent cross-path *write* confirmed via a code-gathered
 object-**STATE** read-back), and **M1.3** (**delete**-type, confirmed by a **NEGATIVE
-ASSERTION** — a code-anchored from-EXISTS-to-ABSENT jump). It is still shadow-only (not
-authoritative — that's **D19**) and proven on four shapes / one target.
+ASSERTION** — a code-anchored from-EXISTS-to-ABSENT jump), and **M1.4** (**mass-assignment**,
+confirmed by a **LOW-ENTROPY STATE JUMP** from a known pre-flight state). **M1 — proving the
+mechanism generalizes across shapes — is COMPLETE.** It is still shadow-only (not authoritative —
+that's **D19**) and proven on five shapes / one target.
 
 ## Test suite
 
 | Suite | Command (from repo root) | Result |
 |---|---|---|
-| Backend | `python -m pytest backend/tests -q` | **250 passed** |
-| Ground-truth target | `python -m pytest vulnerable_target -q` | **25 passed** |
+| Backend | `python -m pytest backend/tests -q` | **285 passed** |
+| Ground-truth target | `python -m pytest vulnerable_target -q` | **31 passed** |
 
 ## The main line (three nodes)
 
@@ -35,7 +37,7 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
 
 | Node | Goal | State |
 |---|---|---|
-| **1. Judge correctly (= M1)** | Never a false verdict; confirm the hard case across *shapes* | **In progress — 4 shapes done, 0 FP.** See the M1 breakdown below. |
+| **1. Judge correctly (= M1)** | Never a false verdict; confirm the hard case across *shapes* | **✅ COMPLETE — 5 shapes confirmed, 0 FP.** See the M1 breakdown below. |
 | **2. Act** (`D19`) | Promote the AI verdict from observe-only/log to **authoritative** | **Not started.** The persisted verdict is still the rule oracle's; the AI verdict is shadow-only. Gated on M1 proving generalization. |
 | **3. Be safe on real targets** | Consolidate scope-lock checks + adversarial tests before any non-localhost use | **Not started.** HARD prerequisite before any real / non-lab target. |
 
@@ -45,10 +47,10 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
 |---|---|---|
 | **M1.0 (B-1)** | silent cross-path **write**, confirmed via a **write-record** | **DONE, committed `37769b3`.** X-CROSS→`verified` 5/5, X-SAFE→safe 5/5; regression test locks it. |
 | **M1.1** | read-type **semantic-equivalence**, equal-length, confirmed by **semantics + evidence anchoring** | **DONE, committed `002b33c`.** X-EQUIV-VULN→`verified` 5/5, X-EQUIV-SAFE→`failed` 5/5 — **0 FP**, N=5, one target. |
-| **M1.2** | silent cross-path **write** confirmed via a code-gathered object-**STATE** read-back (not a write-record) | **DONE, committed `e4d5317`.** Three parts: **(A)** a SECOND guard exemption channel (`STATE_READBACK_EXEMPTION_REASON`, **disjoint from B-1**, `verified`-only) gated on three structural anchors AND-ed — owner==attacked ∧ caller!=owner (`caller_identity=confirmed`) **and payload-causality** (THIS attack's UNIQUE value present; causality is the false-positive gate). **(B)** a **deterministic object-state gather** (`select_object_state_endpoint`, target-agnostic resource-noun + object-scoping; mirrors B-1's HALF-1) — the model never found that path on its own (**0/5**), code now gathers it **5/5**. **(C)** a **prompt carve-out** (rule 5 / turn-2 / options-block) so a *system-gathered* read of the attacked object's own state counts as decisive — lifted VULN **3/5 → 5/5**. **Live-measured** (shadow, N=5, gemini-2.5-pro): X-SILENT-VULN→`verified` **5/5** (all 3 anchors confirmed, causality `confirmed_at_path` 5/5); **X-SILENT-SAFE→`verified` 0/5** (causality `absent` 5/5 → no exemption → `inconclusive`); B-1 X-CROSS still `verified` 5/5 — `scripts/audit/shadow_m12c_prompt_carveout_run.out.txt`. Offline both ways: `test_m12_state_readback_exemption.py`, `test_m12b_state_gather.py` (incl. a foreign-spec genericity proof). |
+| **M1.2** | silent cross-path **write** confirmed via a code-gathered object-**STATE** read-back (not a write-record) | **DONE, committed `e4d5317`.** Three parts: **(A)** a SECOND guard exemption channel (`STATE_READBACK_EXEMPTION_REASON`, **disjoint from B-1**, `verified`-only) gated on three structural anchors AND-ed — owner==attacked ∧ caller!=owner (`caller_identity=confirmed`) **and payload-causality** (THIS attack's UNIQUE value present; causality is the false-positive gate). **(B)** a **deterministic object-state gather** (`select_object_state_endpoint`, target-agnostic resource-noun + object-scoping; mirrors B-1's HALF-1) — the model never found that path on its own (**0/5**), code now gathers it **5/5**. **(C)** a **prompt carve-out** (rule 5 / turn-2 / options-block) so a *system-gathered* read of the attacked object's own state counts as decisive — lifted VULN **3/5 → 5/5**. **Live-measured** (shadow, N=5, gemini-2.5-pro): X-SILENT-VULN→`verified` **5/5** (all 3 anchors confirmed, causality `confirmed_at_path` 5/5); **X-SILENT-SAFE→`verified` 0/5** (causality `absent` 5/5 → no exemption → `inconclusive`); B-1 X-CROSS still `verified` 5/5 — `scripts/audit/shadow_m12c_prompt_carveout_run.out.txt`. Offline both ways: `test_m12_state_readback_exemption.py`, `test_m12b_state_gather.py` (incl. a foreign-spec genericity proof). **⚠️ NARROWED by M1.4:** this channel yields whenever a pre-flight baseline exists (the state-jump gate governs), because payload-causality alone would have false-positived a securely-stripped mass-assignment case. Verdicts unchanged; strictly fewer exemptions. |
 | **M1.3** | **delete-type**, confirmed by a **NEGATIVE ASSERTION** (from-EXISTS-to-ABSENT), dual-track physical *or* logical | **DONE (this commit).** Two new mechanisms: a **PRE-FLIGHT read** (code GETs the victim object, scope-locked, BEFORE the DELETE — the **coincidence gate**: "it vanished" only proves a delete if "it existed & was active just before" is anchored) and a **dual-track negative-assertion anchor** (`_anchor_negative_assertion`) accepting **physical** removal (404/403/410) **or** **logical/soft** deletion (200 with a lifecycle field flipped, by generic vocabulary — **404 is NOT hardcoded**). A **third, disjoint** exemption channel (`DELETE_READBACK_EXEMPTION_REASON`) gated on pre-flight caller-identity **AND** the negative assertion. **Live-measured** (N=5, gemini-2.5-pro, fresh-seeded per run): X-DELETE-VULN-HARD→`verified` **5/5** (`confirmed_physical`), X-DELETE-VULN-SOFT→`verified` **5/5** (`confirmed_logical`), **X-DELETE-SAFE→`verified` 0/5** (`still_present`), **X-DELETE-CONTROL (object never existed)→`verified` 0/5** (`preflight_absent` — the coincidence gate held even though the AFTER read was also 404) — `scripts/audit/shadow_m13_delete_run.out.txt`. Offline: `test_m13_delete.py` (incl. foreign-spec genericity). |
-| **M1.4 (next)** | **mass-assignment** | Not started. ⚠️ Known hazard: **payload-causality's unique-value assumption breaks on low-entropy writes** (owner-field / boolean flips) — see ROADMAP §7. |
-| **M1.x (later)** | further shapes | Not started — each is one more格 of generalization. |
+| **M1.4** | **mass-assignment** — the attacker sneaks a privileged field (role/flag) into a write on the VICTIM's object; confirmed by a **LOW-ENTROPY STATE JUMP** | **DONE (this commit).** Payload-causality breaks here: the injected value is low-entropy, so "the field reads admin" cannot tell "I set it" from "it was already admin". Causality is instead proven by a **STATE JUMP** — every field the attack sent moved from a **KNOWN pre-flight state** to the injected value. **MISSING** (absent from a SUCCESSFUL 2xx pre-flight — privileged fields are commonly hidden) is a VALID original state, so `missing→injected` verifies (hidden-field escalation); `missing→missing` does not. A **request failure / non-2xx / unparseable** read is **UNKNOWN**, never MISSING → never `verified`, never a crash. New disjoint channel `STATE_JUMP_EXEMPTION_REASON`, gated on caller-identity AND the jump. **Live (N=5):** X-MASS-VULN present-value→`verified` 5/5 and MISSING→injected→`verified` 5/5; **X-MASS-SAFE present + missing→`verified` 0/5**; control (injected==pre-flight)→0/5. On SAFE the model raw-said `verified` and the gate refused every time. |
+| **M1.x (optional)** | further shapes (nested-object, multi-step) | Not started. M1's goal — *prove the mechanism generalizes* — is met at five shapes; more shapes are breadth, not a gate. |
 
 > **M2 — Shared Domain Model (later, NOT started):** a resource/endpoint relationship graph —
 > sink upstream observations (proxy/HAR/spec) into a shared layer every module can query, so the
@@ -177,10 +179,18 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
 
 ## Honest limits (do not over-read the green)
 
-- **Four vuln shapes, one target, N=5 each.** X-CROSS (write→write-record), X-EQUIV (read-type
-  semantic equivalence), X-SILENT (write→object-state), X-DELETE (delete→negative assertion).
-  mass-assignment, nested-object, multi-step, and noisier real audit logs are untested.
+- **Five vuln shapes, one target, N=5 each.** X-CROSS (write→write-record), X-EQUIV (read-type
+  semantic equivalence), X-SILENT (write→object-state), X-DELETE (delete→negative assertion), X-MASS (mass-assignment→
+  low-entropy state jump). nested-object, multi-step, and noisier real audit logs are untested.
   "Mechanism proven on these classes," not "verifier finished."
+- **Post-fix live no-regression: CONFIRMED across all five shapes** (`scripts/audit/shadow_m14_regress_run.out.txt`,
+  N=5 each, 30/30 runs clean, zero degraded). With the M1.4 routing fix in place: B-1 X-CROSS
+  `verified` **5/5** (still `write_record_readback_decisive`), X-SILENT-VULN `verified` **5/5**,
+  X-DELETE-VULN-HARD/SOFT `verified` **5/5** each (`confirmed_physical` / `confirmed_logical`), and
+  **every SAFE case 0 `verified`** (X-SILENT-SAFE `no_jump`, X-DELETE-SAFE `still_present`).
+  X-SILENT-VULN now exempts via `state_jump_causally_decisive` rather than
+  `state_readback_causally_decisive` — **that is the routing fix working as designed** (a pre-flight
+  baseline exists, so the stricter gate governs); the verdict is unchanged.
 - **Black-box boundary (mapped, M1.2):** a silent write with **no same-path GET and no relevant
   write-record** is **NOT confirmable by the model's unaided follow-up** — the model does not, on its
   own, fetch a *different* resource path that exposes the attacked object's state (measured 0/5; it

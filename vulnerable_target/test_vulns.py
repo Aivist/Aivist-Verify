@@ -438,6 +438,101 @@ def test_x_delete_responses_are_byte_identical_vuln_vs_safe(client):
 
 
 # -----------------------------------------------------------------------------
+# X-MASS-VULN (M1.4) — mass-assignment BOLA. Alice writes to Bob's object and sneaks in `role`,
+# a privileged field she must not be able to set. The write is an opaque 200 and there is no
+# same-path GET. Ground truth: REAL. The injected value is LOW-ENTROPY, so the pre-flight state
+# (role BEFORE the attack) is what makes the confirmation decisive.
+# -----------------------------------------------------------------------------
+
+_MASS_PLAN = "plan-unique-5b7e12c9d4"
+
+
+def test_x_mass_vuln_present_value_role_is_escalated(client):
+    # BEFORE: Bob's role is PRESENT with its original value.
+    before = client.get("/api/memberships/2", headers=_auth(ALICE_TOKEN))
+    assert before.status_code == 200
+    assert before.json() == {"id": 2, "owner_id": 2, "plan": "basic", "role": "member"}
+
+    write = client.patch(
+        "/api/users/2/membership", headers=_auth(ALICE_TOKEN),
+        json={"plan": _MASS_PLAN, "role": "admin"},
+    )
+    assert write.status_code == 200
+    assert write.json() == {"status": "ok"}          # opaque — same bytes as the SAFE mirror
+
+    # AFTER: the privileged field MOVED member -> admin on the VICTIM's object.
+    after = client.get("/api/memberships/2", headers=_auth(ALICE_TOKEN))
+    assert after.json() == {"id": 2, "owner_id": 2, "plan": _MASS_PLAN, "role": "admin"}
+
+
+def test_x_mass_vuln_missing_field_appears_after_attack(client):
+    # BEFORE: Carol's role is NULL, so the state read OMITS it entirely — the MISSING original
+    # state (a privileged field hidden from a non-privileged caller).
+    before = client.get("/api/memberships/3", headers=_auth(ALICE_TOKEN))
+    assert before.status_code == 200
+    assert before.json() == {"id": 3, "owner_id": 3, "plan": "basic"}
+    assert "role" not in before.json()
+
+    write = client.patch(
+        "/api/users/3/membership", headers=_auth(ALICE_TOKEN),
+        json={"plan": _MASS_PLAN, "role": "admin"},
+    )
+    assert write.json() == {"status": "ok"}
+
+    # AFTER: the hidden privileged field now EXISTS and holds the injected value.
+    after = client.get("/api/memberships/3", headers=_auth(ALICE_TOKEN))
+    assert after.json() == {"id": 3, "owner_id": 3, "plan": _MASS_PLAN, "role": "admin"}
+
+
+def test_x_mass_vuln_has_no_same_path_get(client):
+    assert client.get("/api/users/2/membership", headers=_auth(ALICE_TOKEN)).status_code == 405
+
+
+# -----------------------------------------------------------------------------
+# X-MASS-SAFE (M1.4) — SECURE mirror. Identical opaque 200, but an explicit allow-list binds only
+# `plan` and STRIPS `role`. Ground truth: SECURE — a `verified` is a FALSE POSITIVE.
+# -----------------------------------------------------------------------------
+
+def test_x_mass_safe_present_value_role_is_stripped(client):
+    before = client.get("/api/subscriptions/2", headers=_auth(ALICE_TOKEN))
+    assert before.json() == {"id": 2, "owner_id": 2, "plan": "basic", "role": "member"}
+
+    write = client.patch(
+        "/api/users/2/subscription", headers=_auth(ALICE_TOKEN),
+        json={"plan": _MASS_PLAN, "role": "admin"},
+    )
+    assert write.json() == {"status": "ok"}
+
+    # The LEGITIMATE field landed; the PRIVILEGED field was stripped and is UNCHANGED.
+    # That combination is exactly what defeats a naive "did any value I wrote appear?" oracle.
+    after = client.get("/api/subscriptions/2", headers=_auth(ALICE_TOKEN))
+    assert after.json() == {"id": 2, "owner_id": 2, "plan": _MASS_PLAN, "role": "member"}
+
+
+def test_x_mass_safe_missing_field_stays_missing(client):
+    before = client.get("/api/subscriptions/3", headers=_auth(ALICE_TOKEN))
+    assert "role" not in before.json()
+
+    client.patch(
+        "/api/users/3/subscription", headers=_auth(ALICE_TOKEN),
+        json={"plan": _MASS_PLAN, "role": "admin"},
+    )
+
+    after = client.get("/api/subscriptions/3", headers=_auth(ALICE_TOKEN))
+    assert after.json() == {"id": 3, "owner_id": 3, "plan": _MASS_PLAN}
+    assert "role" not in after.json()                # missing -> still missing: NO jump
+
+
+def test_x_mass_vuln_and_safe_write_responses_are_byte_identical(client):
+    vuln = client.patch("/api/users/2/membership", headers=_auth(ALICE_TOKEN),
+                        json={"plan": _MASS_PLAN, "role": "admin"})
+    safe = client.patch("/api/users/2/subscription", headers=_auth(ALICE_TOKEN),
+                        json={"plan": _MASS_PLAN, "role": "admin"})
+    assert vuln.status_code == safe.status_code == 200
+    assert vuln.content == safe.content              # identical {"status":"ok"}
+
+
+# -----------------------------------------------------------------------------
 # Auth is still required (the bugs are authorization bugs, not "no auth at all").
 # -----------------------------------------------------------------------------
 

@@ -68,21 +68,25 @@ exemption. **Live-measured** (shadow, N=5): X-CROSS→`verified` 5/5, X-SAFE→`
 5/5, no false verdict, reverse-guards intact — and **locked by an automated regression test**
 (`test_d18_b1_shadow_integration.py`, D22 closed).
 
-**Now confirmed on three further shapes:** **M1.1** (read-type semantic-equivalence, equal-length —
+**Now confirmed on four further shapes:** **M1.1** (read-type semantic-equivalence, equal-length —
 X-EQUIV-VULN→`verified` 5/5, X-EQUIV-SAFE→`failed` 5/5), **M1.2** (silent write confirmed via a
 **code-gathered object-STATE** read-back — X-SILENT-VULN→`verified` 5/5, X-SILENT-SAFE→`verified`
-**0/5**), and **M1.3** (**delete**-type confirmed by a **NEGATIVE ASSERTION** — X-DELETE-VULN
-hard+soft→`verified` 5/5 each, X-DELETE-SAFE and the never-existed CONTROL→`verified` **0/5**).
+**0/5**), **M1.3** (**delete**-type confirmed by a **NEGATIVE ASSERTION** — X-DELETE-VULN
+hard+soft→`verified` 5/5 each, X-DELETE-SAFE and the never-existed CONTROL→`verified` **0/5**), and
+**M1.4** (**mass-assignment** confirmed by a **LOW-ENTROPY STATE JUMP** — X-MASS-VULN present-value
+and MISSING→injected `verified` 5/5 each, X-MASS-SAFE and the no-jump CONTROL→`verified` **0/5**).
 B-1 not regressed throughout.
 
 **Not yet:** it does not yet *act* (shadow-only — the persisted verdict is still the rule
-oracle's; making the AI verdict authoritative is D19); and it is proven on **four vuln shapes,
+oracle's; making the AI verdict authoritative is D19); and it is proven on **five vuln shapes,
 one target, N=5 each**.
 
 **Bottom line:** the moat's hard-case proof point is met and committed, and now generalizes across
-**four shapes with zero false positives** — including one (delete) whose proof is an *absence*
-rather than a presence. What's left is further breadth (mass-assignment) and promotion (D19) —
-not the core "can it confirm?" question.
+**five shapes with zero false positives** — including one (delete) whose proof is an *absence*
+rather than a presence, and one (mass-assignment) that **broke the previous causality gate and
+forced it to be narrowed** — a real false positive found and closed, not a hypothetical.
+**M1 is complete**; what's left is promotion (D21 → D19) and the pre-real-target work — not the
+core "can it confirm?" question.
 
 > Detailed current snapshot (maturity, API summary, run/verify checklist) lives in
 > [`PROJECT_OVERVIEW.md`](./PROJECT_OVERVIEW.md); known gaps in [`TECH_DEBT.md`](./TECH_DEBT.md);
@@ -135,8 +139,24 @@ not the core "can it confirm?" question.
      **third, disjoint** exemption channel is gated on pre-flight caller-identity AND the negative
      assertion. Live (N=5): VULN hard+soft `verified` 5/5 each; **SAFE 0**; **CONTROL (object never
      existed) 0** — the AFTER read was also 404, but nothing was proven to exist.
-   - **M1.4 (next):** **mass-assignment**. ⚠️ Carries a known hazard — see §7.
-   - **M1.x (later):** further shapes.
+   - **M1.4 (✅ done):** **mass-assignment** — the attacker sneaks a privileged field (role/flag)
+     into a write on the VICTIM's object. Payload-causality BREAKS here: the value is LOW-ENTROPY,
+     so its mere presence cannot separate "I set it" from "it was already that". Causality is
+     proven instead by a **STATE JUMP** — every field the attack sent moved from a **KNOWN**
+     pre-flight state to the injected value. **MISSING** (absent from a SUCCESSFUL 2xx pre-flight)
+     is a VALID original state, so hidden-field escalation (`missing→injected`) verifies; a request
+     failure is **UNKNOWN** and never does. Live (N=5): VULN present + missing→injected `verified`
+     5/5; **SAFE present + missing 0/5**; control (injected == pre-flight) 0/5.
+     **Also fixed a real false positive:** on a securely-stripped case a legitimate co-submitted
+     field still satisfied payload-causality, so M1.2's channel would have exempted a SECURE case.
+     Routing now **prefers the state-jump gate whenever a pre-flight baseline exists** — strictly
+     fewer exemptions (proven by `test_HAZARD_...` and `test_RESIDUAL_FIX_...`).
+   - **M1.x (optional):** further shapes (nested-object, multi-step) — breadth, not a gate.
+
+   > **M1 IS COMPLETE.** Five shapes confirmed with zero false positives: write→write-record
+   > (B-1), read→semantics (M1.1), silent write→object-state (M1.2), delete→negative assertion
+   > (M1.3), mass-assignment→low-entropy state jump (M1.4). The "prove generalization"
+   > milestone that gated D19 is met. **Next line: D21 → D19 → pre-release → pre-real-target.**
 
    > **M2 — Shared Domain Model (later, NOT started):** a resource/endpoint relationship graph — sink
    > upstream observations (proxy / HAR / spec) into a shared layer every module can query, so the
@@ -213,8 +233,7 @@ shape, the decisive-evidence standard in the prompt must learn it too, or the tw
 > silently re-litigated.
 
 ### Phase — next vuln shapes (M1.x, the near ones)
-- **Mass-assignment — this is M1.4, the next shape to attempt.** ⚠️ **Known hazard, decide it up
-  front:** this shape writes *existing, low-entropy* fields (an owner/role id, a boolean flag), which
+- **Mass-assignment — ✅ DONE (M1.4).** Kept as the worked precedent for the hazard it hit: this shape writes *existing, low-entropy* fields (an owner/role id, a boolean flag), which
   **breaks payload-causality's unique-value assumption**. The injected value can equal a value that
   was already there (or that another run wrote), so "the value is present in the read-back" would no
   longer prove *this* attack caused it — the anti-false-positive gate would be asserting a
@@ -253,6 +272,19 @@ shape, the decisive-evidence standard in the prompt must learn it too, or the tw
 - **A two-account resource-ownership baseline.** The fuzzer today holds **one shared auth custody**
   and has **no map proving `id=2` belongs to a different user** — it is inferred from the attack's own
   path shape. Real targets need an explicit two-account ownership baseline.
+
+### Phase — next line now that M1 is complete (in order)
+- **D21** — promote the OpenAPI spec source to a declared config field (today it is the undeclared
+  `AI_DEEP_VERIFY_OPENAPI_SPEC` `getattr` seam), so the real catalog is reachable in normal use and
+  not only from measurement harnesses.
+- **D19** — promote the AI verdict from observe-only to **authoritative**. This was explicitly gated
+  on M1 proving generalization; that gate is now met (five shapes, zero FP). Decide the promotion
+  policy (e.g. let the AI verdict resolve only the rule oracle's `suspicious` band) with the full
+  evidence trail retained for audit.
+- **Then the pre-release register** (default `API_HOST` to 127.0.0.1, the 2-minute demo + recorded
+  HAR, `run_in_executor` for the similarity compute) and the **pre-real-target register**
+  (scope-lock hardening, the UUID wall, WAF circuit-breaker, multi-step auth macro, the two-account
+  ownership baseline) — both below.
 
 ### Phase — M2 (later)
 - **Shared resource/dependency graph** (RESTler-style request-dependency graph from OpenAPI /

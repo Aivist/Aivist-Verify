@@ -82,7 +82,7 @@
   radar tests added; Nuclei pipeline still bare.
 - **Where:** `backend/tests/test_api_endpoints.py` (API smoke); `test_step9_proxy.py`
   (proxy radar, Step 9); plus pruner, custody, Step D extraction in other files.
-  Total backend suite: **250 tests** (grew from an old 73 via the verdict-oracle, B-2.2
+  Total backend suite: **285 tests** (grew from an old 73 via the verdict-oracle, B-2.2
   guard, cross-path, catalog, and B-1 write-record + shadow-integration tests). See
   [`STATUS.md`](./STATUS.md).
 - **Covered:** FastAPI `TestClient` over isolated per-test SQLite with Gemini,
@@ -185,7 +185,7 @@
   when the spec declares them, `summary`/`description` deliberately not surfaced — + HAR
   stub raising `NotImplementedError` + dispatch) is wired into `_shadow_endpoint_catalog`
   via an optional `catalog_source`. With **no source configured the output is byte-identical
-  to the old placeholder (zero regression)**; the real 32-route surface is used only when
+  to the old placeholder (zero regression)**; the real 36-route surface is used only when
   a spec source is explicitly provided. Human-owned tests (`test_endpoint_catalog.py`)
   cover this; the B1/B2 pair is the allowed-to-fail proof (placeholder has 0 cross-resource
   endpoints; real catalog reaches them, incl. `GET /api/invoices/{invoice_id}`).
@@ -463,8 +463,73 @@
   byte-verified target ground truth X-DELETE-VULN-HARD/SOFT + X-DELETE-SAFE in `test_vulns.py`.
 - **Auditability (additive, observe-only):** the result surfaces `preflight_caller_identity_anchor`
   so the transcript shows the anchor the gate ACTUALLY used, not the AFTER-read one.
-- **Next (M1.4):** mass-assignment — ⚠️ it writes low-entropy fields, which breaks
-  payload-causality's unique-value assumption; expect it to need its own anchor (ROADMAP §7).
+### M1.4 (✅ DONE) — mass-assignment confirmed by a LOW-ENTROPY STATE JUMP
+- **What:** the FIFTH and final M1 shape — the attacker sneaks a privileged field (`role`,
+  `is_admin`, `tier`) into a write on the VICTIM's object. The response is a byte-identical
+  `{"status":"ok"}` whether the field was bound or stripped. Achieved with **0 false positives**;
+  **M1 is complete.**
+- **The problem it exposed:** payload-causality (M1.2's false-positive gate) assumes the written
+  value is **UNIQUE** — "my value is in the object, so I wrote it". Mass-assignment writes
+  **LOW-ENTROPY** values (`"admin"`, `true`), where presence proves nothing: it cannot tell
+  "I set it" from "it was already that". The hazard was flagged in ROADMAP §7 *before* building,
+  then demonstrated empirically.
+- **Landed:**
+  1. **STATE-JUMP anchor** (`_anchor_state_jump`) — causality proven by **movement**, not presence:
+     **every** field the attack sent must have moved from a **KNOWN pre-flight state** to the
+     injected value. Checking all sent fields is strictly stronger than checking one named field
+     (and survives the `path_segment` attack shape, which keeps ids derivable but does not name
+     the injected field).
+  2. **MISSING is a valid original state, UNKNOWN is not.** A field absent from a **SUCCESSFUL
+     2xx, parseable** pre-flight read is genuinely MISSING — privileged fields are commonly hidden
+     — so `missing→injected` verifies (hidden-field escalation). A request failure, a non-2xx, or
+     unparseable JSON is **UNKNOWN**: it can never yield `confirmed_jump`, so it can never
+     `verify`. The anchor is wrapped so it never raises; a malformed post-read degrades to
+     `inconclusive`, never a crash.
+  3. **A FOURTH, DISJOINT exemption channel** (`STATE_JUMP_EXEMPTION_REASON`), `verified`-only,
+     cross-path-only, gated on caller-identity **AND** `confirmed_jump`.
+- **A REAL false positive found and fixed (the narrowing).** On a mass-assignment **SAFE** case
+  (privileged field stripped by an allow-list, legitimate co-submitted field lands) the observed
+  anchors were `caller_identity=confirmed` + `payload_causality=confirmed_in_body` — meaning
+  **M1.2's channel would have exempted a SECURE case**. The fix narrows M1.2: whenever a pre-flight
+  baseline exists, the state-jump gate **governs** and the payload-causality channel yields. This
+  is a narrowing, not a weakening — it can only ever produce **fewer** exemptions. Locked by
+  `test_HAZARD_m12_causality_would_false_positive_on_mass_assignment_safe`.
+- **Residual fix (routing priority).** Routing originally chose the state-jump gate by the
+  *declared attack type*, so an attack **mistyped** as plain BOLA (but carrying a body that
+  co-submits a low-entropy field) would still have fallen back to payload-causality. Routing now
+  keys on **evidence, not declaration**: a pre-flight state exists → state-jump governs, whatever
+  the attack was called. The pre-flight read was widened from delete-or-mass to **all write
+  methods** to make that baseline available. Locked by
+  `test_RESIDUAL_FIX_mass_assignment_mistyped_as_BOLA_safe_stays_inconclusive`; the other four
+  shapes are unchanged in verdict (three of them now exempt via the state-jump channel instead —
+  same `verified`, stricter reason).
+- **Live-measured** (N=5 each, gemini-2.5-pro, fresh-seeded per run; transcripts
+  `scripts/audit/shadow_m14_mass_assignment_run.out.txt` and `…_postfix_run.out.txt`):
+  X-MASS-VULN present-value→`verified` **5/5**; X-MASS-VULN MISSING→injected→`verified` **5/5**;
+  **X-MASS-SAFE present→`verified` 0/5** and **missing→`verified` 0/5**; **CONTROL
+  (injected == pre-flight value, no jump)→`verified` 0/5**. On the SAFE cases the model raw-said
+  `verified` and **the gate refused every time** — the line is held by code, not by model
+  compliance.
+- **Post-fix live NO-REGRESSION: CONFIRMED, all four prior shapes** (`scripts/audit/shadow_m14_regress_run.out.txt`,
+  N=5 each, **30/30 runs clean, zero degraded**). An earlier attempt was truncated by the Gemini
+  project's monthly spending cap (27/55 runs `429 RESOURCE_EXHAUSTED` → `status=degraded`, no
+  verdict — graceful, but not data); it was re-run in full once budget was restored rather than
+  shipped as an offline-only gap. Results with the routing fix in place: B-1 X-CROSS `verified`
+  **5/5** (`write_record_readback_decisive`, pre-flight `None` — a record path resolves no object
+  state, exactly as designed); X-SILENT-VULN `verified` **5/5**; X-DELETE-VULN-HARD `verified`
+  **5/5** (`confirmed_physical`); X-DELETE-VULN-SOFT `verified` **5/5** (`confirmed_logical`);
+  **X-SILENT-SAFE and X-DELETE-SAFE `verified` 0/5** (`no_jump` / `still_present`).
+- **Expected channel shift, not a regression:** X-SILENT-VULN now exempts via
+  `state_jump_causally_decisive` instead of `state_readback_causally_decisive`. It is a POST with a
+  JSON body whose object-state endpoint resolves, so a pre-flight baseline exists and the **stricter**
+  gate governs by construction. Verdict unchanged (`verified` 5/5), `confirmed_jump` 5/5. The DELETE
+  cases keep their own channel (no body → `no_sent_fields` → the jump cannot govern), so the four
+  channels remain disjoint under the new routing.
+- **Offline:** `test_m14_mass_assignment.py` (state-jump truth table incl. MISSING vs UNKNOWN,
+  the guard channel, the hazard test, the residual-fix test, integrated both-ways). New
+  byte-verified target ground truth X-MASS-VULN / X-MASS-SAFE in `test_vulns.py`.
+- **Still open (unchanged by M1.4):** D19 (verdict authority) and D21 (declared spec field) —
+  these are now the next line, since the M1 gate on D19 is met.
 
 ### Scope-lock hardening (OPEN) — prerequisite for real targets
 - **What:** consolidate the duplicated host-scope checks — the fuzzer's `_send_request` /

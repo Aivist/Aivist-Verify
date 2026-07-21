@@ -151,9 +151,12 @@ def _resp(status: int, body: str) -> dict:
             "response_body": body, "elapsed_ms": 5, "url": BASE_URL}
 
 
-def _fake_send(state_path: str, state_body: str, record_body: str = '{"events":[]}'):
+def _fake_send(state_path: str, state_body: str, record_body: str = '{"events":[]}',
+               pre_body: str = None):
     """Silent opaque 200 on every write; the audit-log probe returns `record_body` (empty by
     default, so HALF-1 steps back); the object's own cross-path STATE read returns state_body."""
+    _calls = {"n": 0}
+
     async def _send(client, parsed_request, base_url, custody=None):
         method = str(parsed_request.get("method", "GET")).upper()
         path = parsed_request.get("path", "")
@@ -162,6 +165,11 @@ def _fake_send(state_path: str, state_body: str, record_body: str = '{"events":[
         if path == RECORD_PATH:
             return _resp(200, record_body)                   # HALF-1 object-scope probe
         if path == state_path:
+            # M1.4(fix): the FIRST call is the pre-flight baseline (any write now takes one);
+            # later calls are the post-attack read-back.
+            _calls["n"] += 1
+            if _calls["n"] == 1 and pre_body is not None:
+                return _resp(200, pre_body)
             return _resp(200, state_body)                    # the cross-path STATE read-back
         return _resp(200, '{"ok":true}')
     return _send
@@ -195,8 +203,9 @@ def _enable(monkeypatch):
 
 
 def _run(parsed_request, payload, *, state_path, state_body, turn1, turn2, monkeypatch,
-         record_body='{"events":[]}'):
-    monkeypatch.setattr(dv, "_send_request", _fake_send(state_path, state_body, record_body))
+         record_body='{"events":[]}', pre_body=None):
+    monkeypatch.setattr(dv, "_send_request",
+                        _fake_send(state_path, state_body, record_body, pre_body))
     monkeypatch.setattr(dv, "_gemini_generate", _fake_gemini(turn1, turn2))
     return asyncio.run(dv.execute_deep_verification(
         parsed_request=parsed_request, payload=payload, base_url=BASE_URL,
@@ -222,6 +231,7 @@ def test_vuln_state_readback_exemption_fires_and_verified_stands(monkeypatch):
         _GIZMO_WRITE, _BOLA,
         state_path="/api/gizmos/2",
         state_body=json.dumps({"id": 2, "owner_id": 2, "code": UNIQUE}),
+        pre_body=json.dumps({"id": 2, "owner_id": 2, "code": "gizmo_bob_v0"}),   # ORIGINAL value
         turn1=_request_turn("/api/gizmos/2"),
         turn2=_verdict_turn("verified", evidence_path="code"),
         monkeypatch=monkeypatch,
@@ -236,7 +246,9 @@ def test_vuln_state_readback_exemption_fires_and_verified_stands(monkeypatch):
     # THE FIX: a correct cross-path STATE confirmation now reaches verified.
     assert res.ai_verdict_raw == "verified"
     assert res.ai_verdict == "verified"
-    assert res.guard_override == STATE_READBACK_EXEMPTION_REASON
+    # M1.4(fix): with a pre-flight baseline available the stricter STATE-JUMP gate governs.
+    # Same verdict, stricter evidence.
+    assert res.guard_override == dv.STATE_JUMP_EXEMPTION_REASON
 
 
 # ---- (SAFE) payload absent -> (3) fails -> NOT exempt -> stays inconclusive ---------------
@@ -288,6 +300,7 @@ def test_code_gather_overrides_model_choosing_its_own_object(monkeypatch):
         _GIZMO_WRITE, _BOLA,
         state_path="/api/gizmos/2",                                # what the CODE gathers
         state_body=json.dumps({"id": 2, "owner_id": 2, "code": UNIQUE}),
+        pre_body=json.dumps({"id": 2, "owner_id": 2, "code": "gizmo_bob_v0"}),   # ORIGINAL value
         turn1=_request_turn("/api/gizmos/1"),                      # model asks for its OWN object
         turn2=_verdict_turn("verified", evidence_path="code"),
         monkeypatch=monkeypatch,
@@ -297,7 +310,9 @@ def test_code_gather_overrides_model_choosing_its_own_object(monkeypatch):
     assert res.follow_up_request["path"] != "/api/gizmos/1"
     assert res.caller_identity_anchor == "confirmed"
     assert res.ai_verdict == "verified"
-    assert res.guard_override == STATE_READBACK_EXEMPTION_REASON
+    # M1.4(fix): with a pre-flight baseline available the stricter STATE-JUMP gate governs.
+    # Same verdict, stricter evidence.
+    assert res.guard_override == dv.STATE_JUMP_EXEMPTION_REASON
 
 
 # ---- (guard) read-back exposes no owner/subject field -> (1) fails -> NOT exempt ----------

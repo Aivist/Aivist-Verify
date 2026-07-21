@@ -124,7 +124,10 @@ SYSTEM_PROMPT = (
     "attack, a PAIR of reads THE SYSTEM ITSELF took — a BEFORE read (taken before your attack) "
     "showing the attacked object existed and was active, and an AFTER read of that SAME object "
     "showing it is now gone (HTTP 404/403) OR its status/lifecycle field flipped to a "
-    "deleted/archived value. In case (c) commit "
+    "deleted/archived value; or (e) for a MASS-ASSIGNMENT attack (you injected an extra field "
+    "into a write), a PAIR of reads THE SYSTEM ITSELF took — a BEFORE read (taken before your "
+    "attack) recording that field's ORIGINAL state, and an AFTER read of that SAME object showing "
+    "the field now holds the value YOU injected, having MOVED from that original state. In case (c) commit "
     "only after checking BOTH that the object returned is the one the attack targeted AND what that "
     "state now holds for the field your attack wrote: if the value your attack sent is present, the "
     "unauthorized write landed (\"verified\"); if the state still holds a different/original value, "
@@ -133,7 +136,14 @@ SYSTEM_PROMPT = (
     "flipped to deleted/archived: a missing or deleted AFTER WITHOUT the system's BEFORE existence "
     "proof is NOT decisive (the object may never have existed, or was already deleted) -> answer "
     "\"inconclusive\"; if the AFTER read shows the object still present and unchanged, the delete "
-    "did not land (\"failed\"). Cases (c) and (d) NEVER apply to a read YOU chose: a DIFFERENT "
+    "did not land (\"failed\"). In case (e) the ORIGINAL state is what makes it decisive, because "
+    "the injected value is LOW-ENTROPY: the field merely READING your value proves nothing (it may "
+    "already have held it). Commit \"verified\" ONLY if the field MOVED — it was ABSENT from the "
+    "system's BEFORE read (sensitive fields are often hidden from you, and absent->your value IS a "
+    "real escalation), or it held a DIFFERENT value there. If the field still holds its BEFORE "
+    "value, is still absent, or your injected value equals what the BEFORE read already showed, "
+    "the escalation did NOT land -> \"failed\" or \"inconclusive\", NEVER \"verified\". Without "
+    "the system's BEFORE read, answer \"inconclusive\". Cases (c), (d) and (e) NEVER apply to a read YOU chose: a DIFFERENT "
     "endpoint you picked yourself, or one that merely exposes a field with the SAME NAME as what "
     "you wrote, is NOT the same state — matching field names across different resources/paths do "
     "NOT make a read-back decisive, so you MUST answer \"inconclusive\" (not \"failed\", not "
@@ -220,6 +230,12 @@ existed and was active) paired with this AFTER read: if the object is now gone (
 status/lifecycle field flipped to a deleted/archived value, the unauthorized delete landed
 ("verified"); if it is still present and unchanged, it did not ("failed"). Without the system's
 BEFORE existence proof, a missing/deleted AFTER is NOT decisive — answer "inconclusive".
+Or (e) for a MASS-ASSIGNMENT attack, the SYSTEM's BEFORE read (in the note above, recording the
+original state of the field you injected) paired with this AFTER read: commit "verified" ONLY if
+that field now holds YOUR injected value AND it MOVED to get there — it was ABSENT in the BEFORE
+read, or held a DIFFERENT value. The value merely matching proves nothing (it is low-entropy and
+may already have been that). Unchanged, still absent, or injected == the BEFORE value -> the
+escalation did not land ("failed"/"inconclusive"), NEVER "verified".
 A DIFFERENT endpoint YOU chose that merely exposes a field with the same NAME as what you wrote
 is NOT the same state — if that is all you have (or the written field is absent, or nothing
 decisive was observed), you MUST answer "inconclusive"; do not fall back to "failed", and do not
@@ -288,6 +304,10 @@ class DeepVerificationResult:
     pre_flight_status: Optional[int] = None
     negative_assertion_anchor: Optional[str] = None
     preflight_caller_identity_anchor: Optional[str] = None
+    # M1.4 mass-assignment (observe-first, gates ONLY the mass-assignment exemption):
+    #   "confirmed_jump" | "no_jump" | "preflight_unknown" | "postread_unknown"
+    #   | "no_sent_fields" | "indeterminate" | None
+    state_jump_anchor: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -321,6 +341,12 @@ STATE_READBACK_EXEMPTION_REASON = "state_readback_causally_decisive"
 # or soft-deleted (status flipped). The pre-flight existence proof is the coincidence gate — a
 # missing/deleted read-back alone is never enough. Computed by the caller and passed as a boolean.
 DELETE_READBACK_EXEMPTION_REASON = "delete_readback_negative_assertion_decisive"
+# M1.4: a FOURTH exemption channel, for MASS-ASSIGNMENT. Its values are LOW-ENTROPY, so
+# payload-causality (presence of a unique value) cannot prove causation. A cross-path "verified"
+# is exempted ONLY when code confirms a STATE JUMP: every field the attack sent moved from a KNOWN
+# pre-flight state (a present value, or proven-MISSING via a SUCCESSFUL pre-flight) to the value
+# this attack injected. A failed/unparseable pre-flight or post read-back is UNKNOWN, never MISSING.
+STATE_JUMP_EXEMPTION_REASON = "state_jump_causally_decisive"
 
 
 def _normalize_path(path: Optional[str]) -> str:
@@ -343,6 +369,7 @@ def _apply_cross_resource_guard(
     write_record_decisive: bool = False,
     state_readback_decisive: bool = False,
     delete_readback_decisive: bool = False,
+    state_jump_decisive: bool = False,
 ):
     """Structural backstop. Returns (final_verdict, decision_reason).
 
@@ -384,8 +411,17 @@ def _apply_cross_resource_guard(
     cross-path read-back, and is DISJOINT (this shape has no written value, so the state-readback
     channel — which requires payload-causality — never fires for it, and vice versa).
 
+    M1.4 MASS-ASSIGNMENT EXEMPTION (a FOURTH channel): a cross-path "verified" is ALSO kept
+    decisive when `state_jump_decisive` is True — i.e. the caller has structurally confirmed a
+    STATE JUMP: every field the attack sent moved from a KNOWN pre-flight state to the value this
+    attack injected. Low-entropy values make mere presence meaningless, so only the jump counts.
+    Disjoint from the M1.2 state channel: the caller routes a mass-assignment-typed attack here and
+    suppresses the payload-causality channel for it (that channel would otherwise confirm on a
+    SECURE allow-list target, where the legitimate field lands while the privileged one is stripped).
+
     Method-agnostic and target-agnostic: compares path strings; `write_record_decisive`,
-    `state_readback_decisive` and `delete_readback_decisive` are computed by the caller as booleans.
+    `state_readback_decisive`, `delete_readback_decisive` and `state_jump_decisive` are all
+    computed by the caller as booleans.
     """
     if verdict not in ("verified", "failed"):
         return verdict, None
@@ -400,6 +436,8 @@ def _apply_cross_resource_guard(
         return verdict, STATE_READBACK_EXEMPTION_REASON
     if verdict == "verified" and delete_readback_decisive:
         return verdict, DELETE_READBACK_EXEMPTION_REASON
+    if verdict == "verified" and state_jump_decisive:
+        return verdict, STATE_JUMP_EXEMPTION_REASON
     return "inconclusive", CROSS_RESOURCE_OVERRIDE_REASON
 
 
@@ -1023,6 +1061,126 @@ def _anchor_negative_assertion(
     return "indeterminate"
 
 
+# ==============================================================================
+# M1.4 — MASS-ASSIGNMENT: the STATE-JUMP causality anchor (target-agnostic).
+#
+# WHY a new anchor: mass-assignment writes LOW-ENTROPY values (a role, a tier, a boolean).
+# M1.2's payload-causality assumes the injected value is effectively UNIQUE, so its mere
+# PRESENCE in the read-back proves the write landed. That assumption BREAKS here: "the field
+# reads admin" cannot distinguish "I set it" from "it was already admin". Decisive causality
+# for this shape is therefore a STATE JUMP — the field moved FROM a KNOWN pre-flight state TO
+# the value this attack injected.
+#
+# THE CRITICAL DISTINCTION (this is where a false positive hides):
+#   * MISSING  — the field is ABSENT from a SUCCESSFUL (2xx, parseable) pre-flight read. This is
+#                a VALID original state: sensitive fields are routinely hidden from non-privileged
+#                callers, so MISSING -> injected is a REAL escalation and must be able to verify.
+#   * UNKNOWN  — the pre-flight (or the post read-back) FAILED, was non-2xx, or was unparseable.
+#                The original state is unknown, so NOTHING can be attributed to this attack.
+# MISSING may verify; UNKNOWN may never.
+#
+# The gate requires EVERY field the attack sent to jump. That is deliberately stricter than
+# checking one nominated field: on a secure allow-list target the legitimate field still lands
+# while the privileged one is stripped, so an "any field jumped" rule would confirm a SECURE
+# case. Requiring all of them means a stripped field alone defeats the exemption.
+# ==============================================================================
+
+# Generic vocabulary for an attack that DECLARES itself a mass-assignment / over-posting attempt.
+# Read from the payload the attack itself carries (same runtime-param principle as target_param /
+# payload_string) — no target path, field or tag is hardcoded.
+_MASS_ASSIGNMENT_TYPE_TOKENS = frozenset({
+    "massassignment", "overposting", "overpost", "overposted", "autobinding",
+})
+
+
+def _is_mass_assignment_payload(payload: Optional[Dict[str, Any]]) -> bool:
+    """True iff the attack's own payload declares a mass-assignment/over-posting attempt
+    (e.g. type "MASS_ASSIGNMENT", "mass-assignment", "MassAssignment", "overposting").
+    Target-agnostic: it reads the attack's declared type, never a target's field or path."""
+    tokens = _field_tokens((payload or {}).get("type"))
+    # Joined forms ("overposting") and camelCase/underscore-split forms ("OverPost" -> over+post,
+    # "MASS_ASSIGNMENT" -> mass+assignment) must both match.
+    if {"mass", "assignment"} <= tokens:
+        return True
+    if "over" in tokens and tokens & {"post", "posting", "posted"}:
+        return True
+    return bool(tokens & _MASS_ASSIGNMENT_TYPE_TOKENS)
+
+
+def _find_field_state(parsed: Any, field: Any):
+    """(present, value) for `field` anywhere in a parsed JSON structure — the first record that
+    carries the key wins. `present=False` means the field is ABSENT from this (successfully
+    parsed) document, i.e. the MISSING state. Never raises."""
+    try:
+        for rec in _iter_records(parsed):
+            if isinstance(rec, dict) and field in rec:
+                return True, rec[field]
+    except Exception:
+        return False, None
+    return False, None
+
+
+def _anchor_state_jump(
+    pre_status: Optional[int], pre_body: Optional[str],
+    post_status: Optional[int], post_body: Optional[str],
+    sent_fields: Optional[Dict[str, Any]],
+) -> str:
+    """The mass-assignment decisive-evidence anchor (replaces payload-causality for this shape).
+
+    Confirms that EVERY field this attack sent jumped from its KNOWN pre-flight state to the
+    value the attack injected. Returns:
+      "confirmed_jump"    — every sent field: post == injected AND (pre was MISSING, or pre held a
+                            DIFFERENT value). The only decisive result.
+      "no_jump"           — some sent field did not move: post != injected, post still MISSING,
+                            post still equals its pre-flight value, or injected == pre-flight value
+                            (indistinguishable — the low-entropy trap).
+      "preflight_unknown" — no pre-flight, non-2xx, or unparseable: ORIGINAL STATE UNKNOWN. Not the
+                            same as MISSING; nothing may be attributed to this attack.
+      "postread_unknown"  — the post-attack read-back failed / non-2xx / unparseable JSON.
+      "no_sent_fields"    — the attack carried no body fields to reason about.
+      "indeterminate"     — anything unexpected. NEVER raises; degrades to a non-decisive value.
+    """
+    try:
+        if not sent_fields or not isinstance(sent_fields, dict):
+            return "no_sent_fields"
+
+        # --- the ORIGINAL state must be KNOWN (a successful, parseable pre-flight read) ---
+        if pre_status is None or not (200 <= int(pre_status) < 300):
+            return "preflight_unknown"
+        try:
+            pre_json = json.loads(pre_body) if pre_body else None
+        except Exception:
+            return "preflight_unknown"
+        if pre_json is None:
+            return "preflight_unknown"
+
+        # --- the POST-attack state must also be KNOWN ---
+        if post_status is None or not (200 <= int(post_status) < 300):
+            return "postread_unknown"
+        try:
+            post_json = json.loads(post_body) if post_body else None
+        except Exception:
+            return "postread_unknown"
+        if post_json is None:
+            return "postread_unknown"
+
+        for _field, _sent in sent_fields.items():
+            _pre_present, _pre_val = _find_field_state(pre_json, _field)
+            _post_present, _post_val = _find_field_state(post_json, _field)
+            # The field must now HOLD the value this attack injected...
+            if not _post_present:
+                return "no_jump"                      # still missing -> nothing landed
+            if _scalar_str(_post_val) != _scalar_str(_sent):
+                return "no_jump"                      # holds something else -> not ours
+            # ...and it must have MOVED to get there. pre MISSING -> a real jump; pre holding the
+            # SAME value -> indistinguishable from "it was already that", so NOT decisive.
+            if _pre_present and _scalar_str(_pre_val) == _scalar_str(_sent):
+                return "no_jump"
+        return "confirmed_jump"
+    except Exception:
+        return "indeterminate"
+
+
 async def execute_deep_verification(
     parsed_request: Dict[str, Any],
     payload: Optional[Dict[str, Any]],
@@ -1125,7 +1283,13 @@ async def execute_deep_verification(
             # resolver. Scope-locked like every code-issued request. A failure/absence here is NOT
             # fatal — it just means existence is unproven, so the negative assertion cannot confirm
             # and the verdict stays inconclusive (never a false "verified").
-            if payload and _is_delete_method(attack_req.get("method")):
+            # M1.4 reuses this same pre-flight to capture the ORIGINAL state of the fields the
+            # attack injects (low-entropy values need a jump, not mere presence).
+            # M1.4(fix): fire for ANY write. The stricter state-jump gate can only govern where a
+            # pre-flight baseline exists, so the baseline must not depend on how the attack DECLARED
+            # itself — a mass-assignment mistyped as plain BOLA would otherwise fall back to the
+            # weaker payload-causality channel (the mixed-field false positive).
+            if payload and _is_write_method(attack_req.get("method")):
                 _pf_attacked_id = _attacked_object_id(
                     baseline_req.get("path"), attack_req.get("path"), payload
                 )
@@ -1378,6 +1542,10 @@ async def execute_deep_verification(
             # M1.3: for a DELETE with a pre-flight, this same gather is the AFTER read of the
             # from-exists-to-absent pair (the BEFORE read was taken pre-attack).
             _is_delete_gather = _is_delete_method(attack_req.get("method")) and pre_flight_result is not None
+            _is_mass_gather = (
+                pre_flight_result is not None
+                and isinstance(attack_req.get("body"), dict) and bool(attack_req.get("body"))
+            )
             decision = "request_more"
             next_request = {
                 "method": "GET",
@@ -1395,7 +1563,11 @@ async def execute_deep_verification(
                 ),
             }
             followup_is_code_gathered = True
-            gathered_kind = "delete_state" if _is_delete_gather else "state"
+            gathered_kind = (
+                "delete_state" if _is_delete_gather
+                else "mass_state" if _is_mass_gather
+                else "state"
+            )
 
         # ---------------- If verdict now, we're done ----------------
         if decision != "request_more" or not next_request.get("path"):
@@ -1517,6 +1689,23 @@ async def execute_deep_verification(
                     "did not land. The BEFORE read is what makes a missing/deleted AFTER decisive: "
                     "the object provably existed first.\n\n"
                 ) + turn2_msg
+            elif gathered_kind == "mass_state":
+                _pf_status = (pre_flight_result or {}).get("status_code")
+                _pf_body = (pre_flight_result or {}).get("response_body")
+                turn2_msg = (
+                    "NOTE: Your attack injected extra field(s) into a write (mass assignment). "
+                    "BEFORE issuing it, the system read the ATTACKED OBJECT'S OWN state, which "
+                    "records the ORIGINAL state of those field(s):\n"
+                    f"  BEFORE (system-taken): HTTP {_pf_status} | "
+                    f"{(_pf_body or '')[:_EVIDENCE_BODY_MAX]}\n"
+                    "AFTER your attack, the system read that SAME object again (verbatim below, "
+                    "also NOT your choice). The injected values are LOW-ENTROPY, so the field merely "
+                    "READING your value proves nothing — it may already have held it. It is decisive "
+                    "ONLY if the field MOVED: absent in the BEFORE read (sensitive fields are often "
+                    "hidden from you — absent->your value IS a real escalation), or holding a "
+                    "DIFFERENT value there. If it is unchanged, still absent, or your value equals "
+                    "what BEFORE already showed, the escalation did not land.\n\n"
+                ) + turn2_msg
             elif gathered_kind == "state":
                 turn2_msg = (
                     "NOTE: Because the resource you attacked has no same-path read-back and no "
@@ -1612,9 +1801,36 @@ async def execute_deep_verification(
         # attacked by the caller) — only the unique-value-landed causality separates them. The
         # channel is DISJOINT from B-1: it never fires on a write-record path (those go through
         # the content-match exemption), so B-1 / D23 / D23b are untouched.
+        # M1.4 DISJOINTNESS (a NARROWING, not a weakening): a mass-assignment attack is routed to
+        # its own channel below and must NOT be exempted by payload-causality. Verified hazard: on a
+        # SECURE allow-list target the LEGITIMATE field's unique value still lands, so
+        # payload-causality confirms and this channel would exempt a SECURE case — a false positive.
+        # The unique-value path is untouched for every other shape (see test_m14_mass_assignment.py).
+        # M1.4(fix) ROUTING PRIORITY: the STATE-JUMP gate is strictly stricter than
+        # payload-causality (it demands a proven move from a KNOWN pre-flight state, not the mere
+        # presence of a written value). Whenever a pre-flight baseline exists for a body-write, the
+        # state-jump gate GOVERNS and payload-causality is suppressed — regardless of how the attack
+        # declared its type. This closes the mixed-field false positive: on a SECURELY-stripped case
+        # a legitimate co-submitted field still satisfies payload-causality, so the weaker gate would
+        # exempt a SECURE case. Routing only; no gate's own conditions are changed, and suppressing
+        # the weaker channel can only REDUCE exemptions.
+        _sent_fields = attack_req.get("body") if isinstance(attack_req.get("body"), dict) else None
+        _state_jump: Optional[str] = None
+        if pre_flight_result is not None and _sent_fields:
+            _state_jump = _anchor_state_jump(
+                pre_flight_result.get("status_code"), pre_flight_result.get("response_body"),
+                (follow_up_response or {}).get("status_code"),
+                (follow_up_response or {}).get("body"),
+                _sent_fields,
+            )
+        # "no_sent_fields" means the jump could not be evaluated at all (e.g. a DELETE has no body),
+        # so it must NOT suppress the other channels.
+        _state_jump_governs = _state_jump not in (None, "no_sent_fields")
+
         _state_readback_decisive = (
             _follow_up_performed
             and not _fu_is_write_record
+            and not _state_jump_governs
             and _caller_anchor == "confirmed"
             and _causality_anchor in ("confirmed_at_path", "confirmed_in_body")
         )
@@ -1650,6 +1866,22 @@ async def execute_deep_verification(
             and _neg_assertion in ("confirmed_physical", "confirmed_logical")
         )
 
+        # M1.4 MASS-ASSIGNMENT EXEMPTION — the FOURTH channel. Decisive ONLY when:
+        #   * caller-identity confirms on the read-back (owner == attacked AND caller != owner), AND
+        #   * the STATE JUMP confirms: EVERY field the attack sent moved from a KNOWN pre-flight
+        #     state (a present value, or proven-MISSING via a SUCCESSFUL 2xx pre-flight) to the
+        #     value this attack injected.
+        # A failed/non-2xx/unparseable pre-flight or post read-back is UNKNOWN -> never decisive.
+        # "post field == injected" ALONE is never enough: low-entropy values make presence
+        # meaningless, which is exactly the false positive this gate exists to stop.
+        _state_jump_decisive = (
+            _follow_up_performed
+            and not _fu_is_write_record
+            and _state_jump_governs
+            and _caller_anchor == "confirmed"
+            and _state_jump == "confirmed_jump"
+        )
+
         _final_verdict, _override = _apply_cross_resource_guard(
             _raw_verdict,
             attack_req.get("path", ""),
@@ -1658,6 +1890,7 @@ async def execute_deep_verification(
             write_record_decisive=_content_match,
             state_readback_decisive=_state_readback_decisive,
             delete_readback_decisive=_delete_readback_decisive,
+            state_jump_decisive=_state_jump_decisive,
         )
         if _override == WRITE_RECORD_EXEMPTION_REASON:
             logger.info(
@@ -1674,6 +1907,14 @@ async def execute_deep_verification(
                 "downgraded). attacked_id=%r caller_id=%r.",
                 _normalize_path(_fu_path), _caller_anchor, _causality_anchor,
                 _final_verdict, attacked_object_id, caller_object_id,
+            )
+        elif _override == STATE_JUMP_EXEMPTION_REASON:
+            logger.info(
+                "[DEEP-VERIFY] Mass-assignment exemption: every field this attack sent JUMPED from "
+                "its known pre-flight state to the injected value (state_jump=%r, caller_identity=%r) "
+                "-> verdict %r kept decisive (NOT downgraded). attacked_id=%r caller_id=%r follow_up=%r.",
+                _state_jump, _caller_anchor, _final_verdict,
+                attacked_object_id, caller_object_id, _normalize_path(_fu_path),
             )
         elif _override == DELETE_READBACK_EXEMPTION_REASON:
             logger.info(
@@ -1725,4 +1966,5 @@ async def execute_deep_verification(
             pre_flight_status=(pre_flight_result or {}).get("status_code") if pre_flight_result else None,
             negative_assertion_anchor=_neg_assertion,
             preflight_caller_identity_anchor=_preflight_caller_anchor,
+            state_jump_anchor=_state_jump,
         )

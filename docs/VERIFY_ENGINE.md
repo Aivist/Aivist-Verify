@@ -250,12 +250,15 @@ from the attack path. The result carries both verdicts for transparency — `ai_
 `guard_override` (the reason, or `None`). The shadow pass logs the **final guarded**
 verdict and **still never changes the persisted verdict**.
 
-Two **structural exemptions** can keep such a cross-path verdict decisive — both
-`verified`-only, both computed **in code** (never the model's say-so), and kept
-**disjoint** from each other: **B-1's write-record match**
-(`WRITE_RECORD_EXEMPTION_REASON`) and **M1.2's object-state read-back**
-(`STATE_READBACK_EXEMPTION_REASON`, gated on owner-identity ∧ caller≠owner ∧
-**payload-causality**). In both cases the decisive read-back is **gathered by the code**
+Four **structural exemptions** can keep such a cross-path verdict decisive — all
+`verified`-only, all computed **in code** (never the model's say-so), and kept
+**disjoint**: **B-1's write-record match** (`WRITE_RECORD_EXEMPTION_REASON`), **M1.2's
+object-state read-back** (`STATE_READBACK_EXEMPTION_REASON`, gated on owner-identity ∧
+caller≠owner ∧ **payload-causality**), **M1.3's delete read-back**
+(`DELETE_READBACK_EXEMPTION_REASON`, pre-flight existence ∧ a dual-track **negative
+assertion**), and **M1.4's state jump** (`STATE_JUMP_EXEMPTION_REASON`, owner-identity ∧
+every sent field **moving** from a known pre-flight state — the low-entropy gate, which
+GOVERNS whenever a pre-flight baseline exists). In both cases the decisive read-back is **gathered by the code**
 (`select_write_record_endpoint` / `select_object_state_endpoint`), not chosen by the
 model — measurement showed the model does not find it unaided (0/20, then 0/5). See
 [`DEEP_VERIFY.md`](./DEEP_VERIFY.md).

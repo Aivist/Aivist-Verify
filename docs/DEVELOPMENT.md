@@ -102,7 +102,7 @@ importable):
 ```powershell
 python -m pytest backend/tests -q
 ```
-Current suite: **250 tests**. See [`STATUS.md`](./STATUS.md).
+Current suite: **285 tests**. See [`STATUS.md`](./STATUS.md).
 - `test_pruner.py` — exposure scoring + determinism regression tests
 - `test_step8_custody.py` — auth custody / parallel engine
 - `test_step_d_hunter_link.py` — Step D extraction (column-first + legacy fallback)
@@ -117,6 +117,10 @@ Current suite: **250 tests**. See [`STATUS.md`](./STATUS.md).
 - `test_d18_b22_guard.py` — B-2.2 cross-resource guard
 - `test_d18_b1_write_record.py` — B-1 write-record gathering + guard exemption (offline units)
 - `test_d18_b1_shadow_integration.py` — B-1 shadow path: real `execute_deep_verification` end-to-end with mocked Gemini (D22)
+- `test_m12_state_readback_exemption.py` — M1.2 object-STATE read-back exemption channel (both ways)
+- `test_m12b_state_gather.py` — M1.2(B) deterministic object-state resolver (incl. foreign-spec genericity)
+- `test_m13_delete.py` — M1.3 delete shape: negative assertion, pre-flight coincidence gate, channel
+- `test_m14_mass_assignment.py` — M1.4 low-entropy state jump (MISSING vs UNKNOWN), the M1.2-narrowing hazard test, and the mistyped-BOLA routing regression
 
 **Separate suite (ground-truth target, not counted in the backend total):**
 
@@ -124,7 +128,7 @@ Current suite: **250 tests**. See [`STATUS.md`](./STATUS.md).
 python -m pytest vulnerable_target/test_vulns.py -v
 ```
 
-14 tests proving planted vulnerabilities on the standalone target app (port 8001).
+31 tests proving planted vulnerabilities on the standalone target app (port 8001).
 
 `pytest` lives in `backend/requirements-dev.txt` (dev-only); install with
 `pip install -r backend/requirements-dev.txt`.

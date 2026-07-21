@@ -8,10 +8,13 @@
 > current code.
 >
 > **What changed since this audit:**
-> - **Suite size:** the backend suite grew from ~73 (here) to **145** at that time (**227** as of M1.2). Files that landed
+> - **Suite size:** the backend suite grew from ~73 (here) to **145** at that time (**285** as of M1.4,
+>   with M1 complete). Files that landed
 >   since this audit: `test_verdict_oracle.py` (9), `test_d18_b22_guard.py` (18),
 >   `test_d18_phase2_crosspath.py`, `test_endpoint_catalog.py`, `test_d18_b1_write_record.py`,
->   and `test_d18_b1_shadow_integration.py` (the B-1 shadow-path regression test, D22). See
+>   `test_d18_b1_shadow_integration.py` (the B-1 shadow-path regression test, D22),
+>   `test_m12_state_readback_exemption.py`, `test_m12b_state_gather.py`, `test_m13_delete.py`,
+>   and `test_m14_mass_assignment.py` (the M1.2/M1.3/M1.4 shapes). See
 >   [`../STATUS.md`](../STATUS.md).
 > - **Bucket-(A) verdict-correctness coverage NOW EXISTS** — this audit's central finding is
 >   **superseded**:

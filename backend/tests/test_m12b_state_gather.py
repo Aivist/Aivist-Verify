@@ -184,9 +184,11 @@ def _resp(status: int, body: str) -> dict:
             "response_body": body, "elapsed_ms": 5, "url": BASE_URL}
 
 
-def _fake_send(routes: dict, record_body: str = '{"events":[]}'):
+def _fake_send(routes: dict, record_body: str = '{"events":[]}', pre_routes: dict = None):
     """Opaque 200 on every write; the audit-log probe returns `record_body`; `routes` maps a
     concrete GET path -> body. Anything else returns a body with no owner/value (useless)."""
+    _calls = {"n": 0}
+
     async def _send(client, parsed_request, base_url, custody=None):
         method = str(parsed_request.get("method", "GET")).upper()
         path = parsed_request.get("path", "")
@@ -195,6 +197,10 @@ def _fake_send(routes: dict, record_body: str = '{"events":[]}'):
         if path == RECORD_PATH:
             return _resp(200, record_body)
         if path in routes:
+            # M1.4(fix): the FIRST call on a state path is the pre-flight baseline.
+            _calls["n"] += 1
+            if _calls["n"] == 1 and pre_routes and path in pre_routes:
+                return _resp(200, pre_routes[path])
             return _resp(200, routes[path])
         return _resp(200, '{"ok":true}')
     return _send
@@ -228,8 +234,8 @@ def _enable(monkeypatch):
 
 
 def _run(parsed_request, payload, *, routes, turn1, turn2, monkeypatch,
-         record_body='{"events":[]}'):
-    monkeypatch.setattr(dv, "_send_request", _fake_send(routes, record_body))
+         record_body='{"events":[]}', pre_routes=None):
+    monkeypatch.setattr(dv, "_send_request", _fake_send(routes, record_body, pre_routes))
     monkeypatch.setattr(dv, "_gemini_generate", _fake_gemini(turn1, turn2))
     return asyncio.run(dv.execute_deep_verification(
         parsed_request=parsed_request, payload=payload, base_url=BASE_URL,
@@ -256,6 +262,8 @@ def test_vuln_code_gathered_state_feeds_the_exemption_to_verified(monkeypatch):
     res = _run(
         _GIZMO_WRITE, _BOLA,
         routes={"/api/gizmos/2": json.dumps({"id": 2, "owner_id": 2, "code": UNIQUE})},
+        pre_routes={"/api/gizmos/2": json.dumps(
+            {"id": 2, "owner_id": 2, "code": "gizmo_bob_v0"})},   # ORIGINAL pre-flight state
         turn1=_verdict_turn("inconclusive"),                   # model asks for nothing
         turn2=_verdict_turn("verified", evidence_path="code"),
         monkeypatch=monkeypatch,
@@ -271,7 +279,8 @@ def test_vuln_code_gathered_state_feeds_the_exemption_to_verified(monkeypatch):
     # -> the already-proven exemption finally has inputs.
     assert res.ai_verdict_raw == "verified"
     assert res.ai_verdict == "verified"
-    assert res.guard_override == STATE_READBACK_EXEMPTION_REASON
+    # M1.4(fix): with a pre-flight baseline available the stricter STATE-JUMP gate governs.
+    assert res.guard_override == dv.STATE_JUMP_EXEMPTION_REASON
 
 
 # ---- SAFE: code gathers the state, value ABSENT -> NOT exempt -> inconclusive --------------

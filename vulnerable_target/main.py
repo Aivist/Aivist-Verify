@@ -108,6 +108,8 @@ class User(Base):
     relic = relationship("Relic", back_populates="owner", uselist=False)
     badge = relationship("Badge", back_populates="owner", uselist=False)
     seal = relationship("Seal", back_populates="owner", uselist=False)
+    membership = relationship("Membership", back_populates="owner", uselist=False)
+    subscription = relationship("Subscription", back_populates="owner", uselist=False)
 
 
 class Order(Base):
@@ -353,6 +355,36 @@ class Seal(Base):
     owner = relationship("User", back_populates="seal")
 
 
+class Membership(Base):
+    """Object behind X-MASS-VULN (M1.4): MASS-ASSIGNMENT BOLA. PATCH /api/users/{id}/membership
+    has NO ownership check AND binds EVERY writable column present in the request body — including
+    `role`, which a caller must never be able to set. `plan` is the legitimate, user-settable field.
+    `role` is nullable: when NULL the state read OMITS it, modelling a privileged field HIDDEN from
+    a non-privileged caller (the MISSING original state). id == owner_id."""
+    __tablename__ = "memberships"
+
+    id = Column(Integer, primary_key=True)  # == owner_id for predictability
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    plan = Column(String(64), nullable=False, default="basic")
+    role = Column(String(32), nullable=True)   # privileged; NULL => hidden from the state read
+
+    owner = relationship("User", back_populates="membership")
+
+
+class Subscription(Base):
+    """Object behind X-MASS-SAFE (M1.4): the SECURE mirror of Membership. Same shape, same opaque
+    response, but the write binds an explicit ALLOW-LIST (`plan` only) and silently STRIPS `role` —
+    the real-world fix for mass assignment. A `verified` here is a FALSE POSITIVE. id == owner_id."""
+    __tablename__ = "subscriptions"
+
+    id = Column(Integer, primary_key=True)  # == owner_id for predictability
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    plan = Column(String(64), nullable=False, default="basic")
+    role = Column(String(32), nullable=True)
+
+    owner = relationship("User", back_populates="subscription")
+
+
 # ------------------------------------------------------------------------------
 # Seed data — Alice (id=1, user) and Bob (id=2, user) are normal users; Carol
 # (id=3, admin) is the privileged account used by the Vuln C test case. Each user
@@ -389,6 +421,9 @@ SEED_USERS = [
         "relic": {"label": "relic_alice"},
         "badge": {"label": "badge_alice"},
         "seal": {"label": "seal_alice"},
+        # M1.4: membership (X-MASS-VULN) + subscription (X-MASS-SAFE).
+        "membership": {"plan": "basic", "role": "member"},
+        "subscription": {"plan": "basic", "role": "member"},
     },
     {
         "id": 2,
@@ -426,6 +461,8 @@ SEED_USERS = [
         "relic": {"label": "relic_bob"},
         "badge": {"label": "badge_bob"},
         "seal": {"label": "seal_bob"},
+        "membership": {"plan": "basic", "role": "member"},
+        "subscription": {"plan": "basic", "role": "member"},
     },
     {
         "id": 3,
@@ -448,6 +485,8 @@ SEED_USERS = [
         "relic": {"label": "relic_carol"},
         "badge": {"label": "badge_carol"},
         "seal": {"label": "seal_carol"},
+        "membership": {"plan": "basic", "role": None},
+        "subscription": {"plan": "basic", "role": None},
     },
 ]
 
@@ -475,6 +514,8 @@ async def _seed(session: AsyncSession) -> None:
         session.add(Relic(id=u["id"], owner_id=u["id"], **u["relic"]))
         session.add(Badge(id=u["id"], owner_id=u["id"], **u["badge"]))
         session.add(Seal(id=u["id"], owner_id=u["id"], **u["seal"]))
+        session.add(Membership(id=u["id"], owner_id=u["id"], **u["membership"]))
+        session.add(Subscription(id=u["id"], owner_id=u["id"], **u["subscription"]))
     await session.commit()
     logger.info("Seeded users: %s", ", ".join(u["username"] for u in SEED_USERS))
 
@@ -1404,6 +1445,112 @@ async def get_seal(
     return SealResponse(id=seal.id, owner_id=seal.owner_id, label=seal.label)
 
 
+# ------------------------------------------------------------------------------
+# X-MASS-VULN — REAL mass-assignment BOLA (M1.4).
+#
+# PATCH /api/users/{user_id}/membership has NO ownership check AND binds EVERY writable column
+# present in the request body. `plan` is the legitimate, user-settable field; `role` is privileged
+# and must never be settable by a caller — but there is no allow-list, so it binds too. The
+# response is the SAME opaque 200 {"status":"ok"} as the secure mirror, so the write alone cannot
+# distinguish them; only the cross-path state read GET /api/memberships/{id} differs.
+#
+# The injected value is LOW-ENTROPY ("admin"), so "the field reads admin" proves nothing on its
+# own — confirmation requires the field to have MOVED from its pre-attack state. Planted: REAL.
+# ------------------------------------------------------------------------------
+_MEMBERSHIP_COLUMNS = {"plan", "role"}     # every writable column — NO allow-list (that is the bug)
+
+
+@app.patch("/api/users/{user_id}/membership", tags=["memberships"])
+async def update_membership(
+    payload: dict,
+    user_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    membership = (
+        await db.execute(select(Membership).where(Membership.owner_id == user_id))
+    ).scalars().first()
+
+    # VULNERABLE: no check that user_id == current_user.id, and every column named in the body is
+    # bound — including the privileged `role`. This is the mass-assignment bug.
+    if membership is not None:
+        for _k, _v in (payload or {}).items():
+            if _k in _MEMBERSHIP_COLUMNS and isinstance(_v, (str, int, float, bool)):
+                setattr(membership, _k, str(_v))
+        await db.flush()
+
+    return {"status": "ok"}
+
+
+@app.get("/api/memberships/{membership_id}", tags=["memberships"])
+async def get_membership(
+    membership_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # STATE read-back (the cross-path observation point). `role` is OMITTED while NULL — modelling
+    # a privileged field HIDDEN from a non-privileged caller, i.e. the MISSING original state.
+    membership = (
+        await db.execute(select(Membership).where(Membership.id == membership_id))
+    ).scalars().first()
+    if membership is None:
+        raise HTTPException(status_code=404, detail="Membership not found")
+    body = {"id": membership.id, "owner_id": membership.owner_id, "plan": membership.plan}
+    if membership.role is not None:
+        body["role"] = membership.role
+    return body
+
+
+# ------------------------------------------------------------------------------
+# X-MASS-SAFE — SECURE mirror of X-MASS-VULN (M1.4).
+#
+# Identical shape and identical opaque 200 {"status":"ok"}, but the write binds an explicit
+# ALLOW-LIST (`plan` only) and silently STRIPS `role` — the real-world fix for mass assignment.
+# The cross-path state read shows `role` UNCHANGED (or still absent). Correct verdict: NOT
+# vulnerable — a `verified` here is a FALSE POSITIVE.
+# ------------------------------------------------------------------------------
+_SUBSCRIPTION_ALLOWED = {"plan"}           # explicit allow-list; `role` is privileged -> stripped
+
+
+@app.patch("/api/users/{user_id}/subscription", tags=["subscriptions"])
+async def update_subscription(
+    payload: dict,
+    user_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    subscription = (
+        await db.execute(select(Subscription).where(Subscription.owner_id == user_id))
+    ).scalars().first()
+
+    # SECURE against mass assignment: only allow-listed fields are bound. `role` in the body is
+    # silently ignored — no error, no 403, the SAME opaque 200. That silence is the trap.
+    if subscription is not None:
+        for _k, _v in (payload or {}).items():
+            if _k in _SUBSCRIPTION_ALLOWED and isinstance(_v, (str, int, float, bool)):
+                setattr(subscription, _k, str(_v))
+        await db.flush()
+
+    return {"status": "ok"}
+
+
+@app.get("/api/subscriptions/{subscription_id}", tags=["subscriptions"])
+async def get_subscription(
+    subscription_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    subscription = (
+        await db.execute(select(Subscription).where(Subscription.id == subscription_id))
+    ).scalars().first()
+    if subscription is None:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    body = {"id": subscription.id, "owner_id": subscription.owner_id, "plan": subscription.plan}
+    if subscription.role is not None:
+        body["role"] = subscription.role
+    return body
+
+
 @app.get("/", tags=["meta"])
 async def root():
     return {
@@ -1437,6 +1584,10 @@ async def root():
             "GET /api/badges/{badge_id}         (cross-path STATE read-back for badge)",
             "DELETE /api/users/{user_id}/seal   (X-DELETE-SAFE: SECURE mirror)",
             "GET /api/seals/{seal_id}           (cross-path STATE read-back for seal)",
+            "PATCH /api/users/{user_id}/membership  (X-MASS-VULN: mass-assignment BOLA, binds `role`)",
+            "GET /api/memberships/{membership_id}   (cross-path STATE read-back; `role` hidden while NULL)",
+            "PATCH /api/users/{user_id}/subscription (X-MASS-SAFE: allow-list strips `role`)",
+            "GET /api/subscriptions/{subscription_id} (cross-path STATE read-back for subscription)",
         ],
     }
 

@@ -11,11 +11,12 @@
 > defaults, nothing here runs and behavior is byte-identical to before. The
 > rule-based HTTP verify still uses `fuzzer.py`.
 >
-> **Confirms four vuln shapes, zero false positives** (each live-measured N=5, shadow):
+> **Confirms five vuln shapes, zero false positives** (each live-measured N=5, shadow):
 > **M1.0/B-1** silent cross-path write via a code-gathered **write-record**; **M1.1** read-type
 > **semantic equivalence**; **M1.2** silent cross-path write via a code-gathered **object-STATE**
 > read-back; **M1.3** **delete**-type via a **NEGATIVE ASSERTION** (pre-flight existence + dual-track
-> absence). The verdict is still **observe-only** — promoting it to authoritative is **D19**.
+> absence); **M1.4** **mass-assignment** via a **LOW-ENTROPY STATE JUMP** from a known pre-flight
+> state. The verdict is still **observe-only** — promoting it to authoritative is **D19**.
 
 ---
 
@@ -58,7 +59,7 @@ Only stable, side-effect-free helpers are imported from `fuzzer.py`:
 - `ScopeViolationError` for host lock enforcement
 
 No changes to the fuzzer's verdict path; the rule-oracle tests stay green (backend
-suite: **250 passed** — see [`STATUS.md`](./STATUS.md)).
+suite: **285 passed** — see [`STATUS.md`](./STATUS.md)).
 
 ---
 
@@ -135,31 +136,43 @@ records the outcome transparently: `ai_verdict` is the **final** (post-guard) ve
 `ai_verdict_raw` preserves the model's original pre-guard verdict, and `guard_override`
 holds the override reason (or `None` when the guard did not fire).
 
-### The two exemption channels (both `verified`-only, both cross-path-only, DISJOINT)
+### The exemption channels (all `verified`-only, cross-path-only, DISJOINT)
 
 A cross-path `verified` is downgraded **unless** exactly one of these structural exemptions
-fires. Both are computed **in code** from the attack's own runtime params — the model's say-so is
+fires. All are computed **in code** from the attack's own runtime params — the model's say-so is
 never sufficient — and passed into the guard as booleans:
 
 | Channel | Constant | Fires when | Applies to |
 |---|---|---|---|
 | **B-1 write-record** | `WRITE_RECORD_EXEMPTION_REASON` | `_write_record_content_match` finds the attacked object id **and** a value this attack wrote **in one record** (D23/D23b-hardened) | follow-up paths that ARE record/log-style |
-| **M1.2(A) state read-back** | `STATE_READBACK_EXEMPTION_REASON` | all three anchors AND: owner==attacked ∧ caller!=owner (`caller_identity == "confirmed"`) **and** payload-causality confirmed | follow-up paths that are **not** record/log-style |
-| **M1.3 delete read-back** | `DELETE_READBACK_EXEMPTION_REASON` | caller-identity **on the PRE-FLIGHT body** is `confirmed` **and** the negative assertion is `confirmed_physical`/`confirmed_logical` | **DELETE** attacks only (no written value, so the other two can never fire) |
+| **M1.2(A) state read-back** | `STATE_READBACK_EXEMPTION_REASON` | all three anchors AND: owner==attacked ∧ caller!=owner (`caller_identity == "confirmed"`) **and** payload-causality confirmed | follow-up paths that are **not** record/log-style, **and only when no pre-flight baseline exists** (otherwise the state-jump channel governs — see below) |
+| **M1.3 delete read-back** | `DELETE_READBACK_EXEMPTION_REASON` | caller-identity **on the PRE-FLIGHT body** is `confirmed` **and** the negative assertion is `confirmed_physical`/`confirmed_logical` | **DELETE** attacks only (no written value, so the value-based channels can never fire) |
+| **M1.4 state jump** | `STATE_JUMP_EXEMPTION_REASON` | caller-identity is `confirmed` **and** `_anchor_state_jump` returns `confirmed_jump` — **every** field the attack sent moved from a **KNOWN pre-flight state** to the injected value | any write with a JSON body **and** a readable pre-flight baseline |
 
 They are kept **disjoint** by `_path_is_write_record(follow_up_path)`, so D23/D23b remain the sole
-authority on record paths. If both were somehow set, the write-record channel takes precedence, so
-B-1's behaviour is unchanged.
+authority on record paths. If several were somehow set, the write-record channel takes precedence,
+so B-1's behaviour is unchanged.
 
-**Payload-causality is the false-positive gate.** Owner-identity and caller!=owner confirm for
-**both** a real leak and a securely-*dropped* write (a dropped cross-user write still leaves the
-object owned by the victim and attacked by the caller) — only "THIS attack's unique value is
-actually present" separates them. Measured: X-SILENT-VULN causality `confirmed_at_path` 5/5 →
-`verified` 5/5; X-SILENT-SAFE causality `absent` 5/5 → no exemption → `inconclusive` 5/5, **0
-false positives**.
+**Payload-causality is the false-positive gate — but only for high-entropy values.** Owner-identity
+and caller!=owner confirm for **both** a real leak and a securely-*dropped* write (a dropped
+cross-user write still leaves the object owned by the victim and attacked by the caller) — only
+"THIS attack's unique value is actually present" separates them. Measured: X-SILENT-VULN causality
+`confirmed_at_path` 5/5 → `verified` 5/5; X-SILENT-SAFE causality `absent` 5/5 → no exemption →
+`inconclusive` 5/5, **0 false positives**.
 
-> **Known boundary:** causality assumes the written value is high-entropy. On boolean / small-int /
-> enum fields — or with concurrent runs writing the same value — it can collide. See
+**M1.4 narrowed this (a real false positive, closed).** On a mass-assignment SAFE case — privileged
+field stripped by an allow-list, legitimate co-submitted field lands — the anchors read
+`caller_identity=confirmed` + `payload_causality=confirmed_in_body`, so the M1.2 channel **would
+have exempted a secure endpoint**. Routing therefore keys on **evidence, not the declared attack
+type**: whenever a readable pre-flight baseline exists, the **state-jump** gate governs and the
+payload-causality channel yields. Strictly a narrowing — it can only ever produce *fewer*
+exemptions; the other four shapes keep identical verdicts (three now exempt via the stricter
+channel). Locked by `test_HAZARD_m12_causality_would_false_positive_on_mass_assignment_safe` and
+`test_RESIDUAL_FIX_mass_assignment_mistyped_as_BOLA_safe_stays_inconclusive`.
+
+> **Known boundary (now handled):** causality assumes the written value is high-entropy. On boolean /
+> small-int / enum fields — or with concurrent runs writing the same value — it collides. That is
+> exactly what M1.4's state-jump gate replaces it with; see the M1.4 section below and
 > [`ROADMAP.md`](./ROADMAP.md) §7.
 
 ---
@@ -207,6 +220,47 @@ attributed to this attack, so the caller must not exempt.
 (`confirmed_physical`); X-DELETE-VULN-SOFT →`verified` 5/5 (`confirmed_logical`); X-DELETE-SAFE
 →`verified` **0/5** (`still_present`); X-DELETE-CONTROL (object never existed) →`verified` **0/5**
 (`preflight_absent` — the AFTER read was *also* 404, but nothing was proven to exist).
+
+---
+
+## M1.4 — the MASS-ASSIGNMENT shape: the low-entropy state jump
+
+The attacker sneaks a privileged field (`role`, `is_admin`, `tier`) into a write on the **victim's**
+object. The response is a byte-identical opaque `200 {"status":"ok"}`, and there is no same-path GET.
+
+**Why the previous gate fails here.** Payload-causality asks "is THIS attack's value present in the
+victim's object?" — sound only if the value is **unique**. Mass-assignment writes **low-entropy**
+values, so `role == "admin"` in the AFTER read cannot distinguish *I set it* from *it was already
+admin*. Presence is not causality once the value space is small.
+
+**The replacement: prove MOVEMENT.** `_anchor_state_jump(pre_status, pre_body, post_status,
+post_body, sent_fields)` returns `confirmed_jump` only when **every** field the attack sent moved
+from a **KNOWN** pre-flight state to the injected value. Checking *all* sent fields is deliberately
+stricter than checking one named field — and it is what makes the `path_segment` attack shape
+workable (it keeps the object ids derivable, but never names the injected field).
+
+| Pre-flight state | Meaning | Can it yield `confirmed_jump`? |
+|---|---|---|
+| 2xx, parseable, field present with a **different** value | KNOWN original | **Yes** — `old → injected` is a jump |
+| 2xx, parseable, field **absent** | **MISSING** — a *legal* original state (privileged fields are commonly hidden) | **Yes** — `missing → injected` is hidden-field escalation |
+| 2xx, parseable, field already **equals** the injected value | KNOWN, no movement | No → `no_jump` |
+| non-2xx / unreachable / unparseable JSON | **UNKNOWN** — not the same as MISSING | **Never** → `preflight_unknown` |
+
+The MISSING-vs-UNKNOWN split is safety-critical: collapsing them would turn every *unreadable*
+object into a confirmed escalation. The post-read has the mirror rule (`postread_unknown`), and the
+whole anchor is wrapped so a malformed body degrades to `inconclusive` rather than raising.
+
+**Routing keys on evidence, not the declared attack type.** The pre-flight read fires for **all
+write methods** (not just DELETE/mass-typed), and whenever that baseline exists the state-jump gate
+**governs** — the payload-causality channel yields. This closes a residual hole where an attack
+*mistyped* as plain BOLA, but carrying a low-entropy co-submitted field, would have fallen back to
+the weaker gate. It is strictly a narrowing: fewer exemptions, never more.
+
+**Measured** (N=5 each, gemini-2.5-pro, fresh-seeded per run): X-MASS-VULN present-value →`verified`
+5/5 and MISSING→injected →`verified` 5/5 (`confirmed_jump`); X-MASS-SAFE present **and** missing
+→`verified` **0/5** (the allow-list stripped `role`, so no full jump); CONTROL (injected == existing
+value) →`verified` **0/5**. On the SAFE cases the model's **raw** verdict was `verified` and the gate
+refused every time — the line is held by code, not model compliance.
 
 ---
 
