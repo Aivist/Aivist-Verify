@@ -19,6 +19,7 @@
 | **M1.1 read-type (equal-length, MEASURED)** | X-EQUIV-VULN `verified` 5/5 (anchoring `confirmed`) · X-EQUIV-SAFE `failed` 5/5 — **0 false positives**, judged by semantics not size |
 | **M1.2 silent-write / object-STATE (MEASURED)** | X-SILENT-VULN `verified` **5/5** (code-gathered state read; causality `confirmed_at_path` 5/5) · X-SILENT-SAFE **`verified` 0/5** (causality `absent` 5/5 → no exemption → `inconclusive`) — **0 false positives**; B-1 X-CROSS still `verified` 5/5 |
 | **Shapes confirmed with zero FP** | **5 — M1 COMPLETE.** write→write-record (B-1), read-type semantic equivalence (M1.1), write→object-STATE (M1.2), delete→NEGATIVE ASSERTION (M1.3), mass-assignment→LOW-ENTROPY STATE JUMP (M1.4) |
+| **HIGH-N zero-FP measurement (MEASURED)** | **140 SAFE/control runs at N=20 → FINAL `verified` = 0**; 70 VULN runs at N=10 → `verified` 70/70. **210/210 usable, zero degraded.** On X-MASS-SAFE the model **raw-said `verified` 40/40** and the deterministic `no_jump` gate refused every one — the **code gate, not the model**, holds the zero-FP line. See the high-N section below. |
 | **M1.3 delete-type (MEASURED)** | X-DELETE-VULN-HARD `verified` **5/5** (`confirmed_physical`) · X-DELETE-VULN-SOFT `verified` **5/5** (`confirmed_logical`) · X-DELETE-SAFE **`verified` 0/5** (`still_present`) · X-DELETE-CONTROL (never existed) **`verified` 0/5** (`preflight_absent`) — **0 false positives** |
 | **Post-B-1 update (not re-run here)** | X-CROSS is now `verified` (code-gathered audit-log + content-match exemption, N=5, `shadow_b1step3_code_gather_measure.out.txt`); the "deferred to B-1" rows below are historical (pre-B-1). |
 | **AI-in-the-loop cases evaluated** | 10 (B, C, D, SAFE, T-REAL, T-TRAP, T-WEAK, T-SILENT2, X-CROSS, X-SAFE) |
@@ -615,8 +616,16 @@ including declining to flag the SECURE look-alike (no false positive).
 > pre-flight state** to the injected value. 5 runs each, gemini-2.5-pro, target fresh-seeded per
 > run, driven directly through `execute_deep_verification` (same ordering reason as M1.3 — the rule
 > oracle's earlier phases would consume the pre-flight baseline). Transcripts:
-> `scripts/audit/shadow_m14_mass_assignment_run.out.txt`, `…_topup_run.out.txt`,
-> `…_postfix_run.out.txt`.
+> `scripts/audit/shadow_m14_mass_assignment_run.out.txt`, `…_topup_run.out.txt`.
+>
+> **Citation note (honest):** these X-MASS figures were originally also carried by
+> `…_postfix_run.out.txt`, but that transcript was **accidentally overwritten** by a later
+> regression driver that was copied from it and kept its hardcoded output path. The numbers below
+> are unaffected (they were read and recorded before the overwrite, and the same cases were
+> subsequently re-measured at **higher N** — see the high-N section at the end of this file, which
+> supersedes them). The authoritative transcripts for these cases are now
+> `scripts/audit/shadow_highN_zerofp_run.out.txt` (N=20 SAFE / N=10 VULN) and, for the read-type
+> shape, `scripts/audit/shadow_highN_xequiv_run.out.txt`.
 
 ### Case X-MASS-VULN — REAL mass-assignment BOLA (membership, present-value)
 - **Endpoint / method:** `PATCH /api/users/{user_id}/membership` (state read-back: cross-path
@@ -712,6 +721,75 @@ Offline this is additionally locked by
   that silently normalizes one co-submitted field will therefore read as `no_jump` → `inconclusive`.
 - **One target, N=5, five shapes.** M1's goal — prove the mechanism generalizes — is met. Nested
   objects, multi-step flows, and noisier real audit logs remain untested.
+  *(Superseded on sample size by the high-N run below: SAFE cases are now measured at N=20.)*
+
+---
+
+## HIGH-N zero-false-positive measurement (all five shapes) — MEASURED
+
+Purpose: strengthen the **statistical** evidence behind the zero-FP claim. A VULN case only shows
+"the engine *can* confirm"; a **SAFE case is what proves it never false-positives**, so SAFE/control
+cases were run at **N=20** and VULN cases at **N=10**. gemini-2.5-pro, target **fresh-seeded before
+every run**, shadow/observe-only (persistence and verdict authority untouched — D19).
+**210 runs total, 210 usable, ZERO degraded, zero `429`s.** Transcripts:
+`scripts/audit/shadow_highN_zerofp_run.out.txt` (12 cases, direct-drive) and
+`scripts/audit/shadow_highN_xequiv_run.out.txt` (X-EQUIV, integrated Phase-7).
+
+### The command line
+
+| SAFE / control case | Usable | FINAL `verified` | Model **RAW** wanted `verified` | Anchor that refused |
+|---|---|---|---|---|
+| X-SILENT-SAFE | 20/20 | **0** | 0/20 | `no_jump` |
+| X-DELETE-SAFE | 20/20 | **0** | 0/20 | `still_present` |
+| **X-MASS-SAFE present (role stripped)** | 20/20 | **0** | **20/20** | `no_jump` |
+| **X-MASS-SAFE MISSING→still-missing** | 20/20 | **0** | **20/20** | `no_jump` |
+| X-MASS-CONTROL (injected == pre-flight) | 20/20 | **0** | 0/20 | `no_jump` |
+| B-1 X-SAFE | 20/20 | **0** | 0/20 | no write-record match |
+| X-EQUIV-SAFE *(Phase-7 harness)* | 20/20 | **0** | 0/20 | `value_mismatch` |
+
+```
+  TOTAL SAFE/control usable runs : 140
+  TOTAL FINAL 'verified'         : 0     <- the command line
+  TOTAL model RAW 'verified'     : 40    <- times the MODEL wanted it and the CODE GATE refused
+```
+
+| VULN case | Usable | FINAL verdict | Channel / anchor |
+|---|---|---|---|
+| B-1 X-CROSS | 10/10 | `verified` 10/10 | `write_record_readback_decisive` |
+| X-SILENT-VULN | 10/10 | `verified` 10/10 | `state_jump_causally_decisive`, `confirmed_jump` 10/10 |
+| X-DELETE-VULN-HARD | 10/10 | `verified` 10/10 | `delete_readback_…`, `confirmed_physical` 10/10 |
+| X-DELETE-VULN-SOFT | 10/10 | `verified` 10/10 | `delete_readback_…`, `confirmed_logical` 10/10 |
+| X-MASS-VULN present-jump | 10/10 | `verified` 10/10 | `state_jump_causally_decisive`, `confirmed_jump` 10/10 |
+| X-MASS-VULN MISSING→injected | 10/10 | `verified` 10/10 | `state_jump_causally_decisive`, `confirmed_jump` 10/10 |
+| X-EQUIV-VULN *(Phase-7 harness)* | 10/10 | `verified` 10/10 | same-path, `anchoring_result=confirmed` 10/10 |
+
+### THE KEY FINDING — the code gate, not the model, holds the line
+
+On **both X-MASS-SAFE variants the model raw-said `verified` 40 out of 40 times**: 100% wrong, at
+full confidence, on a **secure** endpoint. The deterministic `no_jump` anchor refused **every single
+one**. This is not the model being unreliable at the margins — on this shape the model is *reliably
+wrong*, and the code gate is the only thing between it and a false positive on every run.
+
+The contrast with the other SAFE cases makes the point sharper: there the model wanted
+`failed`/`inconclusive` on its own, so the gate was never load-bearing. Mass-assignment is precisely
+where the model's judgment collapses, which is why that shape exposed the real false positive M1.4
+had to close. **Higher N did not discover a new failure mode — it sharpened the same one from n=5 to
+n=20.**
+
+**Channel disjointness held at scale:** every case fired exactly one channel, every run, with no
+cross-firing in 210 runs. The single split is X-MASS-CONTROL (`guard_override` = `None` ×7,
+`cross_resource_readback_not_decisive` ×13) — the guard is simply not consulted on the runs where the
+model self-reported `inconclusive` and there was no `verified` to downgrade. Outcome identical.
+
+### High-N honest caveats (do not over-read)
+
+- **Still one target, one model, one seeding pattern.** 140 SAFE runs make the **sampling** argument
+  much stronger; they do **not** broaden the **diversity** argument at all — every run hits the same
+  synthetic app. What these numbers support is *"the gate is stable on these shapes"*, **NOT**
+  *"the gate generalizes to unseen APIs."*
+- **X-EQUIV used the integrated Phase-7 harness**, not the direct-drive path the other 12 cases use.
+  That was deliberate — it is X-EQUIV's established methodology, so its figures stay comparable with
+  its own earlier record — but it means **that row is not measured identically to the rest.**
 
 ---
 

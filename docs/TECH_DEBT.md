@@ -503,8 +503,13 @@
   `test_RESIDUAL_FIX_mass_assignment_mistyped_as_BOLA_safe_stays_inconclusive`; the other four
   shapes are unchanged in verdict (three of them now exempt via the state-jump channel instead —
   same `verified`, stricter reason).
-- **Live-measured** (N=5 each, gemini-2.5-pro, fresh-seeded per run; transcripts
-  `scripts/audit/shadow_m14_mass_assignment_run.out.txt` and `…_postfix_run.out.txt`):
+- **Live-measured** (N=5 each, gemini-2.5-pro, fresh-seeded per run; transcript
+  `scripts/audit/shadow_m14_mass_assignment_run.out.txt`. These cases were later **re-measured at
+  higher N** — `scripts/audit/shadow_highN_zerofp_run.out.txt`, N=20 SAFE / N=10 VULN — which is now
+  the authoritative record. A second N=5 transcript, `…_postfix_run.out.txt`, was **accidentally
+  overwritten** by a regression driver copied from it that kept its hardcoded output path; the
+  figures below were recorded before that and are unaffected, and the high-N re-run supersedes
+  them):
   X-MASS-VULN present-value→`verified` **5/5**; X-MASS-VULN MISSING→injected→`verified` **5/5**;
   **X-MASS-SAFE present→`verified` 0/5** and **missing→`verified` 0/5**; **CONTROL
   (injected == pre-flight value, no jump)→`verified` 0/5**. On the SAFE cases the model raw-said
