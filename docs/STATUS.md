@@ -20,7 +20,12 @@ object-**STATE** read-back), and **M1.3** (**delete**-type, confirmed by a **NEG
 ASSERTION** — a code-anchored from-EXISTS-to-ABSENT jump), and **M1.4** (**mass-assignment**,
 confirmed by a **LOW-ENTROPY STATE JUMP** from a known pre-flight state). **M1 — proving the
 mechanism generalizes across shapes — is COMPLETE.** It is still shadow-only (not authoritative —
-that's **D19**) and proven on five shapes / one target.
+that's **D19**) and proven on five shapes / one target / one model. The zero-false-positive claim
+is no longer N=5-per-shape: a **high-N re-measure** (gemini-2.5-pro, fresh-seeded, 0 degraded) now
+stands as the authoritative record — **140 SAFE/control runs → 0 false positives; 70 VULN runs →
+all `verified`** (`scripts/audit/shadow_highN_zerofp_run.out.txt`, 180 runs + `…_highN_xequiv_run.out.txt`,
+30 runs). On **40** of those SAFE runs the model's raw verdict was `verified` and the deterministic
+gate refused every one — the safety line is held by code, not by model compliance.
 
 ## Test suite
 
@@ -51,6 +56,15 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
 | **M1.3** | **delete-type**, confirmed by a **NEGATIVE ASSERTION** (from-EXISTS-to-ABSENT), dual-track physical *or* logical | **DONE (this commit).** Two new mechanisms: a **PRE-FLIGHT read** (code GETs the victim object, scope-locked, BEFORE the DELETE — the **coincidence gate**: "it vanished" only proves a delete if "it existed & was active just before" is anchored) and a **dual-track negative-assertion anchor** (`_anchor_negative_assertion`) accepting **physical** removal (404/403/410) **or** **logical/soft** deletion (200 with a lifecycle field flipped, by generic vocabulary — **404 is NOT hardcoded**). A **third, disjoint** exemption channel (`DELETE_READBACK_EXEMPTION_REASON`) gated on pre-flight caller-identity **AND** the negative assertion. **Live-measured** (N=5, gemini-2.5-pro, fresh-seeded per run): X-DELETE-VULN-HARD→`verified` **5/5** (`confirmed_physical`), X-DELETE-VULN-SOFT→`verified` **5/5** (`confirmed_logical`), **X-DELETE-SAFE→`verified` 0/5** (`still_present`), **X-DELETE-CONTROL (object never existed)→`verified` 0/5** (`preflight_absent` — the coincidence gate held even though the AFTER read was also 404) — `scripts/audit/shadow_m13_delete_run.out.txt`. Offline: `test_m13_delete.py` (incl. foreign-spec genericity). |
 | **M1.4** | **mass-assignment** — the attacker sneaks a privileged field (role/flag) into a write on the VICTIM's object; confirmed by a **LOW-ENTROPY STATE JUMP** | **DONE (this commit).** Payload-causality breaks here: the injected value is low-entropy, so "the field reads admin" cannot tell "I set it" from "it was already admin". Causality is instead proven by a **STATE JUMP** — every field the attack sent moved from a **KNOWN pre-flight state** to the injected value. **MISSING** (absent from a SUCCESSFUL 2xx pre-flight — privileged fields are commonly hidden) is a VALID original state, so `missing→injected` verifies (hidden-field escalation); `missing→missing` does not. A **request failure / non-2xx / unparseable** read is **UNKNOWN**, never MISSING → never `verified`, never a crash. New disjoint channel `STATE_JUMP_EXEMPTION_REASON`, gated on caller-identity AND the jump. **Live (N=5):** X-MASS-VULN present-value→`verified` 5/5 and MISSING→injected→`verified` 5/5; **X-MASS-SAFE present + missing→`verified` 0/5**; control (injected==pre-flight)→0/5. On SAFE the model raw-said `verified` and the gate refused every time. |
 | **M1.x (optional)** | further shapes (nested-object, multi-step) | Not started. M1's goal — *prove the mechanism generalizes* — is met at five shapes; more shapes are breadth, not a gate. |
+
+> **Authoritative measurement (supersedes the per-shape `N=5` in the rows above).** Each row records
+> the *original* per-shape run (still on disk, still valid). The current headline figure is the
+> **high-N re-measure** (gemini-2.5-pro, one target, fresh-seeded, **0 degraded / 0 error**):
+> `scripts/audit/shadow_highN_zerofp_run.out.txt` (SAFE/control N=20, VULN N=10 — 180 runs) +
+> `shadow_highN_xequiv_run.out.txt` (the M1.1 read shape — 30 runs). Aggregate across the two:
+> **140 SAFE/control runs → FINAL `verified` = 0** (0 false positives) and **70 VULN runs → FINAL
+> `verified` = all**. Two of the SAFE cases (`X-MASS-SAFE` present + missing, 40 runs) had the model
+> **raw-want `verified` 40/40** while the gate held `inconclusive` every time.
 
 > **M2 — Shared Domain Model (later, NOT started):** a resource/endpoint relationship graph —
 > sink upstream observations (proxy/HAR/spec) into a shared layer every module can query, so the
@@ -179,17 +193,23 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
 
 ## Honest limits (do not over-read the green)
 
-- **Five vuln shapes, one target, N=5 each.** X-CROSS (write→write-record), X-EQUIV (read-type
+- **Five vuln shapes, one target, one model.** X-CROSS (write→write-record), X-EQUIV (read-type
   semantic equivalence), X-SILENT (write→object-state), X-DELETE (delete→negative assertion), X-MASS (mass-assignment→
   low-entropy state jump). nested-object, multi-step, and noisier real audit logs are untested.
-  "Mechanism proven on these classes," not "verifier finished."
-- **Post-fix live no-regression: CONFIRMED across all five shapes** (`scripts/audit/shadow_m14_regress_run.out.txt`,
-  N=5 each, 30/30 runs clean, zero degraded). With the M1.4 routing fix in place: B-1 X-CROSS
-  `verified` **5/5** (still `write_record_readback_decisive`), X-SILENT-VULN `verified` **5/5**,
-  X-DELETE-VULN-HARD/SOFT `verified` **5/5** each (`confirmed_physical` / `confirmed_logical`), and
-  **every SAFE case 0 `verified`** (X-SILENT-SAFE `no_jump`, X-DELETE-SAFE `still_present`).
-  X-SILENT-VULN now exempts via `state_jump_causally_decisive` rather than
-  `state_readback_causally_decisive` — **that is the routing fix working as designed** (a pre-flight
+  "Mechanism proven on these classes," not "verifier finished." **N is no longer the thin dimension:**
+  the high-N re-measure (above) is **140 SAFE/control + 70 VULN runs, 0 FP**, all gemini-2.5-pro on the
+  single `vulnerable_target`. The genuine remaining gaps are **target-diversity and model-diversity**,
+  not sample size.
+- **Post-fix live no-regression: CONFIRMED across all five shapes.** The authoritative record is now the
+  high-N re-measure (`scripts/audit/shadow_highN_zerofp_run.out.txt` + `…_highN_xequiv_run.out.txt`),
+  which supersedes the earlier N=5 regression run (`shadow_m14_regress_run.out.txt`, 30/30 clean). With
+  the M1.4 routing fix in place: B-1 X-CROSS `verified` **10/10** (still `write_record_readback_decisive`),
+  X-SILENT-VULN `verified` **10/10**, X-EQUIV-VULN `verified` **10/10**, X-DELETE-VULN-HARD/SOFT
+  `verified` **10/10** each (`confirmed_physical` / `confirmed_logical`), X-MASS-VULN present + missing
+  `verified` **10/10** each, and **every SAFE/control case 0 `verified`** across N=20 (X-SILENT-SAFE
+  `no_jump`, X-DELETE-SAFE `still_present`, X-EQUIV-SAFE `value_mismatch`, both X-MASS-SAFE, the
+  no-jump CONTROL, and B-1 X-SAFE). X-SILENT-VULN now exempts via `state_jump_causally_decisive` rather
+  than `state_readback_causally_decisive` — **that is the routing fix working as designed** (a pre-flight
   baseline exists, so the stricter gate governs); the verdict is unchanged.
 - **Black-box boundary (mapped, M1.2):** a silent write with **no same-path GET and no relevant
   write-record** is **NOT confirmable by the model's unaided follow-up** — the model does not, on its
@@ -244,24 +264,26 @@ deployment, the nuclei keep-vs-cut decision — parked until a benchmark justifi
 
 ## Immediate next steps
 
-> M1.2 and M1.3 are **done** (live-measured, 0 FP). The design principle they proved —
-> **code deterministically gathers the evidence; the model only does the irreplaceable semantic
-> read** — is a standing discipline in [`ROADMAP.md`](./ROADMAP.md) §6. The full deferred/rejected
-> register lives in ROADMAP "Future / deferred" and "Considered and rejected".
+> **M1 is COMPLETE — all five shapes done** (B-1/M1.0, M1.1, M1.2, M1.3, M1.4), live-measured at high N,
+> **0 FP**. The design principle they proved — **code deterministically gathers the evidence; the model
+> only does the irreplaceable semantic read** — is a standing discipline in
+> [`ROADMAP.md`](./ROADMAP.md) §6. The full deferred/rejected register lives in ROADMAP "Future /
+> deferred" and "Considered and rejected". The ordered next line mirrors ROADMAP §7.
 
-1. **M1.4 — mass-assignment (the next shape).** ⚠️ **Known hazard, decide it up front:** this shape
-   writes *existing, low-entropy* fields (an owner/role id, a boolean flag), which **breaks
-   payload-causality's unique-value assumption** — the injected value can collide with a value that
-   was already there, so "the value is present" would no longer prove *this* attack caused it. Like
-   the delete shape, it likely needs its own decisive-evidence anchor (e.g. a pre-flight
-   before/after diff of the specific field) rather than reusing causality as-is. See ROADMAP §7.
-2. **D21** — promote the spec source to a declared config field (currently the `getattr`
-   seam), so the real catalog can be wired for normal use, not just harnesses.
-4. **D19** — only after generalization is proven: promote the AI verdict from observe-only to
+1. **D21** — promote the spec source to a declared config field (currently the `getattr`
+   seam at `fuzzer.py:1267`), so the real catalog can be wired for normal use, not just harnesses.
+   Cheap, low-risk; it is a *prerequisite* for D19 and any real-target use, not a milestone.
+2. **Broaden the proof — the real remaining gap.** N is already high (140 SAFE / 70 VULN, 0 FP); what
+   is *not* yet shown is that the mechanism holds on a **second, structurally-different target** and
+   (ideally) a **second model**. This is the highest-leverage work before D19 — it both de-risks
+   promotion and is the "benchmark vs agent-style PoC" evidence. Update `RESULTS.md` with the high-N
+   result while here.
+3. **D19** — only after the proof is broadened: promote the AI verdict from observe-only to
    authoritative in the real flow, with a gating policy.
-   - **Gating constraint (from M1.2 anchoring):** the authoritative gate must be
-     **payload-causality**, not caller-identity — caller-identity `confirms` for BOTH VULN and
-     SAFE (a dropped cross-user write still leaves the object owned by the victim), so only the
-     unique-value-landed causality anchor separates a real leak from a securely-dropped write.
-5. **Scope-lock hardening** (HARD prerequisite before any real / non-lab target);
-   **benchmark vs agent-style PoC tools** on a public target; retire the legacy `frontend/` (D5).
+   - **Gating constraint (from M1.2 anchoring, narrowed by M1.4):** the authoritative gate must key on
+     **payload-causality — or, whenever a pre-flight baseline exists, the stricter state-jump gate** —
+     **never caller-identity**, which `confirms` for BOTH VULN and SAFE (a dropped cross-user write
+     still leaves the object owned by the victim). Only the causality / state-jump anchor separates a
+     real leak from a securely-dropped write.
+4. **Scope-lock hardening** (HARD prerequisite before any real / non-lab target);
+   retire the legacy `frontend/` (D5).

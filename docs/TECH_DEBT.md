@@ -505,29 +505,33 @@
   same `verified`, stricter reason).
 - **Live-measured** (N=5 each, gemini-2.5-pro, fresh-seeded per run; transcript
   `scripts/audit/shadow_m14_mass_assignment_run.out.txt`. These cases were later **re-measured at
-  higher N** — `scripts/audit/shadow_highN_zerofp_run.out.txt`, N=20 SAFE / N=10 VULN — which is now
-  the authoritative record. A second N=5 transcript, `…_postfix_run.out.txt`, was **accidentally
-  overwritten** by a regression driver copied from it that kept its hardcoded output path; the
-  figures below were recorded before that and are unaffected, and the high-N re-run supersedes
-  them):
-  X-MASS-VULN present-value→`verified` **5/5**; X-MASS-VULN MISSING→injected→`verified` **5/5**;
-  **X-MASS-SAFE present→`verified` 0/5** and **missing→`verified` 0/5**; **CONTROL
-  (injected == pre-flight value, no jump)→`verified` 0/5**. On the SAFE cases the model raw-said
-  `verified` and **the gate refused every time** — the line is held by code, not by model
-  compliance.
-- **Post-fix live NO-REGRESSION: CONFIRMED, all four prior shapes** (`scripts/audit/shadow_m14_regress_run.out.txt`,
-  N=5 each, **30/30 runs clean, zero degraded**). An earlier attempt was truncated by the Gemini
-  project's monthly spending cap (27/55 runs `429 RESOURCE_EXHAUSTED` → `status=degraded`, no
-  verdict — graceful, but not data); it was re-run in full once budget was restored rather than
-  shipped as an offline-only gap. Results with the routing fix in place: B-1 X-CROSS `verified`
-  **5/5** (`write_record_readback_decisive`, pre-flight `None` — a record path resolves no object
-  state, exactly as designed); X-SILENT-VULN `verified` **5/5**; X-DELETE-VULN-HARD `verified`
-  **5/5** (`confirmed_physical`); X-DELETE-VULN-SOFT `verified` **5/5** (`confirmed_logical`);
-  **X-SILENT-SAFE and X-DELETE-SAFE `verified` 0/5** (`no_jump` / `still_present`).
+  higher N** — `scripts/audit/shadow_highN_zerofp_run.out.txt` (SAFE/control N=20, VULN N=10) plus
+  `shadow_highN_xequiv_run.out.txt` (the M1.1 read shape, same N) — which is now **the authoritative
+  record for the whole M1 suite**, superseding every per-shape N=5 figure across these docs. A second
+  N=5 transcript, `…_postfix_run.out.txt`, was **accidentally overwritten** by a regression driver
+  copied from it that kept its hardcoded output path; the figures below were recorded before that and
+  are unaffected, and the high-N re-run supersedes them):
+  X-MASS-VULN present-value→`verified` **5/5** (high-N **10/10**); X-MASS-VULN MISSING→injected→`verified`
+  **5/5** (high-N **10/10**); **X-MASS-SAFE present→`verified` 0/5** and **missing→`verified` 0/5**
+  (high-N **0/20** each); **CONTROL (injected == pre-flight value, no jump)→`verified` 0/5** (high-N
+  **0/20**). On the SAFE cases the model raw-said `verified` (high-N: **40/40** across the two X-MASS-SAFE
+  cases) and **the gate refused every time** — the line is held by code, not by model compliance.
+  **High-N aggregate: 140 SAFE/control runs → 0 false positives; 70 VULN runs → all `verified`; 0 degraded.**
+- **Post-fix live NO-REGRESSION: CONFIRMED, all prior shapes.** Authoritative record = the high-N
+  re-measure above (`shadow_highN_zerofp_run.out.txt` + `…_highN_xequiv_run.out.txt`), which supersedes
+  the earlier N=5 regression run (`shadow_m14_regress_run.out.txt`, 30/30 clean; itself a re-run after
+  an attempt truncated by the Gemini project's monthly spending cap — 27/55 runs `429 RESOURCE_EXHAUSTED`
+  → `status=degraded`, graceful but not data). With the routing fix in place, at high N: B-1 X-CROSS
+  `verified` **10/10** (`write_record_readback_decisive`, pre-flight `None` — a record path resolves no
+  object state, exactly as designed); X-SILENT-VULN `verified` **10/10**; X-EQUIV-VULN `verified`
+  **10/10**; X-DELETE-VULN-HARD `verified` **10/10** (`confirmed_physical`); X-DELETE-VULN-SOFT
+  `verified` **10/10** (`confirmed_logical`); X-MASS-VULN present + missing `verified` **10/10** each;
+  **every SAFE/control case `verified` 0/20** (X-SILENT-SAFE `no_jump`, X-DELETE-SAFE `still_present`,
+  X-EQUIV-SAFE `value_mismatch`, both X-MASS-SAFE, the no-jump CONTROL, B-1 X-SAFE).
 - **Expected channel shift, not a regression:** X-SILENT-VULN now exempts via
   `state_jump_causally_decisive` instead of `state_readback_causally_decisive`. It is a POST with a
   JSON body whose object-state endpoint resolves, so a pre-flight baseline exists and the **stricter**
-  gate governs by construction. Verdict unchanged (`verified` 5/5), `confirmed_jump` 5/5. The DELETE
+  gate governs by construction. Verdict unchanged (`verified` 10/10), `confirmed_jump` 10/10. The DELETE
   cases keep their own channel (no body → `no_sent_fields` → the jump cannot govern), so the four
   channels remain disjoint under the new routing.
 - **Offline:** `test_m14_mass_assignment.py` (state-jump truth table incl. MISSING vs UNKNOWN,
@@ -557,9 +561,13 @@
 ### Active line (work on these now)
 1. **D21** — declare the spec source (`AI_DEEP_VERIFY_OPENAPI_SPEC`) as a real config field so
    B-1's catalog can be wired for normal use, not just harnesses.
-2. **Broaden the proof** — beyond the single X-CROSS shape (nested-object, delete-type,
-   multi-step, noisier audit logs). Gate hardening (D23 + D23b) is **done**; extend the
-   owner/subject vocabulary as real log samples appear. Update `RESULTS.md` with the B-1 result.
+2. **Broaden the proof** — **shape-breadth is largely met** (five shapes done: write-record,
+   read-semantics, object-state, delete/negative-assertion, mass-assignment/state-jump; N is high —
+   140 SAFE / 70 VULN, 0 FP). The real remaining gap is **a second, structurally-different target**
+   and (ideally) a **second model** — everything so far is gemini-2.5-pro on the single
+   `vulnerable_target`. Optional shape breadth (nested-object, multi-step, noisier audit logs) is
+   extra, not the gate. Gate hardening (D23 + D23b) is **done**; extend the owner/subject vocabulary
+   as real log samples appear. Update `RESULTS.md` with the high-N result.
 3. **D19** — only then: promote the AI verdict from observe-only to authoritative.
 4. **Benchmark vs agent-style PoC validation** — on a public vulnerable target, quantify
    this engine's false-positive / reproducibility rate. The "can it be sold" evidence.

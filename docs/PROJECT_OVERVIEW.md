@@ -99,7 +99,8 @@
 > 一句话:①②③ 是「已提交、已跑通」的规则链路(用户所见判定来自 ③ 的三值预言机);
 > ④ 是**默认关闭、只读观测**的 AI 深度验证层——把 ③ 停在 `suspicious` 的「沉默型」越权
 > (写接口恒返回 `200 {"status":"ok"}`)通过「写后读」区分真伪。④ 的「跨路径自信判定」
-> (B-1)已跑通并**已提交**(`37769b3`;线上影子 N=5:X-CROSS→verified、X-SAFE→安全,并有自动化回归测试锁定),详见 [`STATUS.md`](./STATUS.md)。
+> (B-1)已跑通并**已提交**(`37769b3`;X-CROSS→verified、X-SAFE→安全,并有自动化回归测试锁定),详见 [`STATUS.md`](./STATUS.md)。
+> **当前权威度量为高 N 复测**(gemini-2.5-pro、单靶、每次全新播种、0 降级):**140 次 SAFE/控制组 → 0 误报;70 次 VULN → 全部 `verified`**(`scripts/audit/shadow_highN_zerofp_run.out.txt` + `…_highN_xequiv_run.out.txt`);其中 40 次 SAFE 上模型原始判定想放行、闸门每次都拒绝。下文各形态的 `5/5` 是最初的 N=5 单形态记录,已被此高 N 复测取代。
 
 ### 技术栈
 

@@ -217,7 +217,7 @@ python -m uvicorn vulnerable_target.main:app --reload --port 8001
 
 - Docs / answer key: [`../vulnerable_target/README.md`](../vulnerable_target/README.md)
 - Benchmark dataset: [`../vulnerable_target/benchmark/README.md`](../vulnerable_target/benchmark/README.md)
-- Automated proof: `python -m pytest vulnerable_target/test_vulns.py -v` (14 tests)
+- Automated proof: `python -m pytest vulnerable_target/test_vulns.py -v` (31 tests)
 
 ## 11. Deep verifier manual check (optional, needs Gemini)
 

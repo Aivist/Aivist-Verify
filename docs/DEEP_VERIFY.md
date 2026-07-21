@@ -11,12 +11,19 @@
 > defaults, nothing here runs and behavior is byte-identical to before. The
 > rule-based HTTP verify still uses `fuzzer.py`.
 >
-> **Confirms five vuln shapes, zero false positives** (each live-measured N=5, shadow):
+> **Confirms five vuln shapes, zero false positives** (shadow):
 > **M1.0/B-1** silent cross-path write via a code-gathered **write-record**; **M1.1** read-type
 > **semantic equivalence**; **M1.2** silent cross-path write via a code-gathered **object-STATE**
 > read-back; **M1.3** **delete**-type via a **NEGATIVE ASSERTION** (pre-flight existence + dual-track
 > absence); **M1.4** **mass-assignment** via a **LOW-ENTROPY STATE JUMP** from a known pre-flight
 > state. The verdict is still **observe-only** — promoting it to authoritative is **D19**.
+>
+> **Measurement (authoritative, high-N).** Each shape was first proven at N=5 (per-shape transcripts,
+> still on disk); the current headline is a **high-N re-measure** (gemini-2.5-pro, one target,
+> fresh-seeded, **0 degraded**): **140 SAFE/control runs → 0 false positives; 70 VULN runs → all
+> `verified`** — `scripts/audit/shadow_highN_zerofp_run.out.txt` (SAFE/control N=20, VULN N=10) +
+> `shadow_highN_xequiv_run.out.txt` (M1.1). The per-shape `5/5` figures below the fold are the
+> original runs; where a shape appears in the high-N set its authoritative count is N=20 SAFE / N=10 VULN.
 
 ---
 

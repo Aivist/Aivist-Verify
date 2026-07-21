@@ -64,22 +64,25 @@ the hard cross-path case; the **guard, not model compliance, holds the line**.
 
 **Now confirmed (B-1, committed `37769b3`):** it *does* confirm the hard cross-path case —
 catalog semantics + deterministic code-side write-record gathering + a structural guard
-exemption. **Live-measured** (shadow, N=5): X-CROSS→`verified` 5/5, X-SAFE→`inconclusive`/safe
-5/5, no false verdict, reverse-guards intact — and **locked by an automated regression test**
-(`test_d18_b1_shadow_integration.py`, D22 closed).
+exemption. X-CROSS→`verified`, X-SAFE→`inconclusive`/safe, no false verdict, reverse-guards intact
+— and **locked by an automated regression test** (`test_d18_b1_shadow_integration.py`, D22 closed).
 
-**Now confirmed on four further shapes:** **M1.1** (read-type semantic-equivalence, equal-length —
-X-EQUIV-VULN→`verified` 5/5, X-EQUIV-SAFE→`failed` 5/5), **M1.2** (silent write confirmed via a
-**code-gathered object-STATE** read-back — X-SILENT-VULN→`verified` 5/5, X-SILENT-SAFE→`verified`
-**0/5**), **M1.3** (**delete**-type confirmed by a **NEGATIVE ASSERTION** — X-DELETE-VULN
-hard+soft→`verified` 5/5 each, X-DELETE-SAFE and the never-existed CONTROL→`verified` **0/5**), and
-**M1.4** (**mass-assignment** confirmed by a **LOW-ENTROPY STATE JUMP** — X-MASS-VULN present-value
-and MISSING→injected `verified` 5/5 each, X-MASS-SAFE and the no-jump CONTROL→`verified` **0/5**).
-B-1 not regressed throughout.
+**Now confirmed on four further shapes:** **M1.1** (read-type semantic-equivalence, equal-length),
+**M1.2** (silent write confirmed via a **code-gathered object-STATE** read-back), **M1.3**
+(**delete**-type confirmed by a **NEGATIVE ASSERTION**), and **M1.4** (**mass-assignment** confirmed
+by a **LOW-ENTROPY STATE JUMP**). B-1 not regressed throughout.
+
+**Measurement (authoritative, high-N).** The original per-shape runs were N=5; the current headline
+figure is a **high-N re-measure** (gemini-2.5-pro, one target, fresh-seeded, **0 degraded**):
+`scripts/audit/shadow_highN_zerofp_run.out.txt` (SAFE/control N=20, VULN N=10) +
+`shadow_highN_xequiv_run.out.txt` (the M1.1 read shape). Aggregate: **140 SAFE/control runs →
+FINAL `verified` = 0** (0 false positives) and **70 VULN runs → FINAL `verified` = all**. On **40**
+of the SAFE runs (both `X-MASS-SAFE` cases) the model's raw verdict was `verified` and the gate
+refused all 40 — the line is held by code, not model compliance.
 
 **Not yet:** it does not yet *act* (shadow-only — the persisted verdict is still the rule
 oracle's; making the AI verdict authoritative is D19); and it is proven on **five vuln shapes,
-one target, N=5 each**.
+one target, one model** — the remaining thin dimensions are target- and model-diversity, not N.
 
 **Bottom line:** the moat's hard-case proof point is met and committed, and now generalizes across
 **five shapes with zero false positives** — including one (delete) whose proof is an *absence*
@@ -157,6 +160,10 @@ core "can it confirm?" question.
    > (B-1), read→semantics (M1.1), silent write→object-state (M1.2), delete→negative assertion
    > (M1.3), mass-assignment→low-entropy state jump (M1.4). The "prove generalization"
    > milestone that gated D19 is met. **Next line: D21 → D19 → pre-release → pre-real-target.**
+   >
+   > *(The per-shape figures in the rows above are the original N=5 runs. Authoritative headline = the
+   > high-N re-measure: **140 SAFE/control → 0 FP, 70 VULN → all `verified`**, gemini-2.5-pro / one
+   > target / 0 degraded — `scripts/audit/shadow_highN_zerofp_run.out.txt` + `…_highN_xequiv_run.out.txt`. §3.)*
 
    > **M2 — Shared Domain Model (later, NOT started):** a resource/endpoint relationship graph — sink
    > upstream observations (proxy / HAR / spec) into a shared layer every module can query, so the
