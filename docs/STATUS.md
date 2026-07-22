@@ -31,7 +31,7 @@ gate refused every one — the safety line is held by code, not by model complia
 
 | Suite | Command (from repo root) | Result |
 |---|---|---|
-| Backend | `python -m pytest backend/tests -q` | **285 passed** |
+| Backend | `python -m pytest backend/tests -q` | **293 passed** |
 | Ground-truth target | `python -m pytest vulnerable_target -q` | **31 passed** |
 
 ## The main line (three nodes)
@@ -252,9 +252,10 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
   `AI_DEEP_VERIFY_ENABLED` and `AI_DEEP_VERIFY_SHADOW`. Both must be `True` for a live
   Gemini call. With defaults, Phase 7 is a no-op and the engine behaves as the committed
   rule-oracle path.
-- **The real spec source is not auto-wired.** The shadow pass reads its OpenAPI spec from
-  `settings.AI_DEEP_VERIFY_OPENAPI_SPEC`, which is **not a declared config field** (read
-  via `getattr`; TECH_DEBT **D21**). With nothing set, the catalog stays the placeholder.
+- **The real spec source is now a declared config field (D21 ✅).** The shadow pass reads its
+  OpenAPI spec from `settings.AI_DEEP_VERIFY_OPENAPI_SPEC` — a first-class `Optional[str]` path
+  settable from `.env`/env (resolved to a parsed spec + fail-safe to placeholder at the fuzzer
+  consumption point). **With nothing set, the catalog stays the byte-identical placeholder.**
 - **No authentication** on any API route (TECH_DEBT **D2**) — keep bound to localhost.
 
 ## Deferred on purpose (do not invest until the moat is broadened)
@@ -270,9 +271,10 @@ deployment, the nuclei keep-vs-cut decision — parked until a benchmark justifi
 > [`ROADMAP.md`](./ROADMAP.md) §6. The full deferred/rejected register lives in ROADMAP "Future /
 > deferred" and "Considered and rejected". The ordered next line mirrors ROADMAP §7.
 
-1. **D21** — promote the spec source to a declared config field (currently the `getattr`
-   seam at `fuzzer.py:1267`), so the real catalog can be wired for normal use, not just harnesses.
-   Cheap, low-risk; it is a *prerequisite* for D19 and any real-target use, not a milestone.
+1. **D21 ✅ DONE** — the spec source is now a declared `Optional[str]` config field
+   (`AI_DEEP_VERIFY_OPENAPI_SPEC`), a path resolved to a parsed spec at the fuzzer consumption
+   point with a fail-safe to the placeholder; in-process dict injection still works (back-compat).
+   Zero regression (unset → byte-identical placeholder), locked by `test_d21_spec_config.py` (8).
 2. **Broaden the proof — the real remaining gap.** N is already high (140 SAFE / 70 VULN, 0 FP); what
    is *not* yet shown is that the mechanism holds on a **second, structurally-different target** and
    (ideally) a **second model**. This is the highest-leverage work before D19 — it both de-risks

@@ -92,6 +92,21 @@ class Settings(BaseSettings):
         description="Run the deep verifier in read-only shadow mode after a fuzzing batch (observes 'suspicious' records; never changes verdicts). Off by default."
     )
 
+    # Optional real endpoint-surface source for the shadow deep verifier's
+    # `available_endpoints` (D18/D21). A FILESYSTEM PATH to an OpenAPI/Swagger JSON
+    # document, settable from .env / the environment exactly like the two flags above
+    # (e.g. AI_DEEP_VERIFY_OPENAPI_SPEC=/abs/path/to/openapi.json). Default None => the
+    # shadow pass uses its byte-identical placeholder catalog (ZERO REGRESSION). This
+    # field ONLY widens the endpoint list shown to the model; it never touches a verdict
+    # or the verdict gate. The consumer (fuzzer._resolve_openapi_catalog_source) reads +
+    # parses the file and FAILS SAFE back to the placeholder on any missing-file / parse /
+    # type error; for in-process measurement drivers it also accepts an already-parsed
+    # spec dict injected directly onto `settings`. JSON only (no declared YAML dep).
+    AI_DEEP_VERIFY_OPENAPI_SPEC: Optional[str] = Field(
+        default=None,
+        description="Path to an OpenAPI/Swagger JSON file feeding the shadow deep verifier's endpoint catalog (D18/D21). Empty => byte-identical placeholder catalog. Observe-only; never affects a verdict."
+    )
+
     # --------------------------------------------------------------------------
     # 4. Scan & Fuzzing Engine Settings
     # --------------------------------------------------------------------------

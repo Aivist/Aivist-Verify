@@ -281,9 +281,11 @@ shape, the decisive-evidence standard in the prompt must learn it too, or the tw
   path shape. Real targets need an explicit two-account ownership baseline.
 
 ### Phase — next line now that M1 is complete (in order)
-- **D21** — promote the OpenAPI spec source to a declared config field (today it is the undeclared
-  `AI_DEEP_VERIFY_OPENAPI_SPEC` `getattr` seam), so the real catalog is reachable in normal use and
-  not only from measurement harnesses.
+- **D21 ✅ DONE** — the OpenAPI spec source is now a declared `Optional[str]` config field
+  (`AI_DEEP_VERIFY_OPENAPI_SPEC`, a path settable from `.env`; resolved to a parsed spec with a
+  fail-safe to the placeholder at the fuzzer consumption point, in-process dict injection still
+  accepted for measurement drivers). The real catalog is reachable in normal use, not only from
+  harnesses; zero-regression locked by `test_d21_spec_config.py`.
 - **D19** — promote the AI verdict from observe-only to **authoritative**. This was explicitly gated
   on M1 proving generalization; that gate is now met (five shapes, zero FP). Decide the promotion
   policy (e.g. let the AI verdict resolve only the rule oracle's `suspicious` band) with the full

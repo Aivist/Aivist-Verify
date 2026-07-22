@@ -1221,6 +1221,54 @@ def _shadow_endpoint_catalog(
     return sorted(merged, key=lambda e: (e.partition(" ")[2], e.partition(" ")[0]))
 
 
+def _resolve_openapi_catalog_source(spec_value: Any) -> Optional[Dict[str, Any]]:
+    """Turn the AI_DEEP_VERIFY_OPENAPI_SPEC setting into a build_catalog descriptor (D21).
+
+    The setting is normally a FILESYSTEM PATH (str) to an OpenAPI/Swagger JSON document,
+    so it can be set from .env / the environment like the other AI_DEEP_VERIFY_* flags.
+    For backward compatibility with in-process measurement drivers that inject an
+    ALREADY-PARSED spec dict straight onto `settings`, a dict is also accepted verbatim.
+
+    Returns a `{"kind": "openapi", "spec": <parsed dict>}` descriptor, or None when the
+    setting is unset OR unusable. FAIL-SAFE: a missing file, a parse error, or a value of
+    the wrong type logs a warning and returns None, so `_shadow_endpoint_catalog` falls
+    back to its byte-identical placeholder — the shadow pass is never weakened or broken by
+    a bad spec source (the same fail-safe posture `_shadow_endpoint_catalog` itself takes).
+
+    JSON only: the repo declares no YAML dependency, so a YAML spec is intentionally not
+    parsed here (adding it would rely on an undeclared, environment-incidental import).
+    """
+    if not spec_value:
+        return None
+    # Back-compat: an already-parsed spec dict (in-process measurement drivers).
+    if isinstance(spec_value, dict):
+        return {"kind": "openapi", "spec": spec_value}
+    # Normal config: a filesystem path to an OpenAPI JSON document.
+    if isinstance(spec_value, str):
+        try:
+            with open(spec_value, "r", encoding="utf-8") as fh:
+                spec = json.load(fh)
+        except Exception as e:
+            logger.warning(
+                "[FUZZER · SHADOW] AI_DEEP_VERIFY_OPENAPI_SPEC=%r is unusable (%s); "
+                "falling back to the placeholder catalog.", spec_value, e,
+            )
+            return None
+        if not isinstance(spec, dict):
+            logger.warning(
+                "[FUZZER · SHADOW] AI_DEEP_VERIFY_OPENAPI_SPEC=%r did not parse to a JSON "
+                "object; falling back to the placeholder catalog.", spec_value,
+            )
+            return None
+        return {"kind": "openapi", "spec": spec}
+    # Any other type is a misconfiguration -> fail safe.
+    logger.warning(
+        "[FUZZER · SHADOW] AI_DEEP_VERIFY_OPENAPI_SPEC has unexpected type %s; "
+        "falling back to the placeholder catalog.", type(spec_value).__name__,
+    )
+    return None
+
+
 async def _run_shadow_deep_verification(
     jobs: List["_FindingJob"], custody: Optional["AuthCustodyController"]
 ) -> None:
@@ -1259,13 +1307,13 @@ async def _run_shadow_deep_verification(
 
         logger.info(f"[FUZZER · SHADOW] Shadow-verifying {len(rows)} suspicious record(s) (read-only).")
 
-        # Optional settings-pointed spec source (integration seam (a)). Absent by
-        # default -> catalog_source stays None -> _shadow_endpoint_catalog returns
-        # the byte-identical placeholder (zero regression). When configured, the
-        # real endpoint surface is handed to the verifier. Live fetch is optional
-        # and intentionally not performed here.
-        _spec = getattr(settings, "AI_DEEP_VERIFY_OPENAPI_SPEC", None)
-        catalog_source = {"kind": "openapi", "spec": _spec} if _spec else None
+        # Optional settings-pointed spec source (D18/D21). Absent by default ->
+        # catalog_source stays None -> _shadow_endpoint_catalog returns the byte-identical
+        # placeholder (zero regression). When set (a path to an OpenAPI JSON file, or an
+        # in-process spec dict), the resolver hands the real endpoint surface to the
+        # verifier; any bad value fails safe back to the placeholder. Live fetch is
+        # intentionally not performed here.
+        catalog_source = _resolve_openapi_catalog_source(settings.AI_DEEP_VERIFY_OPENAPI_SPEC)
 
         for rec in rows:
             # Each record is independent; one failure must not stop the others.

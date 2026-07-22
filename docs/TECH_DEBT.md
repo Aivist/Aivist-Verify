@@ -82,8 +82,8 @@
   radar tests added; Nuclei pipeline still bare.
 - **Where:** `backend/tests/test_api_endpoints.py` (API smoke); `test_step9_proxy.py`
   (proxy radar, Step 9); plus pruner, custody, Step D extraction in other files.
-  Total backend suite: **285 tests** (grew from an old 73 via the verdict-oracle, B-2.2
-  guard, cross-path, catalog, and B-1 write-record + shadow-integration tests). See
+  Total backend suite: **293 tests** (grew from an old 73 via the verdict-oracle, B-2.2
+  guard, cross-path, catalog, B-1 write-record + shadow-integration, and D21 spec-config tests). See
   [`STATUS.md`](./STATUS.md).
 - **Covered:** FastAPI `TestClient` over isolated per-test SQLite with Gemini,
   nuclei subprocess, and background fuzzing mocked — analyze (200 + 422), findings
@@ -285,18 +285,28 @@
   not design the hole or its expected behavior, and the behavior must be byte-verified
   before use as a test case.
 
-### D21 — Catalog spec source is read from an *undeclared* setting (getattr seam)
-- **Where:** `fuzzer.py` (~L1267) `getattr(settings, "AI_DEEP_VERIFY_OPENAPI_SPEC", None)`;
-  `config.py` declares only `AI_DEEP_VERIFY_ENABLED` (L78) and `AI_DEEP_VERIFY_SHADOW`
-  (L90), both default `False`.
-- **Status:** intentional Step-1 seam, but worth knowing. The shadow verifier's real
-  endpoint catalog is fed from `settings.AI_DEEP_VERIFY_OPENAPI_SPEC`, yet that field is
-  **not declared** in `config.py` — it is read defensively via `getattr(..., None)`, so with
-  nothing set the catalog stays the byte-identical placeholder (zero regression).
-  Practically, the spec source is reachable only by patching settings (tests/drivers), not
-  via normal config.
-- **Direction:** when wiring a real spec for production use (B-1), promote it to a declared
-  `config.py` field (a path or inline spec) so it is discoverable and validated like the rest.
+### D21 — Catalog spec source read from an *undeclared* setting — ✅ RESOLVED
+- **Where:** `config.py` now declares `AI_DEEP_VERIFY_OPENAPI_SPEC: Optional[str] = None`
+  (co-located with `AI_DEEP_VERIFY_ENABLED`/`AI_DEEP_VERIFY_SHADOW`, same convention); the
+  consumer is `fuzzer._resolve_openapi_catalog_source` + `_run_shadow_deep_verification`.
+- **Was:** the field was **not declared** in `config.py` and read defensively via
+  `getattr(settings, "AI_DEEP_VERIFY_OPENAPI_SPEC", None)`, so the real endpoint catalog was
+  reachable only by patching settings in-process (tests/drivers), never from normal `.env`/env.
+- **Now:** a first-class **`Optional[str]` path** to an OpenAPI/Swagger **JSON** file, loadable
+  from `.env`/env like the other `AI_DEEP_VERIFY_*` flags (`AI_DEEP_VERIFY_OPENAPI_SPEC=/path/to/openapi.json`).
+  The consumer resolves the path → parsed spec dict and **FAILS SAFE** to the byte-identical
+  placeholder on any missing-file / parse / wrong-type error (mirrors the existing
+  `_shadow_endpoint_catalog` fail-safe). **Back-compat:** an already-parsed spec **dict** injected
+  in-process is still accepted verbatim, so the measurement drivers under `scripts/audit/` keep
+  working unchanged. **Default `None` ⇒ zero regression** (unset → byte-identical placeholder).
+  JSON only (the repo declares no YAML dependency). Observe-only — it widens only the model's
+  `available_endpoints`, never a verdict or the verdict gate.
+- **Proof:** `backend/tests/test_d21_spec_config.py` (8) — zero-regression (the allowed-to-fail
+  safety anchor), positive file→discovered-surface-merged, fail-safe on missing/malformed/non-object/
+  wrong-type, and the dict back-compat path.
+- **Not done here (deliberate):** no startup validator that *raises* on a bad path (would crash the
+  app on a misconfig and violate the shadow-pass "never break" rule); resolution stays fail-safe.
+  YAML support waits on a declared YAML dependency. Live spec fetch is still not performed.
 
 ### D22 — Phase-7 shadow path had no automated test — ✅ RESOLVED (`37769b3`)
 - **Where:** `deep_verifier.execute_deep_verification`.
@@ -559,8 +569,9 @@
 > are the source of truth in [`ROADMAP.md`](./ROADMAP.md) §4 — mirrored below.
 
 ### Active line (work on these now)
-1. **D21** — declare the spec source (`AI_DEEP_VERIFY_OPENAPI_SPEC`) as a real config field so
-   B-1's catalog can be wired for normal use, not just harnesses.
+1. **D21 ✅ DONE** — the spec source (`AI_DEEP_VERIFY_OPENAPI_SPEC`) is now a declared `Optional[str]`
+   config field, wired for normal `.env`/env use with a fail-safe to the placeholder (see the D21
+   entry above). Next up is broadening the proof, then D19.
 2. **Broaden the proof** — **shape-breadth is largely met** (five shapes done: write-record,
    read-semantics, object-state, delete/negative-assertion, mass-assignment/state-jump; N is high —
    140 SAFE / 70 VULN, 0 FP). The real remaining gap is **a second, structurally-different target**

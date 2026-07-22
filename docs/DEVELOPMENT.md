@@ -62,7 +62,7 @@ Loaded by `backend/app/core/config.py`. Required/important keys:
 | `PROXY_INGEST_MAX_BYTES` | no | **Step 9.** Max size of a single internal-ingest POST body, default `262144` (else 413). |
 | `AI_DEEP_VERIFY_ENABLED` | no | default `False`. Gates the isolated `deep_verifier.py` verifier itself (it returns a `disabled` result and never calls the network when off). **No HTTP route uses it**; it is invoked read-only by the fuzzer's shadow-mode Phase 7. See [`DEEP_VERIFY.md`](./DEEP_VERIFY.md). |
 | `AI_DEEP_VERIFY_SHADOW` | no | default `False`. When on, `execute_parallel_fuzzing` runs a read-only **Phase 7** after a batch: it re-checks `suspicious` records with the deep verifier and **only logs** the AI verdict (never changes the persisted verdict). For a live Gemini second opinion, **both** this and `AI_DEEP_VERIFY_ENABLED` must be `True`. See [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md) §Phase 7. |
-| `AI_DEEP_VERIFY_OPENAPI_SPEC` | no | **Integration seam — NOT a declared Settings field.** Read via `getattr(settings, …)` in `fuzzer.py` (config uses `extra="ignore"`, so a plain `.env` value is *not* parsed into `Settings`). When present it optionally feeds the real OpenAPI endpoint catalog into the Phase-7 shadow pass; absent ⇒ a placeholder catalog (zero behavior change). See [`DEEP_VERIFY.md`](./DEEP_VERIFY.md). |
+| `AI_DEEP_VERIFY_OPENAPI_SPEC` | no | **Declared `Optional[str]` field (D21).** Absolute path to an OpenAPI/Swagger **JSON** file; when set it feeds the real endpoint catalog into the Phase-7 shadow pass. Resolved to a parsed spec at the fuzzer consumption point, which **fails safe** to the placeholder on any missing-file / parse / wrong-type error; an already-parsed spec **dict** injected in-process is also accepted (measurement drivers). Unset ⇒ byte-identical placeholder (zero behavior change). JSON only; observe-only (never affects a verdict). See [`DEEP_VERIFY.md`](./DEEP_VERIFY.md). |
 
 > Invalid config fails fast: `config.py` raises on import if a required/validated
 > setting is wrong (e.g. relative `NUCLEI_BINARY_PATH` or `MITMDUMP_PATH`, or an
@@ -102,7 +102,7 @@ importable):
 ```powershell
 python -m pytest backend/tests -q
 ```
-Current suite: **285 tests**. See [`STATUS.md`](./STATUS.md).
+Current suite: **293 tests**. See [`STATUS.md`](./STATUS.md).
 - `test_pruner.py` — exposure scoring + determinism regression tests
 - `test_step8_custody.py` — auth custody / parallel engine
 - `test_step_d_hunter_link.py` — Step D extraction (column-first + legacy fallback)
