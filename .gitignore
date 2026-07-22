@@ -46,3 +46,15 @@ Thumbs.db
 
 # --- Logs ---
 *.log
+
+# --- Audit / measurement artifacts (throwaway evidence — never commit) ---
+# Transcripts and one-off run drivers under scripts/audit/ are measurement harnesses
+# and raw evidence (they embed full AI transcripts and captured response bodies), not
+# product code. Excluding them was previously a MANUAL step on every commit; these rules
+# make it enforced.
+#
+# NOTE: the already-tracked provenance scripts (capture_*.py and shadow_p0_run.py) stay
+# tracked — they are cited as byte-verification provenance in the benchmark. A .gitignore
+# rule does not untrack an already-tracked file, so `shadow_p0_run.py` is unaffected.
+scripts/audit/*.out.txt
+scripts/audit/shadow_*.py
