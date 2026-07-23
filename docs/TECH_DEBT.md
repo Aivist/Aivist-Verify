@@ -366,10 +366,68 @@
   **false negatives on mass-assignment writes** (where the attack legitimately writes an owner
   field). Judged not worth that trade; revisit if real logs show it. Human-owned.
 
-### D24 — 🔴 READ-SEMANTIC verdicts have NO deterministic gate (SEV-1, measured on Depot)
-- **Status: OPEN. This is the most serious known gap in the verification engine.** Found by the
-  second target (`depot_target/`) v1 pilot; confirmed at N=20. **Nothing has been changed in
-  response** — the engine is frozen and the fix is a separate, human-signed-off milestone.
+### D24 — READ-SEMANTIC verdicts had NO deterministic gate (SEV-1) — ✅ RESOLVED
+- **Status: RESOLVED** by the **owner-view differential gate** (commit `033fc9e`), on top of the
+  two-account ownership baseline (`5a33cb2`). Found by the second target (`depot_target/`) v1 pilot
+  and confirmed deterministic at N=20. The history below is kept verbatim: it records the dead ends,
+  the adversarial anchor and the boundaries, so none of it is re-litigated.
+- **What closed it.** Read-semantic was the only shape where **code gathered no evidence at all**;
+  the other four each issue a code-gathered second request, which is exactly why they had real
+  gates. It now gathers evidence the same way: code issues an authenticated read of the SAME object
+  **as the owner** (via the second identity), and a `verified` survives only if the attack response
+  **corroborates that authentic view** — i.e. the attacker demonstrably received the victim's data.
+  Masked stubs, sentinels, echoes and denials do not corroborate **regardless of how the refusal is
+  encoded** (denial keywords are deliberately never consulted — assuming a denial vocabulary is what
+  produced this SEV-1). Downgrade-only by construction: `_apply_owner_view_gate` never assigns the
+  literal `verified` (asserted on the AST), so it can only ever take a `verified` away, never create
+  one. Scoped to the **no-follow-up branch** — keyed on the structural condition, not on HTTP method,
+  because "no follow-up ⇒ no channel reachable" *is* the root cause.
+  Measured outcome — three read-type SECURE cases blocked, two read-type REAL cases still `verified`,
+  the other four shapes untouched (the diff removes zero lines and contains no guard/channel/anchor
+  line). Behavioural proof: same case, same pinned model verdict, pre-gate `FINAL='verified'` vs
+  post-gate `FINAL='inconclusive'`.
+- **⚠️ STILL OPEN — three boundaries this fix does NOT close. No claim may imply otherwise:**
+  1. **Public / shared resources (residual gap).** A genuinely public or shared resource legitimately
+     returns the same content to both identities, so it corroborates and the gate permits. Nothing
+     upstream excludes public resources — verified by code reading; the only near-hit
+     (`"unauthenticated"`, `fuzzer.py:109`) is a soft-logout signature for auth self-heal, unrelated.
+     Because the gate is downgrade-only this is **status quo, not a regression**, and the gate was
+     deliberately NOT contorted to handle it.
+  2. **Owner credential is per-DEPLOYMENT, not per-finding** (`AI_DEEP_VERIFY_OWNER_AUTH`). Sufficient
+     for both labs and for proving this gate; a real target whose findings belong to different owners
+     would need per-finding credentials, which **do not exist**.
+  3. **Threshold calibration boundary (see D24 (f)).** `0.95` is calibrated on **deterministic,
+     seeded lab data** across two targets, comparing **raw** bodies. Robustness against high-entropy
+     real-target responses is **unvalidated**.
+
+#### D24 (f) — calibration boundary and the sanitizer dead end
+- **The threshold rests on lab determinism.** Both REAL cases scored exactly `1.0000` only because
+  seeded lab objects are byte-stable between two reads. Real objects differ (timestamps, generated
+  ids, ETags), which would push a true positive's similarity **down** — toward a wrong block, the
+  same direction the earlier candidate gates died in.
+- **The obvious remedy was measured and REJECTED.** The gate calls `_compute_similarity`
+  ([`fuzzer.py:681`](../backend/app/services/fuzzer.py)) on **raw** bodies; that helper does no
+  scrubbing. The rule oracle instead sanitizes first via `_sanitize_response_text`
+  ([`fuzzer.py:648`](../backend/app/services/fuzzer.py) — JSON noise-key blanking plus regexes for
+  timestamps, **UUIDs** and hex tokens) and only then compares. Reusing that in the gate path looks
+  like a free win. It is not — measured on all five cases:
+
+  | case | truth | RAW sim | SANITIZED sim |
+  |---|---|---|---|
+  | DP-READ-VULN / X-EQUIV-VULN | REAL | 1.0000 | 1.0000 |
+  | DP-READ-SAFE | SECURE | 0.8857 | 0.8991 |
+  | DP-READ-SAFE-ECHO | SECURE | 0.9203 | 0.8972 |
+  | **X-EQUIV-SAFE** | **SECURE** | 0.6697 | **0.9744 → would PASS the gate** |
+
+  The band gap collapses **0.0797 → 0.0256** and `max(SECURE)` rises **above** the threshold. Cause:
+  the sanitizer scrubs precisely the evidence that separates a denial stub from real data — for
+  X-EQUIV-SAFE the `id` key is a `_DYNAMIC_JSON_KEYS` member and `account_ref` is caught by the UUID
+  regex, so both sides blank to `{{DYNAMIC_NOISE}}` and only a trivial delta survives. **Do not adopt
+  the sanitizer wholesale in the gate path.**
+- **Net:** volatile real-target fields push REAL *down*; scrubbing pushes SECURE *up*. Neither
+  direction is validated, and **this cannot be settled by more lab tuning — it needs real-target
+  data.** A "scrub volatile-but-not-identity fields" variant might thread the needle, but that is new
+  logic and would require its own 5-case validation before it is believed.
 - **Where:** `deep_verifier.execute_deep_verification` + `_apply_cross_resource_guard`, on the
   **read-semantic** shape (M1.1) — i.e. any case where the model answers from the attack response
   alone and requests **no follow-up**.
@@ -415,13 +473,12 @@
 - **Consequence for the record:** the headline "140 SAFE runs → 0 false positives" is still true as
   measured, but **20 of those 140 (the X-EQUIV-SAFE runs) were not code-gated** — they were correct
   because the model was correct. Every doc quoting that aggregate has been qualified to say so.
-- **Direction (NOT started, needs sign-off before the engine unfreezes):** give the read-semantic
-  shape a deterministic gate of its own, so a `verified` that rests on the attack response alone must
-  be corroborated by code rather than asserted by the model. Any such gate must be provably
-  **stricter** (it may only ever turn `verified` into something weaker), must not regress the four
-  existing channels, and must be proven on **both** targets — X-EQUIV-VULN/SAFE and
-  DP-READ-VULN/SAFE — before it is believed. **D19 (making the AI verdict authoritative) must not
-  proceed on the read-semantic shape until this is closed.**
+- **Direction — ✅ DELIVERED as specified.** The requirement was: a deterministic gate so a
+  `verified` resting on the attack response alone must be corroborated by code rather than asserted
+  by the model; provably **stricter** (only ever weakening a `verified`); no regression to the four
+  existing channels; proven on **both** targets before being believed. All four held — see "What
+  closed it" above. **D19 is no longer blocked by D24 on the read-semantic shape**, subject to the
+  three boundaries listed above, which remain open and must not be glossed.
 
 #### D24 (a) — the PROVENANCE principle
 - **Statement:** evidence must never be credited from a value the **ATTACKER supplied** — the
@@ -726,11 +783,12 @@
    `vulnerable_target`. Optional shape breadth (nested-object, multi-step, noisier audit logs) is
    extra, not the gate. Gate hardening (D23 + D23b) is **done**; extend the owner/subject vocabulary
    as real log samples appear. Update `RESULTS.md` with the high-N result.
-3. **D24 (🔴 NEW, SEV-1)** — the read-semantic shape has **no deterministic gate**; its verdict is the
-   model's raw opinion. Deterministic false positive (20/20) on the second target. **Blocks D19 for
-   that shape.** Engine stays frozen until a fix milestone is signed off.
-4. **D19** — only then: promote the AI verdict from observe-only to authoritative. Must not proceed
-   on the read-semantic shape while D24 is open.
+3. **D24 ✅ RESOLVED** — the read-semantic shape now has a deterministic gate (owner-view
+   differential, `033fc9e`), built on the two-account ownership baseline (`5a33cb2`). All five shapes
+   are code-gated. **Three boundaries remain open** (public/shared resources, per-deployment rather
+   than per-finding owner credentials, and the threshold's lab-only calibration) — see D24.
+4. **D19** — promote the AI verdict from observe-only to authoritative. No longer blocked by D24,
+   but the three D24 boundaries must be weighed in the promotion policy rather than assumed closed.
 5. **Benchmark vs agent-style PoC validation** — on a public vulnerable target, quantify
    this engine's false-positive / reproducibility rate. The "can it be sold" evidence.
 6. **Scope-lock hardening** before any non-localhost target; **D5** — keep
