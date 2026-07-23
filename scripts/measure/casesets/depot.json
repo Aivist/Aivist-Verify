@@ -1,0 +1,87 @@
+{
+  "target": "depot_target",
+  "module": "depot_target.main:app",
+  "port": 8002,
+  "db_env": "DEPOT_TARGET_DATABASE_URL",
+  "attacker_auth": "Bearer alice-depot-token-aaaa",
+  "owner_auth": "Bearer bob-depot-token-bbbb",
+  "_note": "UUID account ids. a11c...0001=alice(self/attacker), b0b0...0002=bob(victim/owner), dead...dead=never-seeded (coincidence-gate control). Request specs mirror scripts/audit/shadow_depot_pilot_run.py + shadow_d24_realmodel_run.py. baseline_final / baseline_channel are the KNOWN-GOOD record: the v1 pilot for the four non-read shapes, the post-gate (D24) expectation for read-semantic.",
+  "cases": [
+    {"id": "DP-WRITE-SAFE", "ground_truth": "SECURE", "shape": "write_record",
+     "method": "PATCH", "baseline_path": "/depot/accounts/a11ce000-0000-4000-8000-000000000001/memo",
+     "body": {"memo": "$UNIQUE"},
+     "payload": {"location": "path_segment", "target_param": "a11ce000-0000-4000-8000-000000000001", "payload_string": "b0b00000-0000-4000-8000-000000000002", "type": "BOLA"},
+     "baseline_final_not": "verified", "baseline_channel": "cross_resource_readback_not_decisive"},
+
+    {"id": "DP-READ-SAFE", "ground_truth": "SECURE", "shape": "read_semantic",
+     "method": "GET", "baseline_path": "/depot/dockets/a11ce000-0000-4000-8000-000000000001", "body": null,
+     "payload": {"location": "path_segment", "target_param": "a11ce000-0000-4000-8000-000000000001", "payload_string": "b0b00000-0000-4000-8000-000000000002", "type": "BOLA"},
+     "baseline_final_not": "verified", "baseline_channel": "owner_view_not_corroborated"},
+
+    {"id": "DP-READ-SAFE-ECHO", "ground_truth": "SECURE", "shape": "read_semantic",
+     "method": "GET", "baseline_path": "/depot/bonds/a11ce000-0000-4000-8000-000000000001", "body": null,
+     "payload": {"location": "path_segment", "target_param": "a11ce000-0000-4000-8000-000000000001", "payload_string": "b0b00000-0000-4000-8000-000000000002", "type": "BOLA"},
+     "baseline_final_not": "verified", "baseline_channel": "owner_view_not_corroborated"},
+
+    {"id": "DP-SILENT-SAFE", "ground_truth": "SECURE", "shape": "silent_write",
+     "method": "POST", "baseline_path": "/depot/accounts/a11ce000-0000-4000-8000-000000000001/tag",
+     "body": {"code": "$UNIQUE"},
+     "payload": {"location": "path_segment", "target_param": "a11ce000-0000-4000-8000-000000000001", "payload_string": "b0b00000-0000-4000-8000-000000000002", "type": "BOLA"},
+     "baseline_final_not": "verified", "baseline_channel": "cross_resource_readback_not_decisive"},
+
+    {"id": "DP-DELETE-SAFE", "ground_truth": "SECURE", "shape": "delete",
+     "method": "DELETE", "baseline_path": "/depot/accounts/a11ce000-0000-4000-8000-000000000001/label", "body": null,
+     "payload": {"location": "path_segment", "target_param": "a11ce000-0000-4000-8000-000000000001", "payload_string": "b0b00000-0000-4000-8000-000000000002", "type": "BOLA"},
+     "baseline_final_not": "verified", "baseline_channel": "cross_resource_readback_not_decisive"},
+
+    {"id": "DP-DELETE-CONTROL", "ground_truth": "CONTROL", "shape": "delete",
+     "method": "DELETE", "baseline_path": "/depot/accounts/a11ce000-0000-4000-8000-000000000001/hold", "body": null,
+     "payload": {"location": "path_segment", "target_param": "a11ce000-0000-4000-8000-000000000001", "payload_string": "dead0000-0000-4000-8000-00000000dead", "type": "BOLA"},
+     "baseline_final_not": "verified", "baseline_channel": null},
+
+    {"id": "DP-MASS-SAFE", "ground_truth": "SECURE", "shape": "mass_assignment",
+     "method": "PATCH", "baseline_path": "/depot/accounts/a11ce000-0000-4000-8000-000000000001/preference",
+     "body": {"plan": "$UNIQUE", "tier": "priority"},
+     "payload": {"location": "path_segment", "target_param": "a11ce000-0000-4000-8000-000000000001", "payload_string": "b0b00000-0000-4000-8000-000000000002", "type": "MASS_ASSIGNMENT"},
+     "baseline_final_not": "verified", "baseline_channel": "cross_resource_readback_not_decisive"},
+
+    {"id": "DP-MASS-CONTROL", "ground_truth": "CONTROL", "shape": "mass_assignment",
+     "method": "PATCH", "baseline_path": "/depot/accounts/a11ce000-0000-4000-8000-000000000001/profile",
+     "body": {"tier": "standard"},
+     "payload": {"location": "path_segment", "target_param": "a11ce000-0000-4000-8000-000000000001", "payload_string": "b0b00000-0000-4000-8000-000000000002", "type": "MASS_ASSIGNMENT"},
+     "baseline_final_not": "verified", "baseline_channel": null},
+
+    {"id": "DP-WRITE-VULN", "ground_truth": "REAL", "shape": "write_record",
+     "method": "PATCH", "baseline_path": "/depot/accounts/a11ce000-0000-4000-8000-000000000001/recipient",
+     "body": {"recipient": "$UNIQUE"},
+     "payload": {"location": "path_segment", "target_param": "a11ce000-0000-4000-8000-000000000001", "payload_string": "b0b00000-0000-4000-8000-000000000002", "type": "BOLA"},
+     "baseline_final": "verified", "baseline_channel": "write_record_readback_decisive"},
+
+    {"id": "DP-READ-VULN", "ground_truth": "REAL", "shape": "read_semantic",
+     "method": "GET", "baseline_path": "/depot/waybills/a11ce000-0000-4000-8000-000000000001", "body": null,
+     "payload": {"location": "path_segment", "target_param": "a11ce000-0000-4000-8000-000000000001", "payload_string": "b0b00000-0000-4000-8000-000000000002", "type": "BOLA"},
+     "baseline_final": "verified", "baseline_channel": null},
+
+    {"id": "DP-SILENT-VULN", "ground_truth": "REAL", "shape": "silent_write",
+     "method": "POST", "baseline_path": "/depot/accounts/a11ce000-0000-4000-8000-000000000001/seal",
+     "body": {"code": "$UNIQUE"},
+     "payload": {"location": "path_segment", "target_param": "a11ce000-0000-4000-8000-000000000001", "payload_string": "b0b00000-0000-4000-8000-000000000002", "type": "BOLA"},
+     "baseline_final": "verified", "baseline_channel": "state_jump_causally_decisive"},
+
+    {"id": "DP-DELETE-HARD", "ground_truth": "REAL", "shape": "delete",
+     "method": "DELETE", "baseline_path": "/depot/accounts/a11ce000-0000-4000-8000-000000000001/hold", "body": null,
+     "payload": {"location": "path_segment", "target_param": "a11ce000-0000-4000-8000-000000000001", "payload_string": "b0b00000-0000-4000-8000-000000000002", "type": "BOLA"},
+     "baseline_final": "verified", "baseline_channel": "delete_readback_negative_assertion_decisive"},
+
+    {"id": "DP-DELETE-SOFT", "ground_truth": "REAL", "shape": "delete",
+     "method": "DELETE", "baseline_path": "/depot/accounts/a11ce000-0000-4000-8000-000000000001/escort", "body": null,
+     "payload": {"location": "path_segment", "target_param": "a11ce000-0000-4000-8000-000000000001", "payload_string": "b0b00000-0000-4000-8000-000000000002", "type": "BOLA"},
+     "baseline_final": "verified", "baseline_channel": "delete_readback_negative_assertion_decisive"},
+
+    {"id": "DP-MASS-VULN", "ground_truth": "REAL", "shape": "mass_assignment",
+     "method": "PATCH", "baseline_path": "/depot/accounts/a11ce000-0000-4000-8000-000000000001/profile",
+     "body": {"plan": "$UNIQUE", "tier": "priority"},
+     "payload": {"location": "path_segment", "target_param": "a11ce000-0000-4000-8000-000000000001", "payload_string": "b0b00000-0000-4000-8000-000000000002", "type": "MASS_ASSIGNMENT"},
+     "baseline_final": "verified", "baseline_channel": "state_jump_causally_decisive"}
+  ]
+}

@@ -1,0 +1,80 @@
+{
+  "target": "vulnerable_target",
+  "module": "vulnerable_target.main:app",
+  "port": 8001,
+  "db_env": "VULN_TARGET_DATABASE_URL",
+  "attacker_auth": "Bearer alice-token-aaaa",
+  "owner_auth": "Bearer bob-token-bbbb",
+  "_note": "Request specs mirror scripts/audit/shadow_highN_zerofp_run.py + shadow_highN_xequiv_run.py exactly. baseline_final / baseline_channel are the KNOWN-GOOD record the sweep is checked against: the pre-gate high-N record for the four non-read shapes, and the post-gate (D24) expectation for the read-semantic shape. '$UNIQUE' in a body is replaced per run with a fresh high-entropy value.",
+  "cases": [
+    {"id": "X-SILENT-SAFE", "ground_truth": "SECURE", "shape": "silent_write",
+     "method": "POST", "baseline_path": "/api/users/1/sprocket", "body": {"code": "$UNIQUE"},
+     "payload": {"location": "path_segment", "target_param": "1", "payload_string": "2", "type": "BOLA"},
+     "baseline_final_not": "verified", "baseline_channel": "cross_resource_readback_not_decisive"},
+
+    {"id": "X-DELETE-SAFE", "ground_truth": "SECURE", "shape": "delete",
+     "method": "DELETE", "baseline_path": "/api/users/1/seal", "body": null,
+     "payload": {"location": "path_segment", "target_param": "1", "payload_string": "2", "type": "BOLA"},
+     "baseline_final_not": "verified", "baseline_channel": "cross_resource_readback_not_decisive"},
+
+    {"id": "X-MASS-SAFE-PRESENT", "ground_truth": "SECURE", "shape": "mass_assignment",
+     "method": "PATCH", "baseline_path": "/api/users/1/subscription", "body": {"plan": "$UNIQUE", "role": "admin"},
+     "payload": {"location": "path_segment", "target_param": "1", "payload_string": "2", "type": "MASS_ASSIGNMENT"},
+     "baseline_final_not": "verified", "baseline_channel": "cross_resource_readback_not_decisive"},
+
+    {"id": "X-MASS-SAFE-MISSING", "ground_truth": "SECURE", "shape": "mass_assignment",
+     "method": "PATCH", "baseline_path": "/api/users/1/subscription", "body": {"plan": "$UNIQUE", "role": "admin"},
+     "payload": {"location": "path_segment", "target_param": "1", "payload_string": "3", "type": "MASS_ASSIGNMENT"},
+     "baseline_final_not": "verified", "baseline_channel": "cross_resource_readback_not_decisive"},
+
+    {"id": "X-MASS-CONTROL", "ground_truth": "CONTROL", "shape": "mass_assignment",
+     "method": "PATCH", "baseline_path": "/api/users/1/membership", "body": {"role": "member"},
+     "payload": {"location": "path_segment", "target_param": "1", "payload_string": "2", "type": "MASS_ASSIGNMENT"},
+     "baseline_final_not": "verified", "baseline_channel": null},
+
+    {"id": "B1-X-SAFE", "ground_truth": "SECURE", "shape": "write_record",
+     "method": "POST", "baseline_path": "/api/users/1/nickname", "body": {"nickname": "$UNIQUE"},
+     "payload": {"location": "path_segment", "target_param": "1", "payload_string": "2", "type": "BOLA"},
+     "baseline_final_not": "verified", "baseline_channel": "cross_resource_readback_not_decisive"},
+
+    {"id": "X-EQUIV-SAFE", "ground_truth": "SECURE", "shape": "read_semantic",
+     "method": "GET", "baseline_path": "/api/ledgers/1", "body": null,
+     "payload": {"location": "path_segment", "target_param": "1", "payload_string": "2", "type": "BOLA"},
+     "baseline_final_not": "verified", "baseline_channel": null},
+
+    {"id": "B1-X-CROSS", "ground_truth": "REAL", "shape": "write_record",
+     "method": "POST", "baseline_path": "/api/users/1/display-name", "body": {"display_name": "$UNIQUE"},
+     "payload": {"location": "path_segment", "target_param": "1", "payload_string": "2", "type": "BOLA"},
+     "baseline_final": "verified", "baseline_channel": "write_record_readback_decisive"},
+
+    {"id": "X-SILENT-VULN", "ground_truth": "REAL", "shape": "silent_write",
+     "method": "POST", "baseline_path": "/api/users/1/gizmo", "body": {"code": "$UNIQUE"},
+     "payload": {"location": "path_segment", "target_param": "1", "payload_string": "2", "type": "BOLA"},
+     "baseline_final": "verified", "baseline_channel": "state_jump_causally_decisive"},
+
+    {"id": "X-DELETE-VULN-HARD", "ground_truth": "REAL", "shape": "delete",
+     "method": "DELETE", "baseline_path": "/api/users/1/relic", "body": null,
+     "payload": {"location": "path_segment", "target_param": "1", "payload_string": "2", "type": "BOLA"},
+     "baseline_final": "verified", "baseline_channel": "delete_readback_negative_assertion_decisive"},
+
+    {"id": "X-DELETE-VULN-SOFT", "ground_truth": "REAL", "shape": "delete",
+     "method": "DELETE", "baseline_path": "/api/users/1/badge", "body": null,
+     "payload": {"location": "path_segment", "target_param": "1", "payload_string": "2", "type": "BOLA"},
+     "baseline_final": "verified", "baseline_channel": "delete_readback_negative_assertion_decisive"},
+
+    {"id": "X-MASS-VULN-PRESENT", "ground_truth": "REAL", "shape": "mass_assignment",
+     "method": "PATCH", "baseline_path": "/api/users/1/membership", "body": {"plan": "$UNIQUE", "role": "admin"},
+     "payload": {"location": "path_segment", "target_param": "1", "payload_string": "2", "type": "MASS_ASSIGNMENT"},
+     "baseline_final": "verified", "baseline_channel": "state_jump_causally_decisive"},
+
+    {"id": "X-MASS-VULN-MISSING", "ground_truth": "REAL", "shape": "mass_assignment",
+     "method": "PATCH", "baseline_path": "/api/users/1/membership", "body": {"plan": "$UNIQUE", "role": "admin"},
+     "payload": {"location": "path_segment", "target_param": "1", "payload_string": "3", "type": "MASS_ASSIGNMENT"},
+     "baseline_final": "verified", "baseline_channel": "state_jump_causally_decisive"},
+
+    {"id": "X-EQUIV-VULN", "ground_truth": "REAL", "shape": "read_semantic",
+     "method": "GET", "baseline_path": "/api/statements/1", "body": null,
+     "payload": {"location": "path_segment", "target_param": "1", "payload_string": "2", "type": "BOLA"},
+     "baseline_final": "verified", "baseline_channel": null}
+  ]
+}
