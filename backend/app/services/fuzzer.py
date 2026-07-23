@@ -1285,7 +1285,10 @@ async def _run_shadow_deep_verification(
     try:
         # Imported lazily so the module has zero new import-time dependencies when
         # shadow mode is off (the default).
-        from backend.app.services.deep_verifier import execute_deep_verification
+        from backend.app.services.deep_verifier import (
+            execute_deep_verification,
+            OwnerCredential,
+        )
 
         job_by_id = {job.finding_id: job for job in (jobs or [])}
         finding_ids = list(job_by_id.keys())
@@ -1315,6 +1318,13 @@ async def _run_shadow_deep_verification(
         # intentionally not performed here.
         catalog_source = _resolve_openapi_catalog_source(settings.AI_DEEP_VERIFY_OPENAPI_SPEC)
 
+        # Two-account ownership baseline: the OWNER/VICTIM credential, resolved here so the
+        # second identity reaches the REAL Phase-7 pipeline and not just a measurement
+        # harness. Absent by default -> None -> byte-identical behavior. It is passed
+        # through only; nothing consumes it yet (the D24 read-semantic gate is a separate
+        # milestone), and it is NEVER used for an attack request.
+        owner_credential = OwnerCredential.from_config(settings.AI_DEEP_VERIFY_OWNER_AUTH)
+
         for rec in rows:
             # Each record is independent; one failure must not stop the others.
             try:
@@ -1334,6 +1344,7 @@ async def _run_shadow_deep_verification(
                     approved_host=(custody.approved_host or None) if custody is not None else None,
                     auth_context=_shadow_auth_context(custody, job.parsed_request),
                     available_endpoints=_shadow_endpoint_catalog(job.parsed_request, catalog_source),
+                    owner_credential=owner_credential,
                 )
 
                 logger.info(

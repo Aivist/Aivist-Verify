@@ -107,6 +107,31 @@ class Settings(BaseSettings):
         description="Path to an OpenAPI/Swagger JSON file feeding the shadow deep verifier's endpoint catalog (D18/D21). Empty => byte-identical placeholder catalog. Observe-only; never affects a verdict."
     )
 
+    # The OWNER/VICTIM's credential — the second identity of the two-account ownership
+    # baseline (ROADMAP.md:281; prerequisite for the D24 read-semantic gate). Everything
+    # the engine sends today goes out as the ATTACKER; this is the only way for code to
+    # obtain an object's AUTHENTIC owner view.
+    #
+    # Format: "Header-Name: value" (e.g. "X-Token: abc"), or a bare credential which is
+    # sent as "Authorization: Bearer <value>". For the two local labs:
+    #   vulnerable_target -> "Bearer bob-token-bbbb"
+    #   depot_target      -> "Bearer bob-depot-token-bbbb"
+    #
+    # KNOWN LIMITATION (deliberate, documented): this is ONE owner credential per
+    # DEPLOYMENT, not per finding. That is sufficient for both local labs and for proving
+    # the D24 gate, but a real target whose findings are owned by DIFFERENT accounts would
+    # need per-finding credentials. Per-finding support does NOT exist — do not let any
+    # later claim imply that it does.
+    #
+    # Default None => the second identity is simply absent and behavior is byte-identical
+    # to before. Nothing consumes this yet: it is a credential CHANNEL only, with no
+    # verdict logic attached. Fail-safe direction is BLOCK — a missing or failed owner
+    # view may only ever REDUCE downstream confidence, never increase it.
+    AI_DEEP_VERIFY_OWNER_AUTH: Optional[str] = Field(
+        default=None,
+        description="Owner/victim credential for owner-scoped reads by the deep verifier (two-account baseline). 'Header: value' or a bare bearer token. Empty => absent, byte-identical behavior. One credential per deployment, NOT per finding. Never used for attack requests."
+    )
+
     # --------------------------------------------------------------------------
     # 4. Scan & Fuzzing Engine Settings
     # --------------------------------------------------------------------------

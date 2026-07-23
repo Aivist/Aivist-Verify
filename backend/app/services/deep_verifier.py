@@ -1181,6 +1181,120 @@ def _anchor_state_jump(
         return "indeterminate"
 
 
+# ==============================================================================
+# TWO-ACCOUNT OWNERSHIP BASELINE — the OWNER/VICTIM credential channel.
+#
+# Every request this engine sends today goes out as the ATTACKER. That is fine for the
+# four working shapes, whose evidence is a STATE CHANGE observable from the attacker's own
+# view. It is not enough for the read-semantic shape (D24), which is the only shape where
+# code gathers no evidence at all: deciding whether the attacker actually received the
+# VICTIM's data requires knowing what the victim's authentic view IS.
+#
+# This section adds ONLY the channel. Nothing here is consumed by any verdict path in this
+# milestone — `execute_deep_verification` accepts the credential and never calls
+# `fetch_owner_view`. The guard, the four exemption channels and every anchor are untouched.
+#
+# TWO STRUCTURAL PROPERTIES, deliberately not merely conventional. Do not relax them:
+#   1. `OwnerCredential` is a frozen dataclass and NOT a Mapping, so it CANNOT be
+#      `**`-splatted into the attack header merge — that raises TypeError. The two
+#      identities cannot be conflated by accident.
+#   2. `fetch_owner_view` takes NO method and NO body parameter (GET is hardcoded), so it
+#      is structurally incapable of expressing an attack request.
+#
+# FAIL-SAFE DIRECTION IS BLOCK: `available` is True only on a clean 2xx. A missing
+# credential, a non-2xx, a scope violation or any transport failure yields
+# `available=False`. Any future consumer may treat ONLY `available=True` as permitting
+# confidence; every other value must block. It may never increase confidence.
+#
+# KNOWN LIMITATION (documented, not a bug): the credential is configured per DEPLOYMENT
+# (`settings.AI_DEEP_VERIFY_OWNER_AUTH`), not per finding. Sufficient for both local labs
+# and for proving the D24 gate; a real target whose findings belong to DIFFERENT owners
+# would need per-finding credentials, which DO NOT EXIST here. Do not imply otherwise.
+# ==============================================================================
+
+_HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9-]+$")
+
+
+@dataclass(frozen=True)
+class OwnerCredential:
+    """The OWNER/VICTIM's credential. Deliberately NOT a Mapping (see property 1 above)."""
+
+    header_name: str
+    header_value: str
+
+    def as_read_headers(self) -> Dict[str, str]:
+        """The ONLY way to turn this into headers. Called solely by `fetch_owner_view`."""
+        return {self.header_name: self.header_value}
+
+    @staticmethod
+    def from_config(raw: Optional[str]) -> Optional["OwnerCredential"]:
+        """Parse `AI_DEEP_VERIFY_OWNER_AUTH`. Accepts "Header-Name: value", or a bare
+        credential which is sent as "Authorization: Bearer <value>". Returns None for
+        anything unusable — never raises, so a malformed setting degrades to "no second
+        identity" (byte-identical behavior) rather than breaking a run."""
+        if not raw or not str(raw).strip():
+            return None
+        text = str(raw).strip()
+        name, sep, value = text.partition(":")
+        if sep and _HEADER_NAME_RE.match(name.strip()) and value.strip():
+            return OwnerCredential(header_name=name.strip(), header_value=value.strip())
+        if text.lower().startswith("bearer "):
+            return OwnerCredential(header_name="Authorization", header_value=text)
+        return OwnerCredential(header_name="Authorization", header_value=f"Bearer {text}")
+
+
+@dataclass(frozen=True)
+class OwnerViewResult:
+    """Outcome of an owner-scoped read. `available` is True ONLY on a clean 2xx."""
+
+    available: bool
+    status: Optional[int] = None
+    body: Optional[str] = None
+    reason: str = ""
+
+
+async def fetch_owner_view(
+    client: httpx.AsyncClient,
+    path: str,
+    base_url: str,
+    owner: Optional[OwnerCredential],
+    *,
+    approved_host: Optional[str] = None,
+) -> OwnerViewResult:
+    """Read `path` AS THE OWNER, returning the object's authentic view.
+
+    GET only, by construction — there is no method or body parameter, so this cannot be
+    used to send an attack (structural property 2). Scope-locked with the same check the
+    M1.3 pre-flight read uses.
+
+    NOTE: `custody` is deliberately NOT passed to `_send_request`. Custody carries the
+    ATTACKER's live session and would inline-inject it over these headers, silently
+    conflating the two identities — the exact failure this channel exists to prevent.
+
+    Never raises; every failure path returns `available=False` (fail-safe BLOCK).
+    """
+    if owner is None:
+        return OwnerViewResult(available=False, reason="no_owner_credential")
+    if not path or not path.startswith("/"):
+        return OwnerViewResult(available=False, reason="invalid_path")
+    req = {"method": "GET", "path": path, "query_params": {},
+           "headers": owner.as_read_headers(), "body": None}
+    try:
+        approved = (approved_host or "").lower()
+        if approved and _host_of(_reconstruct_url(req, base_url)) != approved:
+            return OwnerViewResult(available=False, reason="outside_approved_scope")
+        res = await _send_request(client, req, base_url)          # custody deliberately omitted
+        status = res.get("status_code")
+        if isinstance(status, int) and 200 <= status < 300:
+            return OwnerViewResult(available=True, status=status,
+                                   body=res.get("response_body"), reason="ok")
+        return OwnerViewResult(available=False, status=status, reason=f"non_2xx:{status}")
+    except ScopeViolationError:
+        return OwnerViewResult(available=False, reason="scope_violation")
+    except Exception as e:
+        return OwnerViewResult(available=False, reason=f"transport_error:{type(e).__name__}")
+
+
 async def execute_deep_verification(
     parsed_request: Dict[str, Any],
     payload: Optional[Dict[str, Any]],
@@ -1191,6 +1305,7 @@ async def execute_deep_verification(
     context_note: str = "",
     available_endpoints: Optional[List[str]] = None,
     model_name: Optional[str] = None,
+    owner_credential: Optional["OwnerCredential"] = None,
 ) -> DeepVerificationResult:
     """
     Run the isolated, serial AI-in-the-loop write-then-read deep verification.
@@ -1214,6 +1329,15 @@ async def execute_deep_verification(
             ["GET /api/users/{id}/avatar", ...]) so the model can request the
             CORRECT read-back endpoint for its one follow-up instead of guessing.
         model_name: override the Gemini model; defaults to settings.GEMINI_PRO_MODEL.
+        owner_credential: OPTIONAL owner/victim credential (two-account baseline).
+            **RESERVED AND INTENTIONALLY INERT IN THIS MILESTONE.** It is accepted so the
+            second identity genuinely reaches the real Phase-7 pipeline rather than only a
+            harness, but NOTHING here consumes it: `fetch_owner_view` is never called from
+            this function, no extra HTTP request is issued, and no verdict logic reads it.
+            Whether it is set or None, this function's behavior — and every request it
+            sends — is byte-identical. The consumer is the D24 read-semantic gate, which is
+            a separate signed-off milestone. It is NEVER merged into any attack request:
+            attacks always go out as the attacker (see the channel notes above).
 
     Returns:
         DeepVerificationResult — the AI verdict alongside the full evidence trail.
