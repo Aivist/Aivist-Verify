@@ -423,6 +423,50 @@
   DP-READ-VULN/SAFE — before it is believed. **D19 (making the AI verdict authoritative) must not
   proceed on the read-semantic shape until this is closed.**
 
+#### D24 (a) — the PROVENANCE principle
+- **Statement:** evidence must never be credited from a value the **ATTACKER supplied** — the
+  attacked object id, or any value already present in the attack request's path / query / body.
+  Only **genuinely victim-owned** data may corroborate a leak. A verifier that credits an echo of
+  its own input is not measuring the server; it is measuring itself.
+- **This is the same class of error as the historical B-1 / D23 resource-identity conflation.** D23
+  fixed one instance of it (an attacked id matching a record's *own* primary key) by binding the
+  match to an owner/subject-**named** key. The read-semantic path reproduces the same mistake in a
+  different place, which is why it deserves a named principle rather than another point fix.
+- **A field-NAME filter is necessary but NOT sufficient.** Naming tells you a field is *supposed* to
+  carry an owner identity; it says nothing about **where the value came from**. See (b).
+
+#### D24 (b) — `DP-READ-SAFE-ECHO`: the adversarial anchor (committed `6773bd5`)
+- `GET /depot/bonds/{bond_id}` is a **genuinely SECURE** read whose cross-account denial **echoes the
+  attacker-supplied id back into the owner-named field** instead of zeroing it. It forms a controlled
+  pair with `DP-READ-SAFE`, differing in exactly one field:
+
+  | SECURE case | owner-named field | `_anchor_caller_identity` |
+  |---|---|---|
+  | `DP-READ-SAFE` (docket) | `account_id`: zero-uuid | `owner_not_found` |
+  | `DP-READ-SAFE-ECHO` (bond) | `account_id`: **the requested id** | **`confirmed`** |
+
+- **What it defeats, by construction:** the obvious candidate gate — *"`caller_identity ==
+  owner_not_found` cannot be decisive"* — discriminates 4/4 on the cases known before it existed, and
+  this case passes straight through it while leaking nothing. Verified offline on the real anchor
+  (pure function, no API calls). It is an **allowed-to-fail safety anchor**: it must never be
+  weakened or relabelled to make a gate pass. Ground truth SECURE, proven independently by
+  `depot_target/test_vulns.py` (no engine imports).
+
+#### D24 (c) — `_anchor_evidence` never received the D23 hardening
+- [`deep_verifier.py:843`](../backend/app/services/deep_verifier.py) —
+  `return "confirmed" if _scalar_str(value) == _scalar_str(attacked_object_id) else "value_mismatch"`.
+  It compares the value at **any** model-cited `evidence_path` against the attacked object id, with
+  **no field-name filter and no provenance notion whatsoever**. Any endpoint that echoes the
+  requested id back satisfies it.
+- Measured consequence: on `DP-READ-SAFE` the model cited `docket_id`, the denial echoed it, and
+  `anchoring_result` read **`confirmed` in 7/20 runs on a SECURE endpoint** — the observe-only anchor
+  would have *corroborated the wrong answer*. It gates nothing today, so it changed no verdict, but
+  it is not a latent safety net either, and it must not be used as one.
+- By contrast `_anchor_caller_identity` ([`deep_verifier.py:891-899`](../backend/app/services/deep_verifier.py))
+  does carry the D23 lesson — it only considers values in `_OWNER_KEY_KEYWORDS`-named fields — which
+  is why it is the stronger of the two. It is still **not** provenance-aware, which is exactly what
+  `DP-READ-SAFE-ECHO` exploits.
+
 ---
 
 ## Tracked next-line work (OPEN — see [`ROADMAP.md`](./ROADMAP.md) §4)
