@@ -452,6 +452,49 @@
   weakened or relabelled to make a gate pass. Ground truth SECURE, proven independently by
   `depot_target/test_vulns.py` (no engine imports).
 
+#### D24 (d) — dead ends already ruled out (do NOT re-propose without new evidence)
+- **Gate A / Gate B (provenance filter on identity values) — DEAD.** Validated offline on all
+  five read-type cases before any engine edit; both readings failed acceptance.
+  Root cause: for a **self-referential object** — where the object's identity IS the owner's
+  identity (`GET /users/2` → `{"user_id": 2}`, `GET /depot/waybills/{BOB}` → `{"account_id": BOB}`,
+  the most common read-BOLA shape) — the victim-owned marker **necessarily equals** the attacked id,
+  so filtering out attacker-supplied values deletes the only proof of ownership. `X-EQUIV-VULN`
+  survived only because target #1 happens to carry a second owner-named field (`account_ref`); a gate
+  whose verdict depends on how many owner-named fields a response happens to contain is not a gate.
+  Gate A additionally let two SAFE cases through, because **"not attacker-supplied" ≠ "victim-owned"**:
+  there are three categories — attacker echo, sentinel/placeholder, genuinely victim-owned — and the
+  first and third are **value-identical** on self-referential objects.
+- **The reframe that followed:** read-semantic is the ONLY shape where **code gathers no evidence at
+  all**. The other four each have a code-issued second request (write-record read-back, object-state
+  read-back, negative assertion, state-jump pre-flight), which is precisely why they have real gates.
+  Squeezing a discriminator out of the attack response alone is the wrong move.
+- **Current direction — OWNER-VIEW DIFFERENTIAL:** code issues an authenticated read of the same
+  object **as the owner**, and a read-semantic verdict may be decisive only if the attack response
+  corroborates that authentic view. Independent of denial encoding, owner-field count and schema luck.
+  **Precondition was missing and is now built:** the engine held exactly one identity; the
+  two-account ownership baseline (`AI_DEEP_VERIFY_OWNER_AUTH`, commit `5a33cb2`) supplies the second.
+  **Known boundary:** that credential is **one per DEPLOYMENT, not per finding** — sufficient for both
+  labs and for proving the gate, but a real target whose findings belong to different owners would
+  need per-finding credentials, which **do not exist**. No claim may imply they do.
+
+#### D24 (e) — BLIND SPOTS to validate when the gate is actually built
+> Carried forward deliberately: the adversarial review of the owner-view principle was never reached,
+> because the precondition check (Step 1) failed first. These are **recorded, not designed** — each
+> must be settled before the gate ships, and the 5-case offline table must be re-run.
+- **(1) Public / shared resources.** A genuinely PUBLIC or shared resource legitimately returns the
+  same content to both identities, so owner-view corroboration would "confirm" on an endpoint with no
+  access-control flaw at all — a **false positive**. Must be checked explicitly, and it must first be
+  established whether anything **upstream already excludes** public resources (the rule oracle, the
+  Hunter intake, or the catalog) or whether nothing does. Do not assume it is handled.
+- **(2) Corroboration exactness vs high-entropy fields.** Two reads of the same object will differ in
+  timestamps, generated ids, tokens and other volatile fields, so "the attack response matches the
+  owner view" cannot mean byte-equality. How exact the match must be needs settling — and it should
+  **reuse existing normalization** (the fuzzer already computes similarity/length-deviation for the
+  rule oracle) rather than inventing new comparison logic.
+- **(3) Fail-safe remains BLOCK.** A failed, timed-out, out-of-scope or non-2xx owner view must make
+  the verdict *less* confident, never more. `OwnerViewResult.available` is True only on a clean 2xx;
+  every other value must block. Already expressible — do not weaken it for convenience.
+
 #### D24 (c) — `_anchor_evidence` never received the D23 hardening
 - [`deep_verifier.py:843`](../backend/app/services/deep_verifier.py) —
   `return "confirmed" if _scalar_str(value) == _scalar_str(attacked_object_id) else "value_mismatch"`.
