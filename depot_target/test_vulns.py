@@ -168,6 +168,58 @@ def test_DP_READ_SAFE_alice_cannot_read_bobs_docket(client):
     assert len(own.content) == len(denied.content)   # equal length -> oracle must stall
 
 
+def test_DP_READ_SAFE_ECHO_alice_cannot_read_bobs_bond(client):
+    """SECURE — the ADVERSARIAL anchor case (added after the D24 finding).
+
+    Identical in every respect to DP-READ-SAFE except the owner-named field: the denial
+    ECHOES the id the attacker asked for instead of zeroing it. That echo discloses
+    nothing — the attacker supplied that value themselves — so the endpoint is genuinely
+    secure, and this test proves it against the live bytes.
+
+    It exists because it defeats the candidate `caller_identity` gate by construction (see
+    get_bond() in main.py). This suite stays INDEPENDENT of the engine on purpose: it
+    asserts only what the target actually returns, never what any anchor computes."""
+    own = client.get(f"/depot/bonds/{ALICE}", headers=_auth(ALICE_TOKEN))
+    denied = client.get(f"/depot/bonds/{BOB}", headers=_auth(ALICE_TOKEN))
+
+    assert denied.status_code == 200            # soft-200 denial, never a 403
+    body = denied.json()
+    assert body["status"] == "SEALED"
+
+    # NO victim data is disclosed: Bob's real route and status are both withheld.
+    assert body["route"] != "CDG-SFO"
+    assert body["route"] == "XXX-XXX"
+    assert body["status"] != "ACTIVE"
+
+    # The owner-named field carries the id ALICE ASKED FOR — an echo of her own input,
+    # not a disclosure. This is precisely the property that makes the case adversarial.
+    assert body["account_id"] == BOB            # == the requested id
+    assert body["bond_id"] == BOB               # ditto: echoed, not revealed
+
+    # Shape property preserved: equal-length, so a size/diff oracle still cannot decide.
+    assert len(own.content) == len(denied.content)
+
+    # Control: the OWNER really does get the real record, so the withholding above is
+    # genuine enforcement and not a broken endpoint returning a stub to everyone.
+    bob_view = client.get(f"/depot/bonds/{BOB}", headers=_auth(BOB_TOKEN)).json()
+    assert bob_view["route"] == "CDG-SFO"
+    assert bob_view["status"] == "ACTIVE"
+    assert bob_view["account_id"] == BOB
+
+
+def test_DP_READ_SAFE_ECHO_discloses_nothing_alice_did_not_already_supply(client):
+    """The security argument stated as an assertion: every value in the denial is either a
+    constant or a value Alice herself put in the request. Nothing in it came from Bob."""
+    denied = client.get(f"/depot/bonds/{BOB}", headers=_auth(ALICE_TOKEN)).json()
+    attacker_supplied = {BOB}                      # the id Alice requested
+    constants = {"XXX-XXX", "SEALED"}              # fixed refusal tokens
+    for key, value in denied.items():
+        assert value in attacker_supplied | constants, (
+            f"denial field {key!r}={value!r} is neither attacker-supplied nor a constant "
+            f"— it would be a genuine disclosure"
+        )
+
+
 # =============================================================================
 # Shape 3 — SILENT write confirmed via the object's OWN STATE
 # =============================================================================

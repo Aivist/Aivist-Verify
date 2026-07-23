@@ -54,6 +54,13 @@
 #   Shape 2 — READ-TYPE semantic equivalence (equal-length bodies)
 #     DP-READ-VULN    REAL    GET /depot/waybills/{waybill_id}
 #     DP-READ-SAFE    SECURE  GET /depot/dockets/{docket_id}      (equal-length SEALED denial)
+#     DP-READ-SAFE-ECHO SECURE GET /depot/bonds/{bond_id}         (ADVERSARIAL ANCHOR, added
+#                             after the D24 finding: identical SEALED denial, but the
+#                             owner-named `account_id` ECHOES the attacker-supplied id
+#                             instead of being zeroed. Leaks nothing, yet makes
+#                             `_anchor_caller_identity` report 'confirmed' — so it defeats
+#                             the candidate caller_identity gate BY CONSTRUCTION. See
+#                             get_bond() for the full milestone note.)
 #   Shape 3 — SILENT write confirmed via the object's OWN STATE on another path
 #     DP-SILENT-VULN  REAL    POST /depot/accounts/{account_id}/seal  -> GET /depot/seals/{seal_id}
 #     DP-SILENT-SAFE  SECURE  POST /depot/accounts/{account_id}/tag   -> GET /depot/tags/{tag_id}
@@ -175,6 +182,16 @@ class Docket(Base):
     status = Column(String(6), nullable=False)
 
 
+class Bond(Base):
+    """DP-READ-SAFE-ECHO subject. Structurally identical to Docket; the ONLY difference
+    is what its denial puts in the owner-named field (see get_bond)."""
+    __tablename__ = "bonds"
+    id = Column(String(36), primary_key=True)
+    account_id = Column(String(36), nullable=False)
+    route = Column(String(7), nullable=False)
+    status = Column(String(6), nullable=False)
+
+
 class Seal(Base):
     __tablename__ = "seals"
     id = Column(String(36), primary_key=True)
@@ -263,6 +280,7 @@ async def _seed(session: AsyncSession) -> None:
         session.add(Consignment(id=aid, account_id=aid, recipient=a["recipient"], memo=a["memo"]))
         session.add(Waybill(id=aid, account_id=aid, route=a["route"], status="ACTIVE"))
         session.add(Docket(id=aid, account_id=aid, route=a["route"], status="ACTIVE"))
+        session.add(Bond(id=aid, account_id=aid, route=a["route"], status="ACTIVE"))
         session.add(Seal(id=aid, account_id=aid, code=a["seal_code"]))
         session.add(Tag(id=aid, account_id=aid, code=a["tag_code"]))
         session.add(Hold(id=aid, account_id=aid, reason="customs-review", is_active=True))
@@ -489,6 +507,66 @@ async def get_docket(
     if dk.account_id != current.id:
         return {"docket_id": docket_id, "account_id": ZERO_UUID, "route": "XXX-XXX", "status": "SEALED"}
     return {"docket_id": dk.id, "account_id": dk.account_id, "route": dk.route, "status": dk.status}
+
+
+@app.get("/depot/accounts/{account_id}/bond", tags=["bonds"])
+async def read_own_bond(
+    account_id: str = Path(...),
+    current: Account = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db),
+):
+    if account_id != current.id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    bd = (await db.execute(select(Bond).where(Bond.account_id == account_id))).scalars().first()
+    if bd is None:
+        raise HTTPException(status_code=404, detail="Bond not found")
+    return {"bond_id": bd.id, "account_id": bd.account_id, "route": bd.route, "status": bd.status}
+
+
+@app.get("/depot/bonds/{bond_id}", tags=["bonds"])
+async def get_bond(
+    bond_id: str = Path(...),
+    current: Account = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db),
+):
+    """DP-READ-SAFE-ECHO — SECURE. An ADVERSARIAL anchor case, built deliberately.
+
+    Ownership IS enforced and a cross-account read discloses NOTHING: the route is masked
+    and the status is a constant refusal token, exactly like DP-READ-SAFE. The ONE
+    difference from DP-READ-SAFE is the owner-named field:
+
+        DP-READ-SAFE  (docket) -> "account_id": <zero uuid>        (owner field zeroed)
+        DP-READ-SAFE-ECHO      -> "account_id": <the REQUESTED id> (owner field ECHOED)
+
+    Echoing the requested id leaks nothing — the attacker supplied that value themselves
+    and already knew it. The case is still genuinely SECURE, and its ground truth says so.
+
+    WHY IT EXISTS (milestone note — recorded, not acted on):
+    The candidate deterministic gate for the read-semantic shape (TECH_DEBT D24) is
+    "the attack response must carry a victim-owned identity marker; caller_identity ==
+    'owner_not_found' cannot be decisive". That gate discriminates 4/4 on the cases known
+    so far. THIS CASE DEFEATS IT BY CONSTRUCTION: `_anchor_caller_identity` scans
+    owner/subject-NAMED fields and asks whether the attacked id is among their values. Here
+    it is — because the endpoint echoed it back — so the anchor reports 'confirmed' on an
+    endpoint that leaked nothing, and a caller_identity-keyed gate would pass it.
+
+    The lesson to carry into the fix milestone: a field-NAME filter is not enough. The
+    eventual gate will likely need PROVENANCE — evidence must not be credited from a value
+    the ATTACKER supplied (path id, request parameter), only from genuinely victim-owned
+    data. This is the same class as the historical B-1/D23 resource-identity conflation.
+    That design is NOT started and is not to be written until it is signed off.
+
+    This endpoint is an allowed-to-fail regression anchor. Do NOT weaken it to make any
+    gate pass, and do NOT relabel it: it is SECURE, proven independently in test_vulns.py.
+    """
+    bd = (await db.execute(select(Bond).where(Bond.id == bond_id))).scalars().first()
+    if bd is None:
+        raise HTTPException(status_code=404, detail="Bond not found")
+    if bd.account_id != current.id:
+        # Same keys and same widths as the real body (so the shape's equal-length property
+        # holds), no victim data, and the owner-named field echoes the caller's own input.
+        return {"bond_id": bond_id, "account_id": bond_id, "route": "XXX-XXX", "status": "SEALED"}
+    return {"bond_id": bd.id, "account_id": bd.account_id, "route": bd.route, "status": bd.status}
 
 
 # ==============================================================================
@@ -746,7 +824,9 @@ async def root():
                              "PATCH /depot/accounts/{account_id}/memo (SECURE)",
                              "GET /depot/custody-events"],
             "read_semantic": ["GET /depot/waybills/{waybill_id} (REAL)",
-                              "GET /depot/dockets/{docket_id} (SECURE, equal-length denial)"],
+                              "GET /depot/dockets/{docket_id} (SECURE, equal-length denial)",
+                              "GET /depot/bonds/{bond_id} (SECURE, denial ECHOES the requested "
+                              "id into the owner-named field — adversarial anchor)"],
             "silent_write": ["POST /depot/accounts/{account_id}/seal (REAL) -> GET /depot/seals/{seal_id}",
                              "POST /depot/accounts/{account_id}/tag (SECURE) -> GET /depot/tags/{tag_id}"],
             "delete": ["DELETE /depot/accounts/{account_id}/hold (REAL, physical)",
