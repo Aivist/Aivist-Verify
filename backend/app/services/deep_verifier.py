@@ -50,6 +50,7 @@ from backend.app.services.fuzzer import (
     _send_request,
     _reconstruct_url,
     _host_of,
+    _compute_similarity,
     ScopeViolationError,
 )
 # B-1: generic, target-agnostic catalog queries used to deterministically gather a
@@ -1295,6 +1296,71 @@ async def fetch_owner_view(
         return OwnerViewResult(available=False, reason=f"transport_error:{type(e).__name__}")
 
 
+# ==============================================================================
+# D24 — the READ-SEMANTIC OWNER-VIEW DIFFERENTIAL gate.
+#
+# The read-semantic shape was the ONLY shape whose final verdict had no deterministic
+# gate: when the model answers from the attack response alone it requests no follow-up, so
+# the B-2.2 cross-resource guard is a structural no-op and all four exemption channels are
+# unreachable. The verdict was simply the model's opinion (measured: a SECURE Depot
+# endpoint reported `verified` 20/20).
+#
+# The fix is NOT to squeeze a discriminator out of the attack response — two attempts at
+# that (provenance filtering on identity values) died offline, because on a
+# SELF-REFERENTIAL object the victim-owned marker IS the attacked id. Instead this shape
+# now gathers evidence like every other shape does: code issues an authenticated read of
+# the SAME object AS THE OWNER, and a `verified` survives only if the attack response
+# corroborates that authentic view — i.e. the attacker really did receive the victim's
+# data. Masked stubs, sentinels, echoes and denials do not corroborate, no matter how the
+# refusal happens to be encoded (denial keywords are deliberately NOT consulted; assuming
+# a denial vocabulary is what produced this SEV-1 in the first place).
+#
+# CORROBORATION EXACTNESS reuses the fuzzer's EXISTING `_compute_similarity`
+# (difflib.SequenceMatcher ratio, with the same _SEQUENCE_MATCHER_MAX_LEN CPU cap the rule
+# oracle uses). No new comparison logic is invented. Byte-equality was rejected on purpose:
+# two reads of a live object legitimately differ in timestamps / generated ids / tokens,
+# and demanding equality would kill true positives — the exact failure direction that
+# killed the previous two candidate gates.
+#
+# THRESHOLD CALIBRATION (measured offline on all five read-type cases, both targets):
+#     DP-READ-VULN 1.0000 | X-EQUIV-VULN 1.0000        <- REAL   (must stay decisive)
+#     DP-READ-SAFE 0.8857 | DP-READ-SAFE-ECHO 0.9203   <- SECURE (must be blocked)
+#     X-EQUIV-SAFE 0.6697                              <- SECURE (must be blocked)
+# The bands are separated by a 0.0797 gap; 0.95 sits mid-gap. The risk here is ASYMMETRIC:
+# because this gate is downgrade-only it cannot manufacture a false positive — a case it
+# fails to block is exactly as it is today — but a case it wrongly blocks kills a true
+# positive. So the threshold is deliberately kept well BELOW the REAL band (0.05 of
+# tolerance for volatile fields) rather than pushed up to maximise the margin above SECURE.
+# This constant is validated per target; it is not a universal truth.
+# ==============================================================================
+
+_OWNER_VIEW_CORROBORATION_THRESHOLD = 0.95
+OWNER_VIEW_NOT_CORROBORATED_REASON = "owner_view_not_corroborated"
+
+
+def _owner_view_corroborates(attack_body: Optional[str], owner_body: Optional[str]) -> bool:
+    """True iff the attack response plausibly IS the victim's data, judged with the rule
+    oracle's own similarity helper. Missing either side is never corroboration."""
+    if not attack_body or not owner_body:
+        return False
+    return _compute_similarity(attack_body, owner_body) >= _OWNER_VIEW_CORROBORATION_THRESHOLD
+
+
+def _apply_owner_view_gate(current_verdict: Optional[str], corroborated: bool) -> Optional[str]:
+    """DOWNGRADE-ONLY BY CONSTRUCTION.
+
+    Every path either returns the verdict it was handed, unchanged, or the strictly weaker
+    'inconclusive'. The string 'verified' is never assigned anywhere in this function, so
+    it is structurally incapable of creating or upgrading to a `verified` verdict — it can
+    only ever take one away.
+    """
+    if current_verdict != "verified":
+        return current_verdict          # nothing but a 'verified' is ever gated
+    if corroborated:
+        return current_verdict          # unchanged
+    return "inconclusive"               # the ONLY mutation this gate can make
+
+
 async def execute_deep_verification(
     parsed_request: Dict[str, Any],
     payload: Optional[Dict[str, Any]],
@@ -1717,6 +1783,40 @@ async def execute_deep_verification(
                 _final_verdict, _evidence_path, attacked_object_id, caller_object_id,
                 _anchor, _caller_anchor, _causality_anchor,
             )
+
+            # ---------- D24: OWNER-VIEW DIFFERENTIAL gate (downgrade-only) ----------
+            # Scoped to exactly this branch: the read-semantic path where NO follow-up was
+            # performed and the four exemption channels are therefore unreachable. Nothing
+            # below runs when a follow-up occurred.
+            #
+            # Not configured (owner_credential is None) -> the gate does not engage and
+            # behavior is exactly as before. Configuring the credential is what OPTS IN;
+            # once opted in, any failure to obtain the owner view BLOCKS (fail-safe), since
+            # an unverifiable claim must never be the one that gets to stand.
+            if owner_credential is not None and _final_verdict == "verified":
+                _owner_view = await fetch_owner_view(
+                    client, attack_req.get("path", ""), base_url, owner_credential,
+                    approved_host=approved,
+                )
+                _corroborated = _owner_view.available and _owner_view_corroborates(
+                    _anchor_body, _owner_view.body
+                )
+                _gated = _apply_owner_view_gate(_final_verdict, _corroborated)
+                if _gated != _final_verdict:
+                    logger.info(
+                        "[DEEP-VERIFY] D24 owner-view differential: the attack response does "
+                        "NOT corroborate the owner's authentic view (owner_view_available=%r "
+                        "reason=%r) -> 'verified' DOWNGRADED to %r. The attacker did not "
+                        "demonstrably receive the victim's data.",
+                        _owner_view.available, _owner_view.reason, _gated,
+                    )
+                    _final_verdict = _gated
+                    _override = OWNER_VIEW_NOT_CORROBORATED_REASON
+                else:
+                    logger.info(
+                        "[DEEP-VERIFY] D24 owner-view differential: attack response "
+                        "CORROBORATES the owner's authentic view -> 'verified' stands.",
+                    )
             return DeepVerificationResult(
                 status="completed",
                 ai_verdict=_final_verdict,

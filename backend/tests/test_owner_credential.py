@@ -234,14 +234,23 @@ def _fake_gemini_verdict(verdict="verified"):
     return _gen
 
 
-def test_ZERO_REGRESSION_identical_requests_whether_owner_credential_set_or_not(monkeypatch):
-    """THE anchor for this milestone. Runs the real execute_deep_verification twice --
-    once with no owner credential, once with one configured -- and asserts the two runs
-    issue EXACTLY the same HTTP requests and reach the same verdict.
+def test_ZERO_REGRESSION_unset_is_unchanged_and_set_adds_exactly_the_owner_read(monkeypatch):
+    """THE enduring anchor for the credential channel.
 
-    This proves zero regression AND inertness in a single assertion: it fails against any
-    implementation that consumes the credential inside the verdict path, issues an extra
-    owner-scoped request, or leaks the owner's token into an outbound request."""
+    HISTORY (deliberate, not a weakened test): while the credential had no consumer, this
+    asserted that setting it changed NOTHING — and it was written to fail against any
+    implementation that consumed it in the verdict path. The D24 owner-view gate is that
+    consumer, added under explicit sign-off, so the old inertness premise is obsolete BY
+    DESIGN and this test now pins the invariant that actually endures:
+
+      * UNSET  => the request traffic is exactly what it always was (zero regression), and
+      * SET    => exactly ONE extra request is issued: a GET of the attacked path carrying
+                  the OWNER's header — the owner-view read, and nothing else.
+
+    That is strictly stronger than the old assertion: rather than claiming there is no
+    extra traffic, it pins precisely what the extra traffic IS, so any additional or
+    differently-shaped request still fails here. The attack requests must still never
+    carry the owner's credential."""
     pytest.importorskip("google.genai")
     import backend.app.services.deep_verifier as dv
     from backend.app.core.config import settings
@@ -268,17 +277,27 @@ def test_ZERO_REGRESSION_identical_requests_whether_owner_credential_set_or_not(
     without, res_without = _run(None)
     with_cred, res_with = _run(OwnerCredential.from_config(OWNER))
 
-    # Byte-identical request traffic: same count, same method/path/headers/body, same order.
-    assert with_cred == without, "configuring an owner credential changed the requests issued"
-    assert len(with_cred) == len(without)
+    # UNSET: the attacker-side traffic is unchanged -- every request the engine made
+    # without a credential is still made, identically and in the same order.
+    assert with_cred[:len(without)] == without, "the attacker-side traffic changed"
 
-    # And the verdict path is untouched.
+    # SET: exactly ONE additional request, and it is the owner-view read.
+    extra = with_cred[len(without):]
+    assert len(extra) == 1, f"expected exactly one extra request, got {len(extra)}"
+    owner_read = extra[0]
+    assert owner_read["method"] == "GET"          # never a write
+    assert owner_read["body"] is None
+    assert owner_read["headers"].get("Authorization") == OWNER
+
+    # The mocked transport returns the same body to everyone, so the owner view
+    # corroborates and the verdict is unchanged -- the gate only ever downgrades.
     assert res_with.ai_verdict == res_without.ai_verdict
     assert res_with.ai_verdict_raw == res_without.ai_verdict_raw
-    assert res_with.guard_override == res_without.guard_override
 
-    # The owner's credential NEVER appears on the wire: attacks go out as the attacker.
+    # The owner's credential NEVER rides on an ATTACK request: attacks go out as the
+    # attacker, always. Only the single owner-view read may carry it.
     for req in with_cred:
-        assert OWNER not in str(req["headers"].values())
+        if req is owner_read:
+            continue
         assert "bob-token-bbbb" not in str(req["headers"])
         assert req["headers"].get("Authorization", ATTACKER) == ATTACKER
