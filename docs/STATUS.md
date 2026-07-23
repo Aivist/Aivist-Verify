@@ -25,7 +25,11 @@ is no longer N=5-per-shape: a **high-N re-measure** (gemini-2.5-pro, fresh-seede
 stands as the authoritative record — **140 SAFE/control runs → 0 false positives; 70 VULN runs →
 all `verified`** (`scripts/audit/shadow_highN_zerofp_run.out.txt`, 180 runs + `…_highN_xequiv_run.out.txt`,
 30 runs). On **40** of those SAFE runs the model's raw verdict was `verified` and the deterministic
-gate refused every one — the safety line is held by code, not by model compliance.
+gate refused every one — on those shapes the safety line is held by code, not by model compliance.
+> ⚠️ **But not on every shape.** **20 of those 140 SAFE runs (the read-semantic shape) had NO code
+> gate behind them** — they were correct only because the model was correct. The second target
+> (`depot_target/`) shows the same shape false-positive **20/20, deterministically**. See TECH_DEBT
+> **D24** — the most serious open gap in the engine, and a blocker for D19 on this shape.
 
 ## Test suite
 

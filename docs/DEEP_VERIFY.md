@@ -24,6 +24,15 @@
 > `verified`** — `scripts/audit/shadow_highN_zerofp_run.out.txt` (SAFE/control N=20, VULN N=10) +
 > `shadow_highN_xequiv_run.out.txt` (M1.1). The per-shape `5/5` figures below the fold are the
 > original runs; where a shape appears in the high-N set its authoritative count is N=20 SAFE / N=10 VULN.
+>
+> 🔴 **Read the zero-FP claim precisely (TECH_DEBT D24).** Four of the five shapes are genuinely
+> **code-gated** — a channel or the B-2.2 guard decides, and that holds on a second target too.
+> The **read-semantic** shape (M1.1) is **NOT gated**: when the model answers from the attack
+> response alone it requests no follow-up, so the guard is a structural no-op and all four
+> exemption channels are unreachable — the FINAL verdict is the model's raw opinion. Target #1's
+> clean read-type record (`X-EQUIV-SAFE` `failed` 20/20, `guard_override=None` 20/20) is **model
+> compliance, not a code-held line**; on `depot_target/` the same shape false-positives
+> **`verified` 20/20, deterministically**. Do not cite read-type zero-FP as code-guaranteed.
 
 ---
 

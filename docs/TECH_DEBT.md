@@ -366,6 +366,63 @@
   **false negatives on mass-assignment writes** (where the attack legitimately writes an owner
   field). Judged not worth that trade; revisit if real logs show it. Human-owned.
 
+### D24 — 🔴 READ-SEMANTIC verdicts have NO deterministic gate (SEV-1, measured on Depot)
+- **Status: OPEN. This is the most serious known gap in the verification engine.** Found by the
+  second target (`depot_target/`) v1 pilot; confirmed at N=20. **Nothing has been changed in
+  response** — the engine is frozen and the fix is a separate, human-signed-off milestone.
+- **Where:** `deep_verifier.execute_deep_verification` + `_apply_cross_resource_guard`, on the
+  **read-semantic** shape (M1.1) — i.e. any case where the model answers from the attack response
+  alone and requests **no follow-up**.
+- **The gap.** All four exemption channels (`write_record`, `state_readback`, `delete_readback`,
+  `state_jump`) exist to *exempt a cross-path verdict from a downgrade*, and the B-2.2 guard only
+  *downgrades a cross-resource read-back*. When there is **no follow-up**, there is no read-back to
+  judge: the guard is structurally a **no-op** and every channel is **unreachable**. The FINAL
+  verdict is therefore **exactly the model's raw opinion, with no code between it and the user**.
+  The anchors still compute (`caller_identity`, `anchoring_result`) but on this shape they are
+  **observe-only and gate nothing**.
+- **Measured (N=20 each, gemini-2.5-pro, both driven direct in ONE session for comparability —
+  `scripts/audit/shadow_readtype_severity_run.out.txt`):**
+
+  | Case | ground truth | raw dist | FINAL dist | guard_override | follow-up | FINAL==RAW |
+  |---|---|---|---|---|---|---|
+  | **DP-READ-SAFE** (Depot) | SECURE | `verified` 20/20 | **`verified` 20/20** | `None` 20/20 | none 20/20 | 20/20 |
+  | X-EQUIV-SAFE (target #1) | SECURE | `failed` 20/20 | `failed` 20/20 | `None` 20/20 | none 20/20 | 20/20 |
+
+  - The Depot false positive is **DETERMINISTIC (20/20), not intermittent** — a securely-refused
+    cross-account read is reported as a confirmed BOLA on every single run.
+  - **Target #1's clean read-type record is MODEL COMPLIANCE, not a code-held line.** Its
+    `guard_override` is `None` on all 20 runs and FINAL rides RAW on all 20 — identical engine-side
+    posture to the failing case. The engine did not "catch" anything on X-EQUIV-SAFE; the model
+    simply happened to answer `failed`.
+  - Engine-side posture is **identical** across both (`caller_identity='owner_not_found'` 20/20, no
+    follow-up 20/20). The ONLY difference is what the model decided. Depot's differently-encoded
+    denial (S5: `status:"SEALED"` + zeroed owner, vs target #1's `"DENY"`) is enough to flip it.
+  - Incidental: Depot's `anchoring_result` was `confirmed` in 7/20 runs (the denial echoes the
+    requested `docket_id`, which matches the attacked id), i.e. the observe-only anchor would have
+    *corroborated* the wrong answer. It gates nothing, so it changed no verdict — but it is not a
+    safety net either.
+- **Ground truth is not in doubt.** Depot's denial discloses **no** victim data (`account_id` zeroed,
+  `route` masked, `status` a constant refusal token) and is proven secure independently by
+  `depot_target/test_vulns.py::test_DP_READ_SAFE_alice_cannot_read_bobs_docket`. It is the same
+  soft-200-denial convention as target #1's T-TRAP, which is likewise labelled SECURE. The label was
+  **not** adjusted to make the engine agree.
+- **Scope — do NOT over-read this into the other shapes.** The other four shapes are genuinely
+  code-gated and that result stands, including on Depot: in the v1 pilot every core VULN verified
+  through its own channel (`write_record` / `state_jump` / `delete_readback` ×2) and every
+  non-read SAFE/control was held at `inconclusive` by a real gate
+  (`cross_resource_readback_not_decisive`, `no_jump`, `preflight_absent`). Their zero-FP property is
+  held by code. **Only the read-semantic shape is ungated.**
+- **Consequence for the record:** the headline "140 SAFE runs → 0 false positives" is still true as
+  measured, but **20 of those 140 (the X-EQUIV-SAFE runs) were not code-gated** — they were correct
+  because the model was correct. Every doc quoting that aggregate has been qualified to say so.
+- **Direction (NOT started, needs sign-off before the engine unfreezes):** give the read-semantic
+  shape a deterministic gate of its own, so a `verified` that rests on the attack response alone must
+  be corroborated by code rather than asserted by the model. Any such gate must be provably
+  **stricter** (it may only ever turn `verified` into something weaker), must not regress the four
+  existing channels, and must be proven on **both** targets — X-EQUIV-VULN/SAFE and
+  DP-READ-VULN/SAFE — before it is believed. **D19 (making the AI verdict authoritative) must not
+  proceed on the read-semantic shape until this is closed.**
+
 ---
 
 ## Tracked next-line work (OPEN — see [`ROADMAP.md`](./ROADMAP.md) §4)
@@ -527,6 +584,9 @@
   **0/20**). On the SAFE cases the model raw-said `verified` (high-N: **40/40** across the two X-MASS-SAFE
   cases) and **the gate refused every time** — the line is held by code, not by model compliance.
   **High-N aggregate: 140 SAFE/control runs → 0 false positives; 70 VULN runs → all `verified`; 0 degraded.**
+  ⚠️ **Qualified by D24:** 20 of those 140 SAFE runs (X-EQUIV-SAFE, the read-semantic shape) were
+  **not code-gated** — `guard_override=None` 20/20, FINAL rode RAW 20/20. The mass-assignment result
+  described here IS code-gated and stands; the read-type one rests on model compliance. See D24.
 - **Post-fix live NO-REGRESSION: CONFIRMED, all prior shapes.** Authoritative record = the high-N
   re-measure above (`shadow_highN_zerofp_run.out.txt` + `…_highN_xequiv_run.out.txt`), which supersedes
   the earlier N=5 regression run (`shadow_m14_regress_run.out.txt`, 30/30 clean; itself a re-run after
@@ -579,10 +639,14 @@
    `vulnerable_target`. Optional shape breadth (nested-object, multi-step, noisier audit logs) is
    extra, not the gate. Gate hardening (D23 + D23b) is **done**; extend the owner/subject vocabulary
    as real log samples appear. Update `RESULTS.md` with the high-N result.
-3. **D19** — only then: promote the AI verdict from observe-only to authoritative.
-4. **Benchmark vs agent-style PoC validation** — on a public vulnerable target, quantify
+3. **D24 (🔴 NEW, SEV-1)** — the read-semantic shape has **no deterministic gate**; its verdict is the
+   model's raw opinion. Deterministic false positive (20/20) on the second target. **Blocks D19 for
+   that shape.** Engine stays frozen until a fix milestone is signed off.
+4. **D19** — only then: promote the AI verdict from observe-only to authoritative. Must not proceed
+   on the read-semantic shape while D24 is open.
+5. **Benchmark vs agent-style PoC validation** — on a public vulnerable target, quantify
    this engine's false-positive / reproducibility rate. The "can it be sold" evidence.
-5. **Scope-lock hardening** before any non-localhost target; **D5** — keep
+6. **Scope-lock hardening** before any non-localhost target; **D5** — keep
    `preview_dashboard.html`, retire `frontend/`.
 
 ### Deferred — NOT in the active line (unlock condition: the benchmark above proves commercialization is worth it)

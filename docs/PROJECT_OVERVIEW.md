@@ -101,6 +101,7 @@
 > (写接口恒返回 `200 {"status":"ok"}`)通过「写后读」区分真伪。④ 的「跨路径自信判定」
 > (B-1)已跑通并**已提交**(`37769b3`;X-CROSS→verified、X-SAFE→安全,并有自动化回归测试锁定),详见 [`STATUS.md`](./STATUS.md)。
 > **当前权威度量为高 N 复测**(gemini-2.5-pro、单靶、每次全新播种、0 降级):**140 次 SAFE/控制组 → 0 误报;70 次 VULN → 全部 `verified`**(`scripts/audit/shadow_highN_zerofp_run.out.txt` + `…_highN_xequiv_run.out.txt`);其中 40 次 SAFE 上模型原始判定想放行、闸门每次都拒绝。下文各形态的 `5/5` 是最初的 N=5 单形态记录,已被此高 N 复测取代。
+> 🔴 **重要修正(见 [`TECH_DEBT.md`](./TECH_DEBT.md) D24):** 上述 140 次 SAFE 中,**有 20 次(读型语义等价 X-EQUIV-SAFE)背后并没有任何代码闸门**——`guard_override` 全程为 `None`,最终判定完全等于模型原始判定。也就是说该形态的「零误报」靠的是**模型恰好答对**,而不是代码守住。在第二个靶场 `depot_target/` 上,同一形态**确定性地误报 20/20**(`verified`)。其余四种形态的代码闸门结果不受影响,依然成立。
 
 ### 技术栈
 

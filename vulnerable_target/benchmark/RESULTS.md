@@ -19,7 +19,8 @@
 | **M1.1 read-type (equal-length, MEASURED)** | X-EQUIV-VULN `verified` 5/5 (anchoring `confirmed`) · X-EQUIV-SAFE `failed` 5/5 — **0 false positives**, judged by semantics not size |
 | **M1.2 silent-write / object-STATE (MEASURED)** | X-SILENT-VULN `verified` **5/5** (code-gathered state read; causality `confirmed_at_path` 5/5) · X-SILENT-SAFE **`verified` 0/5** (causality `absent` 5/5 → no exemption → `inconclusive`) — **0 false positives**; B-1 X-CROSS still `verified` 5/5 |
 | **Shapes confirmed with zero FP** | **5 — M1 COMPLETE.** write→write-record (B-1), read-type semantic equivalence (M1.1), write→object-STATE (M1.2), delete→NEGATIVE ASSERTION (M1.3), mass-assignment→LOW-ENTROPY STATE JUMP (M1.4) |
-| **HIGH-N zero-FP measurement (MEASURED)** | **140 SAFE/control runs at N=20 → FINAL `verified` = 0**; 70 VULN runs at N=10 → `verified` 70/70. **210/210 usable, zero degraded.** On X-MASS-SAFE the model **raw-said `verified` 40/40** and the deterministic `no_jump` gate refused every one — the **code gate, not the model**, holds the zero-FP line. See the high-N section below. |
+| **HIGH-N zero-FP measurement (MEASURED)** | **140 SAFE/control runs at N=20 → FINAL `verified` = 0**; 70 VULN runs at N=10 → `verified` 70/70. **210/210 usable, zero degraded.** On X-MASS-SAFE the model **raw-said `verified` 40/40** and the deterministic `no_jump` gate refused every one — on that shape the **code gate, not the model**, holds the zero-FP line. See the high-N section below. |
+| 🔴 **Read-type caveat on the above (TECH_DEBT D24)** | **20 of those 140 SAFE runs — X-EQUIV-SAFE, the read-semantic shape — were NOT code-gated.** `guard_override=None` 20/20 and FINAL rode the raw verdict 20/20: the engine gated nothing, the model was simply right. On the second target (`depot_target/`) the same shape false-positives **`verified` 20/20, deterministically** (`scripts/audit/shadow_readtype_severity_run.out.txt`). The other four shapes' code-gated results are unaffected. |
 | **M1.3 delete-type (MEASURED)** | X-DELETE-VULN-HARD `verified` **5/5** (`confirmed_physical`) · X-DELETE-VULN-SOFT `verified` **5/5** (`confirmed_logical`) · X-DELETE-SAFE **`verified` 0/5** (`still_present`) · X-DELETE-CONTROL (never existed) **`verified` 0/5** (`preflight_absent`) — **0 false positives** |
 | **Post-B-1 update (not re-run here)** | X-CROSS is now `verified` (code-gathered audit-log + content-match exemption, N=5, `shadow_b1step3_code_gather_measure.out.txt`); the "deferred to B-1" rows below are historical (pre-B-1). |
 | **AI-in-the-loop cases evaluated** | 10 (B, C, D, SAFE, T-REAL, T-TRAP, T-WEAK, T-SILENT2, X-CROSS, X-SAFE) |
@@ -790,6 +791,15 @@ model self-reported `inconclusive` and there was no `verified` to downgrade. Out
 - **X-EQUIV used the integrated Phase-7 harness**, not the direct-drive path the other 12 cases use.
   That was deliberate — it is X-EQUIV's established methodology, so its figures stay comparable with
   its own earlier record — but it means **that row is not measured identically to the rest.**
+- 🔴 **The X-EQUIV-SAFE row is not evidence of a code-held line (TECH_DEBT D24).** On the
+  read-semantic shape the model answers from the attack response alone and requests no follow-up, so
+  the B-2.2 guard is a structural no-op and all four exemption channels are unreachable — the FINAL
+  verdict IS the model's raw verdict. Re-measured direct-drive at N=20 alongside the second target
+  (`scripts/audit/shadow_readtype_severity_run.out.txt`): X-EQUIV-SAFE `failed` 20/20 with
+  `guard_override=None` 20/20 and FINAL==RAW 20/20, while Depot's equivalent DP-READ-SAFE —
+  identical engine posture, differently-encoded denial — returned **`verified` 20/20**. So this
+  shape's clean record here reflects **model compliance on this target**, not a property the engine
+  enforces. Do not generalize it.
 
 ---
 

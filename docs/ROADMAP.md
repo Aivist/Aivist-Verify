@@ -78,7 +78,9 @@ figure is a **high-N re-measure** (gemini-2.5-pro, one target, fresh-seeded, **0
 `shadow_highN_xequiv_run.out.txt` (the M1.1 read shape). Aggregate: **140 SAFE/control runs →
 FINAL `verified` = 0** (0 false positives) and **70 VULN runs → FINAL `verified` = all**. On **40**
 of the SAFE runs (both `X-MASS-SAFE` cases) the model's raw verdict was `verified` and the gate
-refused all 40 — the line is held by code, not model compliance.
+refused all 40 — on those shapes the line is held by code, not model compliance. **Caveat (D24):**
+20 of those 140 SAFE runs — the **read-semantic** shape — had **no code gate at all**; they were
+correct only because the model was. On the second target that same shape false-positives **20/20**.
 
 **Not yet:** it does not yet *act* (shadow-only — the persisted verdict is still the rule
 oracle's; making the AI verdict authoritative is D19); and it is proven on **five vuln shapes,
