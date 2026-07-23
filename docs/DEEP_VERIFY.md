@@ -25,14 +25,27 @@
 > `shadow_highN_xequiv_run.out.txt` (M1.1). The per-shape `5/5` figures below the fold are the
 > original runs; where a shape appears in the high-N set its authoritative count is N=20 SAFE / N=10 VULN.
 >
-> 🔴 **Read the zero-FP claim precisely (TECH_DEBT D24).** Four of the five shapes are genuinely
-> **code-gated** — a channel or the B-2.2 guard decides, and that holds on a second target too.
-> The **read-semantic** shape (M1.1) is **NOT gated**: when the model answers from the attack
-> response alone it requests no follow-up, so the guard is a structural no-op and all four
-> exemption channels are unreachable — the FINAL verdict is the model's raw opinion. Target #1's
-> clean read-type record (`X-EQUIV-SAFE` `failed` 20/20, `guard_override=None` 20/20) is **model
-> compliance, not a code-held line**; on `depot_target/` the same shape false-positives
-> **`verified` 20/20, deterministically**. Do not cite read-type zero-FP as code-guaranteed.
+> ✅ **All five shapes are code-gated (D24 RESOLVED, `033fc9e`).** This previously read that
+> read-semantic was **NOT** gated: when the model answers from the attack response alone it requests
+> no follow-up, so the B-2.2 guard is a structural no-op and all four exemption channels are
+> unreachable — the FINAL verdict was the model's raw opinion. Target #1's clean read-type record
+> (`X-EQUIV-SAFE` `failed` 20/20, `guard_override=None` 20/20) was **model compliance, not a
+> code-held line**, and `depot_target/` false-positived the same shape **`verified` 20/20**.
+>
+> The **owner-view differential gate** closed it. Code issues an authenticated read of the same
+> object **as the owner** (two-account baseline, `5a33cb2`) and a `verified` survives only if the
+> attack response **corroborates that authentic view** — measured with the rule oracle's own
+> `_compute_similarity` against a `0.95` threshold. Denial keywords are never consulted. It is
+> **downgrade-only by construction** (`_apply_owner_view_gate` never assigns `verified`) and scoped
+> to the **no-follow-up** branch, so the other four shapes' paths are untouched.
+> **Real-model confirmed** (N=1 × 5 read-type cases): `DP-READ-SAFE` `verified` → `inconclusive`
+> (`owner_view_not_corroborated`) with the model still raw-saying `verified`.
+>
+> ⚠️ **Bounded, not solved.** The threshold is calibrated on **deterministic lab data comparing raw
+> bodies** and is **unvalidated against real-target volatility**; reusing the existing
+> `_sanitize_response_text` was measured and **rejected** (it lifts SECURE similarity above the
+> threshold). Public/shared resources remain a residual gap; owner credentials are per-deployment,
+> not per-finding; real-model confirmation is N=1. See TECH_DEBT **D24**.
 
 ---
 

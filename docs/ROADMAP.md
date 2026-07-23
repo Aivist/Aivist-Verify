@@ -78,9 +78,17 @@ figure is a **high-N re-measure** (gemini-2.5-pro, one target, fresh-seeded, **0
 `shadow_highN_xequiv_run.out.txt` (the M1.1 read shape). Aggregate: **140 SAFE/control runs →
 FINAL `verified` = 0** (0 false positives) and **70 VULN runs → FINAL `verified` = all**. On **40**
 of the SAFE runs (both `X-MASS-SAFE` cases) the model's raw verdict was `verified` and the gate
-refused all 40 — on those shapes the line is held by code, not model compliance. **Caveat (D24):**
-20 of those 140 SAFE runs — the **read-semantic** shape — had **no code gate at all**; they were
-correct only because the model was. On the second target that same shape false-positives **20/20**.
+refused all 40 — on those shapes the line is held by code, not model compliance. **D24, now RESOLVED:**
+20 of those 140 SAFE runs — the **read-semantic** shape — had **no code gate at all** and were correct
+only because the model was; the second target false-positived that shape **20/20**. The **owner-view
+differential gate** (`033fc9e`), built on the two-account ownership baseline (`5a33cb2`), closed it:
+code reads the same object **as the owner** and a `verified` survives only if the attack response
+corroborates that authentic view. **All five shapes are now code-gated**, confirmed against the real
+model (N=1 × 5 read-type cases): `DP-READ-SAFE` went `verified` → `inconclusive` while the model still
+raw-said `verified`. **Still bounded, do not over-read:** the 0.95 threshold is calibrated on
+deterministic lab data with raw bodies and is unvalidated against real-target volatility;
+public/shared resources are a residual gap; owner credentials are per-deployment, not per-finding;
+and the real-model confirmation is N=1, not at scale. See TECH_DEBT **D24**.
 
 **Not yet:** it does not yet *act* (shadow-only — the persisted verdict is still the rule
 oracle's; making the AI verdict authoritative is D19); and it is proven on **five vuln shapes,

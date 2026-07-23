@@ -386,7 +386,26 @@
   the other four shapes untouched (the diff removes zero lines and contains no guard/channel/anchor
   line). Behavioural proof: same case, same pinned model verdict, pre-gate `FINAL='verified'` vs
   post-gate `FINAL='inconclusive'`.
-- **⚠️ STILL OPEN — three boundaries this fix does NOT close. No claim may imply otherwise:**
+- **Real-model confirmation (the loop is closed).** The SEV-1 was discovered with the real model, so
+  the fix was re-measured the same way — 5 read-type cases, N=1, real Gemini, owner credential
+  supplied through the real `AI_DEEP_VERIFY_OWNER_AUTH` field
+  (`scripts/audit/shadow_d24_realmodel_run.out.txt`):
+
+  | case | truth | RAW | FINAL | similarity | gate reason |
+  |---|---|---|---|---|---|
+  | **DP-READ-SAFE** | SECURE | `verified` | **`inconclusive`** | 0.8857 | `owner_view_not_corroborated` |
+  | **DP-READ-SAFE-ECHO** | SECURE | `verified` | **`inconclusive`** | 0.9203 | `owner_view_not_corroborated` |
+  | X-EQUIV-SAFE | SECURE | `failed` | `failed` | 0.6697 | — (model self-corrected; gate not load-bearing) |
+  | DP-READ-VULN | REAL | `verified` | `verified` | 1.0000 | — (corroborated) |
+  | X-EQUIV-VULN | REAL | `verified` | `verified` | 1.0000 | — (corroborated) |
+
+  `DP-READ-SAFE` — the original SEV-1, previously `verified` 20/20 deterministically — now lands
+  `inconclusive` **while the model still raw-says `verified`**. The model's failure mode is
+  unchanged; code holds the line. Note honestly that on `X-EQUIV-SAFE` the model answered `failed`
+  on its own, so the gate never engaged there — that row is **not** evidence of the gate working.
+- **⚠️ STILL OPEN — boundaries this fix does NOT close. No claim may imply otherwise:**
+  0. **Real-model confirmation is N=1, not at scale.** Five cases, one run each. The zero-FP
+     statistical claim for this shape has not been re-established at high N.
   1. **Public / shared resources (residual gap).** A genuinely public or shared resource legitimately
      returns the same content to both identities, so it corroborates and the gate permits. Nothing
      upstream excludes public resources — verified by code reading; the only near-hit

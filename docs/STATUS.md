@@ -26,10 +26,25 @@ stands as the authoritative record — **140 SAFE/control runs → 0 false posit
 all `verified`** (`scripts/audit/shadow_highN_zerofp_run.out.txt`, 180 runs + `…_highN_xequiv_run.out.txt`,
 30 runs). On **40** of those SAFE runs the model's raw verdict was `verified` and the deterministic
 gate refused every one — on those shapes the safety line is held by code, not by model compliance.
-> ⚠️ **But not on every shape.** **20 of those 140 SAFE runs (the read-semantic shape) had NO code
-> gate behind them** — they were correct only because the model was correct. The second target
-> (`depot_target/`) shows the same shape false-positive **20/20, deterministically**. See TECH_DEBT
-> **D24** — the most serious open gap in the engine, and a blocker for D19 on this shape.
+> ✅ **All five shapes are now code-gated (D24 RESOLVED, `033fc9e`).** This used to read "but not on
+> every shape": 20 of those 140 SAFE runs (read-semantic) had **no code gate at all** and were correct
+> only because the model was, and the second target false-positived that shape **20/20**. The
+> **owner-view differential gate** closed it — code now reads the same object **as the owner** (via
+> the two-account baseline, `5a33cb2`) and a `verified` survives only if the attack response
+> corroborates that authentic view. Downgrade-only by construction.
+>
+> **Confirmed against the REAL model** (N=1 × 5 read-type cases, `scripts/audit/shadow_d24_realmodel_run.out.txt`):
+> `DP-READ-SAFE` **`verified` → `inconclusive`** (`owner_view_not_corroborated`) with the model still
+> raw-saying `verified`; `DP-READ-SAFE-ECHO` likewise; both read-type VULN still `verified`. The loop
+> is closed — the fix was confirmed the same way the failure was found.
+>
+> ⚠️ **Do not read this as "the shape is solved."** Four boundaries stand, unchanged (TECH_DEBT D24):
+> the **0.95 threshold is calibrated on deterministic lab data comparing raw bodies** and is
+> **unvalidated against real-target volatility** (timestamps/ETags would push a true positive down;
+> the obvious remedy — the existing sanitizer — was measured and *raises* SECURE similarity instead,
+> so it was rejected); **public/shared resources remain a residual gap** the downgrade-only gate does
+> not address; owner credentials are **per-deployment, not per-finding**; and the real-model
+> confirmation is **N=1, not at scale**.
 
 ## Test suite
 
