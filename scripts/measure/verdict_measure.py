@@ -256,7 +256,14 @@ async def _run_one(case, caseset, model, run_index, n, curated_fh):
 # ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
-async def _run_caseset(caseset, selected, n, model, seed_policy, out_fh, curated_fh):
+def _n_for(case, n_safe, n_vuln):
+    """Per-case N: VULN (REAL) cases use n_vuln; SAFE/CONTROL use n_safe. The zero-FP
+    methodology runs SAFE/control at higher N (they are what prove NO false positive) and
+    VULN at lower N (a stability check)."""
+    return n_vuln if case["ground_truth"] == "REAL" else n_safe
+
+
+async def _run_caseset(caseset, selected, n_safe, n_vuln, model, seed_policy, out_fh, curated_fh):
     db_path = os.path.join(tempfile.gettempdir(),
                            f"verdict_measure_{caseset['target']}.db")
     db_url = "sqlite+aiosqlite:///" + db_path.replace("\\", "/")
@@ -270,6 +277,7 @@ async def _run_caseset(caseset, selected, n, model, seed_policy, out_fh, curated
             _rm_db(db_path)
             proc = _boot_target(caseset["module"], caseset["port"], caseset["db_env"], db_url)
         for case in selected:
+            n = _n_for(case, n_safe, n_vuln)
             print(f"\n### {caseset['target']} :: {case['id']}  "
                   f"[{case['ground_truth']} / {case['shape']}]  N={n}")
             for run_index in range(1, n + 1):
@@ -350,7 +358,13 @@ def main():
     ap = argparse.ArgumentParser(description="Structured verdict measurement harness.")
     ap.add_argument("--caseset", action="append", required=True,
                     help="path to a caseset JSON (repeatable)")
-    ap.add_argument("--n", type=int, default=1, help="runs per case (default 1)")
+    ap.add_argument("--n", type=int, default=1,
+                    help="runs per case (default 1); the fallback for --n-safe/--n-vuln")
+    ap.add_argument("--n-safe", type=int, default=None,
+                    help="runs per SAFE/CONTROL case (defaults to --n). SAFE cases prove NO "
+                         "false positive, so the zero-FP methodology runs them at higher N.")
+    ap.add_argument("--n-vuln", type=int, default=None,
+                    help="runs per REAL (VULN) case (defaults to --n); a stability check.")
     ap.add_argument("--model", default=None, help="override GEMINI_PRO_MODEL")
     ap.add_argument("--seed-policy", choices=["per-run", "per-case"], default="per-run",
                     help="per-run reboots+reseeds the target before EVERY run (default; "
@@ -380,18 +394,21 @@ def main():
     curated_fh = (open(args.curated_transcript, "w", encoding="utf-8")
                   if args.curated_transcript else None)
 
+    n_safe = args.n_safe if args.n_safe is not None else args.n
+    n_vuln = args.n_vuln if args.n_vuln is not None else args.n
+
     planned = 0
     casesets = []
     for path in args.caseset:
         cs = json.load(open(path, encoding="utf-8"))
         selected = [c for c in cs["cases"] if not case_filter or c["id"] in case_filter]
         casesets.append((cs, selected))
-        planned += len(selected) * args.n
+        planned += sum(_n_for(c, n_safe, n_vuln) for c in selected)
 
     print("=" * 108)
     print("verdict_measure — structured measurement run")
     print("=" * 108)
-    print(f"model={args.model or settings.GEMINI_PRO_MODEL}  N={args.n}  "
+    print(f"model={args.model or settings.GEMINI_PRO_MODEL}  N_safe={n_safe} N_vuln={n_vuln}  "
           f"seed_policy={args.seed_policy}  planned model calls={planned}")
     if args.out:
         print(f"structured artifact -> {args.out}")
@@ -399,7 +416,7 @@ def main():
     async def _go():
         all_rows = []
         for cs, selected in casesets:
-            all_rows += await _run_caseset(cs, selected, args.n, args.model,
+            all_rows += await _run_caseset(cs, selected, n_safe, n_vuln, args.model,
                                            args.seed_policy, out_fh, curated_fh)
         return all_rows
 
