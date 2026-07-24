@@ -18,12 +18,15 @@
 > absence); **M1.4** **mass-assignment** via a **LOW-ENTROPY STATE JUMP** from a known pre-flight
 > state. The verdict is still **observe-only** — promoting it to authoritative is **D19**.
 >
-> **Measurement (authoritative, high-N).** Each shape was first proven at N=5 (per-shape transcripts,
-> still on disk); the current headline is a **high-N re-measure** (gemini-2.5-pro, one target,
-> fresh-seeded, **0 degraded**): **140 SAFE/control runs → 0 false positives; 70 VULN runs → all
-> `verified`** — `scripts/audit/shadow_highN_zerofp_run.out.txt` (SAFE/control N=20, VULN N=10) +
-> `shadow_highN_xequiv_run.out.txt` (M1.1). The per-shape `5/5` figures below the fold are the
-> original runs; where a shape appears in the high-N set its authoritative count is N=20 SAFE / N=10 VULN.
+> **Measurement (authoritative — the GOLDEN two-target record).** Each shape was first proven at N=5
+> (per-shape transcripts, still on disk); the authoritative headline is now the **two-target GOLDEN
+> run** — five shapes × **two structurally-different targets** (`vulnerable_target` integer-id,
+> `depot_target` UUID-id) × real gemini-2.5-pro, N=20 SAFE/control, N=10 VULN, fresh-seeded per run:
+> **300 SAFE/control runs → 0 false positives; 130 VULN runs → all `verified`** via their expected
+> channel; **430/430 usable, 0 degraded**. Artifact `scripts/measure/results/sweep_highN.jsonl`
+> (committed, diffable; reproduce per `scripts/measure/REPRODUCE.md`). Across all SAFE cases the model
+> **raw-said `verified` on 79 runs** and code held the line on every one. *Supersedes the single-target
+> 140/70 record (kept as history in `RESULTS.md`).* The per-shape `5/5` figures below are original runs.
 >
 > ✅ **All five shapes are code-gated (D24 RESOLVED, `033fc9e`).** This previously read that
 > read-semantic was **NOT** gated: when the model answers from the attack response alone it requests

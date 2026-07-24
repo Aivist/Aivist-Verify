@@ -19,7 +19,9 @@
 | **M1.1 read-type (equal-length, MEASURED)** | X-EQUIV-VULN `verified` 5/5 (anchoring `confirmed`) · X-EQUIV-SAFE `failed` 5/5 — **0 false positives**, judged by semantics not size |
 | **M1.2 silent-write / object-STATE (MEASURED)** | X-SILENT-VULN `verified` **5/5** (code-gathered state read; causality `confirmed_at_path` 5/5) · X-SILENT-SAFE **`verified` 0/5** (causality `absent` 5/5 → no exemption → `inconclusive`) — **0 false positives**; B-1 X-CROSS still `verified` 5/5 |
 | **Shapes confirmed with zero FP** | **5 — M1 COMPLETE.** write→write-record (B-1), read-type semantic equivalence (M1.1), write→object-STATE (M1.2), delete→NEGATIVE ASSERTION (M1.3), mass-assignment→LOW-ENTROPY STATE JUMP (M1.4) |
-| **HIGH-N zero-FP measurement (MEASURED)** | **140 SAFE/control runs at N=20 → FINAL `verified` = 0**; 70 VULN runs at N=10 → `verified` 70/70. **210/210 usable, zero degraded.** On X-MASS-SAFE the model **raw-said `verified` 40/40** and the deterministic `no_jump` gate refused every one — on that shape the **code gate, not the model**, holds the zero-FP line. See the high-N section below. |
+| ✅ **GOLDEN zero-FP record (AUTHORITATIVE) — two targets, real model** | **Five shapes × two structurally-different targets** (`vulnerable_target` + `depot_target`) × real gemini-2.5-pro, **N=20 SAFE/control · N=10 VULN**, fresh-seeded per run. **300 SAFE/control runs → FINAL `verified` = 0** (zero false positives); **130 VULN runs → `verified` = 130** (every VULN via its expected channel). **430/430 usable, 0 degraded** (11 transient-503/timeout runs re-run to clean; raw first pass at commit `f8c53cb`). Artifact: `scripts/measure/results/sweep_highN.jsonl` (committed, diffable). **Supersedes the single-target 140/70 record below.** See the GOLDEN section. |
+| **HEADLINE — the line is held by code, not model compliance** | Across all SAFE cases the model **raw-said `verified` on 79 runs** and code refused **every one**: `DP-READ-SAFE` **20/20** + `DP-READ-SAFE-ECHO` **20/20** (owner-view gate, D24); `X-MASS-SAFE-MISSING` 19/20 + `X-MASS-SAFE-PRESENT` 19/20 (state-jump gate); **`X-EQUIV-SAFE` 1/20** — the model flipped to `verified` **once** on target #1's read shape (it was `failed` 20/20 in every prior single-target run), and the owner-view gate caught it. **Without the D24 gate that run would have been a false positive** — first live evidence the read gate is load-bearing on target #1, not only Depot. |
+| **HIGH-N (single-target, N=20/10) — SUPERSEDED by the golden record above** | **140 SAFE/control runs → FINAL `verified` = 0**; 70 VULN → `verified` 70/70. **210/210 usable, zero degraded.** One target (`vulnerable_target`). Kept as history; the two-target golden record above is authoritative. |
 | 🔴 **Read-type caveat on the above (TECH_DEBT D24)** | **20 of those 140 SAFE runs — X-EQUIV-SAFE, the read-semantic shape — were NOT code-gated.** `guard_override=None` 20/20 and FINAL rode the raw verdict 20/20: the engine gated nothing, the model was simply right. On the second target (`depot_target/`) the same shape false-positives **`verified` 20/20, deterministically** (`scripts/audit/shadow_readtype_severity_run.out.txt`). The other four shapes' code-gated results are unaffected. |
 | ✅ **D24 RESOLVED — read-semantic is now code-gated too** | The **owner-view differential gate** (`033fc9e`, on the two-account baseline `5a33cb2`) closed the caveat above: code reads the same object **as the owner** and a `verified` survives only if the attack response corroborates that authentic view (rule oracle's own `_compute_similarity`, threshold `0.95`, denial keywords never consulted). Downgrade-only by construction. **Real-model confirmed** (N=1 × 5 read-type cases, `scripts/audit/shadow_d24_realmodel_run.out.txt`): **DP-READ-SAFE `verified` → `inconclusive`** (`owner_view_not_corroborated`) with the model still raw-saying `verified`; DP-READ-SAFE-ECHO likewise; both read-type VULN still `verified` (similarity 1.0000). **Bounded:** threshold calibrated on deterministic lab data with raw bodies, unvalidated against real-target volatility (the existing sanitizer was measured and **rejected** — it lifts SECURE above the threshold); public/shared resources a residual gap; owner credentials per-deployment not per-finding; real-model run is N=1, not at scale. |
 | **M1.3 delete-type (MEASURED)** | X-DELETE-VULN-HARD `verified` **5/5** (`confirmed_physical`) · X-DELETE-VULN-SOFT `verified` **5/5** (`confirmed_logical`) · X-DELETE-SAFE **`verified` 0/5** (`still_present`) · X-DELETE-CONTROL (never existed) **`verified` 0/5** (`preflight_absent`) — **0 false positives** |
@@ -727,7 +729,65 @@ Offline this is additionally locked by
 
 ---
 
-## HIGH-N zero-false-positive measurement (all five shapes) — MEASURED
+## GOLDEN zero-false-positive record — TWO targets, real model (AUTHORITATIVE)
+
+This is the authoritative measurement. It **supersedes** the single-target high-N section below
+(140 SAFE / 70 VULN), which is kept as history. Produced by the committed harness
+`scripts/measure/verdict_measure.py`; the structured artifact is
+`scripts/measure/results/sweep_highN.jsonl` (one JSON row per run, diffable). Reproduce per
+`scripts/measure/REPRODUCE.md`.
+
+**Setup.** Five shapes × **two structurally-different targets** (`vulnerable_target`, integer ids;
+`depot_target`, UUID ids + different nouns + `202`/`204` opaque bodies) × real **gemini-2.5-pro**.
+**N=20** per SAFE/control case, **N=10** per VULN case, target **fresh-seeded before every run**.
+28 cases → 430 planned runs. A first pass had 11 transient-503/timeout runs flagged NOT DATA; those
+11 were re-run (all clean on first attempt), giving **430/430 usable, 0 degraded** (raw first pass at
+commit `f8c53cb`).
+
+**Result.**
+
+| | usable runs | FINAL `verified` |
+|---|---|---|
+| SAFE / control | **300** | **0** — zero false positives |
+| VULN | **130** | **130** — every VULN, via its expected channel |
+
+- **SEV-1 = 0, SEV-2 = 0.** Every REAL case verified via the **same** exemption channel as the N=1
+  sweep and the pre-gate record (`write_record` / `state_jump` / `delete_readback`); every non-read
+  SAFE/control held at `inconclusive`. The static no-regression proof (zero-line engine diff + unit
+  tests) is confirmed live, at scale, on both targets.
+
+**HEADLINE — the line is held by code, not model compliance (measured).** Across all SAFE cases the
+model **raw-said `verified` on 79 runs** and code held the line on **every one**:
+
+| SAFE case | held | gate |
+|---|---|---|
+| `DP-READ-SAFE` | **20/20** | owner-view differential (D24), sim 0.8857 |
+| `DP-READ-SAFE-ECHO` | **20/20** | owner-view differential (D24), sim 0.9203 |
+| `X-MASS-SAFE-MISSING` | 19/20 | state-jump (`no_jump`) |
+| `X-MASS-SAFE-PRESENT` | 19/20 | state-jump (`no_jump`) |
+| `X-EQUIV-SAFE` | **1/20** | owner-view differential (D24) |
+
+**The `X-EQUIV-SAFE` finding.** In every prior single-target run this case was `failed` 20/20 — the
+model self-corrected, so the D24 gate never engaged there and could not be shown load-bearing on
+target #1. At N=20 here the model **flipped to `verified` once**, and the owner-view gate downgraded
+it to `inconclusive`. **Without the D24 gate that run would have been a false positive.** First live
+evidence the read gate holds on target #1, not only on Depot.
+
+**Honest boundaries (unchanged — this record does not close them).**
+- The owner-view **`0.95` threshold is calibrated on deterministic lab data comparing RAW bodies**,
+  and is **unvalidated against real-target volatility** (timestamps/ETags). Reusing the existing
+  `_sanitize_response_text` was measured and **rejected** (it lifts SECURE similarity above the
+  threshold). See TECH_DEBT D24 (f).
+- **Public/shared resources remain a residual gap** the downgrade-only gate does not address.
+- Owner credentials are **per-deployment, not per-finding**.
+- This is **two self-built labs and one model** (gemini-2.5-pro), **not** arbitrary real APIs.
+- The AI verdict remains **shadow-only**: this record does **not** make it authoritative (that is D19).
+
+---
+
+## HIGH-N zero-false-positive measurement (single target) — SUPERSEDED, kept as history
+
+> **Superseded** by the GOLDEN two-target record above. Retained for provenance.
 
 Purpose: strengthen the **statistical** evidence behind the zero-FP claim. A VULN case only shows
 "the engine *can* confirm"; a **SAFE case is what proves it never false-positives**, so SAFE/control

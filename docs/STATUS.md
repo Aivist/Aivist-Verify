@@ -20,12 +20,15 @@ object-**STATE** read-back), and **M1.3** (**delete**-type, confirmed by a **NEG
 ASSERTION** — a code-anchored from-EXISTS-to-ABSENT jump), and **M1.4** (**mass-assignment**,
 confirmed by a **LOW-ENTROPY STATE JUMP** from a known pre-flight state). **M1 — proving the
 mechanism generalizes across shapes — is COMPLETE.** It is still shadow-only (not authoritative —
-that's **D19**) and proven on five shapes / one target / one model. The zero-false-positive claim
-is no longer N=5-per-shape: a **high-N re-measure** (gemini-2.5-pro, fresh-seeded, 0 degraded) now
-stands as the authoritative record — **140 SAFE/control runs → 0 false positives; 70 VULN runs →
-all `verified`** (`scripts/audit/shadow_highN_zerofp_run.out.txt`, 180 runs + `…_highN_xequiv_run.out.txt`,
-30 runs). On **40** of those SAFE runs the model's raw verdict was `verified` and the deterministic
-gate refused every one — on those shapes the safety line is held by code, not by model compliance.
+that's **D19**) and proven on **five shapes × two structurally-different targets × one model**.
+**Authoritative record — the GOLDEN two-target zero-FP run** (real gemini-2.5-pro, N=20 SAFE/control,
+N=10 VULN, fresh-seeded per run, `scripts/measure/results/sweep_highN.jsonl`): **300 SAFE/control
+runs → 0 false positives; 130 VULN runs → all `verified`** via their expected channel; **430/430
+usable, 0 degraded**. **Headline:** across all SAFE cases the model **raw-said `verified` on 79 runs**
+and code held the line on **every one** (`DP-READ-SAFE`/`-ECHO` 20/20 each via the D24 owner-view
+gate; `X-MASS-SAFE` ×2 via state-jump; **`X-EQUIV-SAFE` 1/20** — the model flipped to `verified` once
+on target #1's read shape, which without the D24 gate would have been a false positive). *Supersedes
+the earlier single-target record (140 SAFE / 70 VULN, one target), kept as history in `RESULTS.md`.*
 > ✅ **All five shapes are now code-gated (D24 RESOLVED, `033fc9e`).** This used to read "but not on
 > every shape": 20 of those 140 SAFE runs (read-semantic) had **no code gate at all** and were correct
 > only because the model was, and the second target false-positived that shape **20/20**. The
@@ -33,10 +36,11 @@ gate refused every one — on those shapes the safety line is held by code, not 
 > the two-account baseline, `5a33cb2`) and a `verified` survives only if the attack response
 > corroborates that authentic view. Downgrade-only by construction.
 >
-> **Confirmed against the REAL model** (N=1 × 5 read-type cases, `scripts/audit/shadow_d24_realmodel_run.out.txt`):
-> `DP-READ-SAFE` **`verified` → `inconclusive`** (`owner_view_not_corroborated`) with the model still
-> raw-saying `verified`; `DP-READ-SAFE-ECHO` likewise; both read-type VULN still `verified`. The loop
-> is closed — the fix was confirmed the same way the failure was found.
+> **Confirmed against the REAL model at scale** — the D24 gate is now exercised in the GOLDEN
+> two-target run above, not just the initial N=1 check: `DP-READ-SAFE`/`-ECHO` held to `inconclusive`
+> **20/20 each** while the model raw-said `verified`, and on `X-EQUIV-SAFE` the model flipped to
+> `verified` **1/20** and the gate caught it. The loop is closed — the fix is confirmed at scale the
+> same way the failure was found.
 >
 > ⚠️ **Do not read this as "the shape is solved."** Four boundaries stand, unchanged (TECH_DEBT D24):
 > the **0.95 threshold is calibrated on deterministic lab data comparing raw bodies** and is
@@ -77,13 +81,13 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
 | **M1.x (optional)** | further shapes (nested-object, multi-step) | Not started. M1's goal — *prove the mechanism generalizes* — is met at five shapes; more shapes are breadth, not a gate. |
 
 > **Authoritative measurement (supersedes the per-shape `N=5` in the rows above).** Each row records
-> the *original* per-shape run (still on disk, still valid). The current headline figure is the
-> **high-N re-measure** (gemini-2.5-pro, one target, fresh-seeded, **0 degraded / 0 error**):
-> `scripts/audit/shadow_highN_zerofp_run.out.txt` (SAFE/control N=20, VULN N=10 — 180 runs) +
-> `shadow_highN_xequiv_run.out.txt` (the M1.1 read shape — 30 runs). Aggregate across the two:
-> **140 SAFE/control runs → FINAL `verified` = 0** (0 false positives) and **70 VULN runs → FINAL
-> `verified` = all**. Two of the SAFE cases (`X-MASS-SAFE` present + missing, 40 runs) had the model
-> **raw-want `verified` 40/40** while the gate held `inconclusive` every time.
+> the *original* per-shape run (still on disk, still valid). The current headline is the **GOLDEN
+> two-target record** (real gemini-2.5-pro, N=20 SAFE/control, N=10 VULN, fresh-seeded,
+> `scripts/measure/results/sweep_highN.jsonl`): **300 SAFE/control runs → FINAL `verified` = 0** (0
+> false positives) and **130 VULN runs → FINAL `verified` = all** via their expected channel;
+> **430/430 usable, 0 degraded**, across `vulnerable_target` (integer-id) and `depot_target` (UUID-id).
+> Across all SAFE cases the model **raw-wanted `verified` 79 times** and the gate held every one.
+> *(This supersedes the earlier single-target 140/70 high-N run, kept as history in `RESULTS.md`.)*
 
 > **M2 — Shared Domain Model (later, NOT started):** a resource/endpoint relationship graph —
 > sink upstream observations (proxy/HAR/spec) into a shared layer every module can query, so the
@@ -212,16 +216,18 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
 
 ## Honest limits (do not over-read the green)
 
-- **Five vuln shapes, one target, one model.** X-CROSS (write→write-record), X-EQUIV (read-type
+- **Five vuln shapes, TWO targets, one model.** X-CROSS (write→write-record), X-EQUIV (read-type
   semantic equivalence), X-SILENT (write→object-state), X-DELETE (delete→negative assertion), X-MASS (mass-assignment→
   low-entropy state jump). nested-object, multi-step, and noisier real audit logs are untested.
-  "Mechanism proven on these classes," not "verifier finished." **N is no longer the thin dimension:**
-  the high-N re-measure (above) is **140 SAFE/control + 70 VULN runs, 0 FP**, all gemini-2.5-pro on the
-  single `vulnerable_target`. The genuine remaining gaps are **target-diversity and model-diversity**,
-  not sample size.
-- **Post-fix live no-regression: CONFIRMED across all five shapes.** The authoritative record is now the
-  high-N re-measure (`scripts/audit/shadow_highN_zerofp_run.out.txt` + `…_highN_xequiv_run.out.txt`),
-  which supersedes the earlier N=5 regression run (`shadow_m14_regress_run.out.txt`, 30/30 clean). With
+  "Mechanism proven on these classes," not "verifier finished." **N and target-diversity are no longer
+  the thin dimensions:** the GOLDEN record is **300 SAFE/control + 130 VULN runs, 0 FP** across
+  **two structurally-different targets** (`vulnerable_target` integer-id + `depot_target` UUID-id).
+  The genuine remaining gaps are now **model-diversity** (only gemini-2.5-pro), **arbitrary real
+  APIs** (these are two self-built labs), and the D24 read-gate boundaries (threshold calibrated on
+  lab data / raw bodies; public-shared-resource residual gap; per-deployment credentials).
+- **Post-fix live no-regression: CONFIRMED across all five shapes, now on two targets.** The
+  authoritative record is the GOLDEN two-target run (`scripts/measure/results/sweep_highN.jsonl`);
+  the single-target high-N run below (`scripts/audit/shadow_highN_*`) is superseded history. With
   the M1.4 routing fix in place: B-1 X-CROSS `verified` **10/10** (still `write_record_readback_decisive`),
   X-SILENT-VULN `verified` **10/10**, X-EQUIV-VULN `verified` **10/10**, X-DELETE-VULN-HARD/SOFT
   `verified` **10/10** each (`confirmed_physical` / `confirmed_logical`), X-MASS-VULN present + missing
@@ -294,11 +300,12 @@ deployment, the nuclei keep-vs-cut decision — parked until a benchmark justifi
    (`AI_DEEP_VERIFY_OPENAPI_SPEC`), a path resolved to a parsed spec at the fuzzer consumption
    point with a fail-safe to the placeholder; in-process dict injection still works (back-compat).
    Zero regression (unset → byte-identical placeholder), locked by `test_d21_spec_config.py` (8).
-2. **Broaden the proof — the real remaining gap.** N is already high (140 SAFE / 70 VULN, 0 FP); what
-   is *not* yet shown is that the mechanism holds on a **second, structurally-different target** and
-   (ideally) a **second model**. This is the highest-leverage work before D19 — it both de-risks
-   promotion and is the "benchmark vs agent-style PoC" evidence. Update `RESULTS.md` with the high-N
-   result while here.
+2. **Broaden the proof — ✅ SECOND TARGET DONE.** The mechanism is now proven on a **second,
+   structurally-different target** (`depot_target`, UUID ids): the GOLDEN two-target run is
+   **300 SAFE/control + 130 VULN runs, 0 FP** (`scripts/measure/results/sweep_highN.jsonl`). Building
+   the second lab also surfaced and closed a SEV-1 (D24: the read-semantic shape had no code gate).
+   **Still open on this axis:** a **second model** (only gemini-2.5-pro), and **arbitrary real APIs**
+   (these remain two self-built labs). The reproducible harness is `scripts/measure/` (see REPRODUCE.md).
 3. **D19** — only after the proof is broadened: promote the AI verdict from observe-only to
    authoritative in the real flow, with a gating policy.
    - **Gating constraint (from M1.2 anchoring, narrowed by M1.4):** the authoritative gate must key on

@@ -72,20 +72,22 @@ exemption. X-CROSS→`verified`, X-SAFE→`inconclusive`/safe, no false verdict,
 (**delete**-type confirmed by a **NEGATIVE ASSERTION**), and **M1.4** (**mass-assignment** confirmed
 by a **LOW-ENTROPY STATE JUMP**). B-1 not regressed throughout.
 
-**Measurement (authoritative, high-N).** The original per-shape runs were N=5; the current headline
-figure is a **high-N re-measure** (gemini-2.5-pro, one target, fresh-seeded, **0 degraded**):
-`scripts/audit/shadow_highN_zerofp_run.out.txt` (SAFE/control N=20, VULN N=10) +
-`shadow_highN_xequiv_run.out.txt` (the M1.1 read shape). Aggregate: **140 SAFE/control runs →
-FINAL `verified` = 0** (0 false positives) and **70 VULN runs → FINAL `verified` = all**. On **40**
-of the SAFE runs (both `X-MASS-SAFE` cases) the model's raw verdict was `verified` and the gate
-refused all 40 — on those shapes the line is held by code, not model compliance. **D24, now RESOLVED:**
-20 of those 140 SAFE runs — the **read-semantic** shape — had **no code gate at all** and were correct
-only because the model was; the second target false-positived that shape **20/20**. The **owner-view
-differential gate** (`033fc9e`), built on the two-account ownership baseline (`5a33cb2`), closed it:
+**Measurement (authoritative — the GOLDEN two-target record).** Five shapes × **two structurally-
+different targets** (`vulnerable_target` integer-id, `depot_target` UUID-id) × real gemini-2.5-pro,
+N=20 SAFE/control, N=10 VULN, fresh-seeded per run: **300 SAFE/control runs → FINAL `verified` = 0**
+(0 false positives) and **130 VULN runs → FINAL `verified` = all** via their expected channel;
+**430/430 usable, 0 degraded**. Artifact `scripts/measure/results/sweep_highN.jsonl`. **Headline:**
+across all SAFE cases the model **raw-said `verified` on 79 runs** and the gate refused **every one**
+— on the read shape `DP-READ-SAFE`/`-ECHO` 20/20 each (D24 owner-view gate), on mass `X-MASS-SAFE` ×2,
+and on `X-EQUIV-SAFE` **1/20** (the model flipped to `verified` once on target #1's read shape — without
+the D24 gate that would have been a false positive). *This supersedes the earlier single-target record
+(140 SAFE / 70 VULN), kept as history in `RESULTS.md`.*
+**D24 (RESOLVED, `033fc9e`):** the read-semantic shape had **no code gate at all** — correct only
+because the model was, and the second target false-positived it **20/20** deterministically. The
+**owner-view differential gate**, built on the two-account ownership baseline (`5a33cb2`), closed it:
 code reads the same object **as the owner** and a `verified` survives only if the attack response
-corroborates that authentic view. **All five shapes are now code-gated**, confirmed against the real
-model (N=1 × 5 read-type cases): `DP-READ-SAFE` went `verified` → `inconclusive` while the model still
-raw-said `verified`. **Still bounded, do not over-read:** the 0.95 threshold is calibrated on
+corroborates that authentic view. **All five shapes are now code-gated on both targets. Still bounded,
+do not over-read:** the 0.95 threshold is calibrated on
 deterministic lab data with raw bodies and is unvalidated against real-target volatility;
 public/shared resources are a residual gap; owner credentials are per-deployment, not per-finding;
 and the real-model confirmation is N=1, not at scale. See TECH_DEBT **D24**.
@@ -172,8 +174,9 @@ core "can it confirm?" question.
    > milestone that gated D19 is met. **Next line: D21 → D19 → pre-release → pre-real-target.**
    >
    > *(The per-shape figures in the rows above are the original N=5 runs. Authoritative headline = the
-   > high-N re-measure: **140 SAFE/control → 0 FP, 70 VULN → all `verified`**, gemini-2.5-pro / one
-   > target / 0 degraded — `scripts/audit/shadow_highN_zerofp_run.out.txt` + `…_highN_xequiv_run.out.txt`. §3.)*
+   > GOLDEN two-target record: **300 SAFE/control → 0 FP, 130 VULN → all `verified`**, five shapes ×
+   > two structurally-different targets × gemini-2.5-pro, N=20/10, 430/430 usable —
+   > `scripts/measure/results/sweep_highN.jsonl`. Supersedes the single-target 140/70. §3.)*
 
    > **M2 — Shared Domain Model (later, NOT started):** a resource/endpoint relationship graph — sink
    > upstream observations (proxy / HAR / spec) into a shared layer every module can query, so the

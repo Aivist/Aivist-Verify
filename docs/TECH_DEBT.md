@@ -403,9 +403,14 @@
   `inconclusive` **while the model still raw-says `verified`**. The model's failure mode is
   unchanged; code holds the line. Note honestly that on `X-EQUIV-SAFE` the model answered `failed`
   on its own, so the gate never engaged there — that row is **not** evidence of the gate working.
+- **✅ Confirmed at scale (GOLDEN two-target run).** The initial confirmation was N=1; the gate is now
+  exercised in the authoritative GOLDEN run (`scripts/measure/results/sweep_highN.jsonl`, real
+  gemini-2.5-pro, N=20 SAFE / N=10 VULN, both targets). Read-semantic results at full N:
+  `DP-READ-SAFE` and `DP-READ-SAFE-ECHO` held to `inconclusive` **20/20 each** while the model raw-said
+  `verified`; both read VULN `verified` 10/10; and on `X-EQUIV-SAFE` the model flipped to `verified`
+  **1/20** and the gate caught it (**without D24 that run is a false positive** — first live evidence
+  the read gate is load-bearing on target #1, not only Depot).
 - **⚠️ STILL OPEN — boundaries this fix does NOT close. No claim may imply otherwise:**
-  0. **Real-model confirmation is N=1, not at scale.** Five cases, one run each. The zero-FP
-     statistical claim for this shape has not been re-established at high N.
   1. **Public / shared resources (residual gap).** A genuinely public or shared resource legitimately
      returns the same content to both identities, so it corroborates and the gate permits. Nothing
      upstream excludes public resources — verified by code reading; the only near-hit
@@ -489,9 +494,12 @@
   non-read SAFE/control was held at `inconclusive` by a real gate
   (`cross_resource_readback_not_decisive`, `no_jump`, `preflight_absent`). Their zero-FP property is
   held by code. **Only the read-semantic shape is ungated.**
-- **Consequence for the record:** the headline "140 SAFE runs → 0 false positives" is still true as
-  measured, but **20 of those 140 (the X-EQUIV-SAFE runs) were not code-gated** — they were correct
-  because the model was correct. Every doc quoting that aggregate has been qualified to say so.
+- **Consequence for the record (now closed):** the earlier single-target headline "140 SAFE runs → 0
+  false positives" was true as measured, but 20 of those 140 (the X-EQUIV-SAFE runs) were **not
+  code-gated** — correct only because the model was. With D24 landed and the GOLDEN two-target run
+  (300 SAFE/control → 0 FP), the read shape is now code-gated and X-EQUIV-SAFE at N=20 caught the
+  model's one `verified` flip. The 140/70 record is superseded by the GOLDEN record; both are stated
+  in `RESULTS.md`.
 - **Direction — ✅ DELIVERED as specified.** The requirement was: a deterministic gate so a
   `verified` resting on the attack response alone must be corroborated by code rather than asserted
   by the model; provably **stricter** (only ever weakening a `verified`); no regression to the four
@@ -746,7 +754,9 @@
   (high-N **0/20** each); **CONTROL (injected == pre-flight value, no jump)→`verified` 0/5** (high-N
   **0/20**). On the SAFE cases the model raw-said `verified` (high-N: **40/40** across the two X-MASS-SAFE
   cases) and **the gate refused every time** — the line is held by code, not by model compliance.
-  **High-N aggregate: 140 SAFE/control runs → 0 false positives; 70 VULN runs → all `verified`; 0 degraded.**
+  **High-N aggregate (single-target, SUPERSEDED): 140 SAFE/control runs → 0 false positives; 70 VULN → all `verified`.**
+  The **authoritative** record is now the GOLDEN two-target run — **300 SAFE/control → 0 FP; 130 VULN → all
+  `verified`; 430/430 usable** (`scripts/measure/results/sweep_highN.jsonl`); see `RESULTS.md`.
   ⚠️ **Qualified by D24:** 20 of those 140 SAFE runs (X-EQUIV-SAFE, the read-semantic shape) were
   **not code-gated** — `guard_override=None` 20/20, FINAL rode RAW 20/20. The mass-assignment result
   described here IS code-gated and stands; the read-type one rests on model compliance. See D24.
@@ -795,13 +805,12 @@
 1. **D21 ✅ DONE** — the spec source (`AI_DEEP_VERIFY_OPENAPI_SPEC`) is now a declared `Optional[str]`
    config field, wired for normal `.env`/env use with a fail-safe to the placeholder (see the D21
    entry above). Next up is broadening the proof, then D19.
-2. **Broaden the proof** — **shape-breadth is largely met** (five shapes done: write-record,
-   read-semantics, object-state, delete/negative-assertion, mass-assignment/state-jump; N is high —
-   140 SAFE / 70 VULN, 0 FP). The real remaining gap is **a second, structurally-different target**
-   and (ideally) a **second model** — everything so far is gemini-2.5-pro on the single
-   `vulnerable_target`. Optional shape breadth (nested-object, multi-step, noisier audit logs) is
-   extra, not the gate. Gate hardening (D23 + D23b) is **done**; extend the owner/subject vocabulary
-   as real log samples appear. Update `RESULTS.md` with the high-N result.
+2. **Broaden the proof — ✅ SECOND TARGET DONE.** Five shapes are now proven on **two structurally-
+   different targets**: the GOLDEN record is **300 SAFE/control + 130 VULN runs, 0 FP** across
+   `vulnerable_target` (integer-id) and `depot_target` (UUID-id) — `scripts/measure/results/sweep_highN.jsonl`,
+   reproducible via `scripts/measure/`. Building the second lab also surfaced and closed a SEV-1
+   (D24). **Still open on this axis:** a **second model** (only gemini-2.5-pro) and **arbitrary real
+   APIs** (these are two self-built labs). Optional shape breadth (nested-object, multi-step) is extra.
 3. **D24 ✅ RESOLVED** — the read-semantic shape now has a deterministic gate (owner-view
    differential, `033fc9e`), built on the two-account ownership baseline (`5a33cb2`). All five shapes
    are code-gated. **Three boundaries remain open** (public/shared resources, per-deployment rather
