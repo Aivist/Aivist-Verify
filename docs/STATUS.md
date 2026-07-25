@@ -19,8 +19,11 @@ anchoring), **M1.2** (silent cross-path *write* confirmed via a code-gathered
 object-**STATE** read-back), and **M1.3** (**delete**-type, confirmed by a **NEGATIVE
 ASSERTION** — a code-anchored from-EXISTS-to-ABSENT jump), and **M1.4** (**mass-assignment**,
 confirmed by a **LOW-ENTROPY STATE JUMP** from a known pre-flight state). **M1 — proving the
-mechanism generalizes across shapes — is COMPLETE.** It is still shadow-only (not authoritative —
-that's **D19**) and proven on **five shapes × two structurally-different targets × one model**.
+mechanism generalizes across shapes — is COMPLETE.** **D19 is now implemented and acceptance-passed** —
+the verifier *can* promote a rule-oracle `suspicious`→`verified` under a deterministic code authorizer,
+but is **default OFF** (`AI_DEEP_VERIFY_PROMOTE=False`, clean 430/430 vs golden in `sweep_highN_d19.jsonl`),
+so shadow/observe-only stays the shipped default. Proven on **five shapes × two structurally-different
+targets × one model**.
 **Authoritative record — the GOLDEN two-target zero-FP run** (real gemini-2.5-pro, N=20 SAFE/control,
 N=10 VULN, fresh-seeded per run, `scripts/measure/results/sweep_highN.jsonl`): **300 SAFE/control
 runs → 0 false positives; 130 VULN runs → all `verified`** via their expected channel; **430/430
@@ -66,7 +69,7 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
 | Node | Goal | State |
 |---|---|---|
 | **1. Judge correctly (= M1)** | Never a false verdict; confirm the hard case across *shapes* | **✅ COMPLETE — 5 shapes confirmed, 0 FP.** See the M1 breakdown below. |
-| **2. Act** (`D19`) | Promote the AI verdict from observe-only/log to **authoritative** | **Not started.** The persisted verdict is still the rule oracle's; the AI verdict is shadow-only. Gated on M1 proving generalization. |
+| **2. Act** (`D19`) | Promote the AI verdict from observe-only/log to **authoritative** | **✅ IMPLEMENTED, default OFF, acceptance-passed.** Promotion writes `suspicious→verified` only under a deterministic authorizer (four channels or the D24 owner-view corroboration); clean 430/430 vs the golden record, 0 SAFE promoted. Not on by default — shadow stays shipped; enabling on real targets still gated on Node 3. |
 | **3. Be safe on real targets** | Consolidate scope-lock checks + adversarial tests before any non-localhost use | **Not started.** HARD prerequisite before any real / non-lab target. |
 
 ### M1 — Verifiable benchmark & reference engine (generalize across shapes, zero FP)
@@ -257,8 +260,11 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
   vocabulary; bare `id`/`pk` excluded from both. Each is a strict subset of the old scalar set,
   so the gate only got **stricter**; both are proven by offline tests that fail against the
   pre-fix code. One narrow sibling accepted on purpose (see TECH_DEBT D23b).
-- **Shadow-only.** Still observe-only, default-off; the persisted verdict is the rule
-  oracle's. Making the AI verdict authoritative is D19 (not started).
+- **Promotion (D19) — implemented, default OFF.** The capability to promote `suspicious→verified`
+  exists and passed acceptance (clean 430/430, golden-anchored, 0 SAFE promoted;
+  `scripts/measure/results/sweep_highN_d19.jsonl`), but `AI_DEEP_VERIFY_PROMOTE` defaults `False`,
+  so the shipped default is still observe-only and the persisted verdict is the rule oracle's unless
+  promotion is explicitly enabled.
 
 ## Uncommitted right now (working tree)
 
@@ -306,8 +312,10 @@ deployment, the nuclei keep-vs-cut decision — parked until a benchmark justifi
    the second lab also surfaced and closed a SEV-1 (D24: the read-semantic shape had no code gate).
    **Still open on this axis:** a **second model** (only gemini-2.5-pro), and **arbitrary real APIs**
    (these remain two self-built labs). The reproducible harness is `scripts/measure/` (see REPRODUCE.md).
-3. **D19** — only after the proof is broadened: promote the AI verdict from observe-only to
-   authoritative in the real flow, with a gating policy.
+3. **D19 — ✅ landed as a default-OFF capability** (choke point + single writer + `owner_view_corroborated`;
+   clean 430/430 golden reproduction). Promotion resolves only the rule oracle's `suspicious` band, only
+   under a deterministic authorizer. **Enabling it in a real-target flow still waits on the proof being
+   broadened (Node 3).**
    - **Gating constraint (from M1.2 anchoring, narrowed by M1.4):** the authoritative gate must key on
      **payload-causality — or, whenever a pre-flight baseline exists, the stricter state-jump gate** —
      **never caller-identity**, which `confirms` for BOTH VULN and SAFE (a dropped cross-user write

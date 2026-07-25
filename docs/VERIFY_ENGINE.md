@@ -228,11 +228,13 @@ An **AI-in-the-loop deep verifier** now exists alongside the rule-based oracle
   with `verification_status == "suspicious"` and, for each, runs
   `execute_deep_verification` against the same target — a two-turn write-then-read
   loop (Gemini) that can request ONE follow-up HTTP request.
-- It **only logs** the AI's **final** verdict — `result.ai_verdict`, i.e. the
-  post-guard value (see below) — via `[FUZZER · SHADOW] … AI_shadow_verdict=… NOT
-  applied (shadow, observe-only)`. It **does not** overwrite `verification_status`
-  or `diff_details`, change what the user sees, or affect the writer path. Any
-  failure is logged and swallowed (it can never break a batch).
+- **In shadow mode** (the shipped default) it **only logs** the AI's **final** verdict —
+  `result.ai_verdict`, the post-guard value (see below) — via `[FUZZER · SHADOW] … AI_shadow_verdict=…
+  NOT applied (shadow, observe-only)`, and **does not** overwrite `verification_status` / `diff_details`
+  or affect the writer path. **D19 adds an opt-in promotion path (`AI_DEEP_VERIFY_PROMOTE`, default OFF):**
+  when enabled, Phase 7 may write `suspicious→verified` for a record a deterministic code channel
+  authorizes, persisting the evidence chain under `diff_details['ai_promotion']`. Any failure is logged
+  and swallowed (it can never break a batch).
 - To actually call Gemini, `AI_DEEP_VERIFY_ENABLED` must **also** be `True` (the
   verifier respects its own gate).
 
@@ -266,9 +268,10 @@ model — measurement showed the model does not find it unaided (0/20, then 0/5)
 Why it exists: the rule oracle stalls at `suspicious` on **silent** cases (opaque
 `200 {"status":"ok"}` writes — Rule 2's ≤5% length-deviation branch) because it
 cannot observe a side effect from a single response. The deep verifier's
-write-then-read can. Today this is measured (see
+write-then-read can. This is measured (see
 [`../vulnerable_target/benchmark/RESULTS.md`](../vulnerable_target/benchmark/RESULTS.md))
-but **not** used to decide verdicts — see [`TECH_DEBT.md`](./TECH_DEBT.md) D19.
+and, as of **D19** (default OFF), may also *promote* the rule oracle's `suspicious` band to `verified`
+when a deterministic code channel authorizes it — see [`TECH_DEBT.md`](./TECH_DEBT.md) D19.
 
 Two seams feed it: the **auth-context** seam (live custody credential, else the
 finding's auth header) and the **endpoint-catalog** seam. Real endpoint discovery now

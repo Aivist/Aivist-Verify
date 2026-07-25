@@ -1,3 +1,5 @@
+> **SUPERSEDED: D19 landed and passed acceptance — see [`../TECH_DEBT.md`](../TECH_DEBT.md) D19 (RESOLVED) and [`../STATUS.md`](../STATUS.md).** Point-in-time audit snapshot, kept unedited as history.
+
 # Verdict-Coverage Audit (read-only)
 
 ## UPDATE 2026-06-09 — superseded in part

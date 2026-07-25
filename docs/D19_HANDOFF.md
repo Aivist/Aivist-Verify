@@ -1,3 +1,5 @@
+> **SUPERSEDED: D19 landed and passed acceptance — see [`TECH_DEBT.md`](./TECH_DEBT.md) D19 (RESOLVED) and [`STATUS.md`](./STATUS.md).** This is the original pre-implementation plan, kept unedited as the historical record of what was approved.
+
 # D19 HANDOFF — promote the AI verdict from shadow to authoritative
 
 > For the next agent. D19 is **planned and approved** (Option A below); it is **not yet

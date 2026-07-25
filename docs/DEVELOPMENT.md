@@ -102,7 +102,7 @@ importable):
 ```powershell
 python -m pytest backend/tests -q
 ```
-Current suite: **293 tests**. See [`STATUS.md`](./STATUS.md).
+Current suite: **351 tests** (backend). See [`STATUS.md`](./STATUS.md).
 - `test_pruner.py` — exposure scoring + determinism regression tests
 - `test_step8_custody.py` — auth custody / parallel engine
 - `test_step_d_hunter_link.py` — Step D extraction (column-first + legacy fallback)
@@ -121,6 +121,7 @@ Current suite: **293 tests**. See [`STATUS.md`](./STATUS.md).
 - `test_m12b_state_gather.py` — M1.2(B) deterministic object-state resolver (incl. foreign-spec genericity)
 - `test_m13_delete.py` — M1.3 delete shape: negative assertion, pre-flight coincidence gate, channel
 - `test_m14_mass_assignment.py` — M1.4 low-entropy state jump (MISSING vs UNKNOWN), the M1.2-narrowing hazard test, and the mistyped-BOLA routing regression
+- `test_d19_promotion.py` — D19 verdict promotion: the choke point + single writer + flag gating (26 offline mocked-verdict tests, zero API)
 
 **Separate suite (ground-truth target, not counted in the backend total):**
 
@@ -128,7 +129,12 @@ Current suite: **293 tests**. See [`STATUS.md`](./STATUS.md).
 python -m pytest vulnerable_target/test_vulns.py -v
 ```
 
-31 tests proving planted vulnerabilities on the standalone target app (port 8001).
+31 tests proving planted vulnerabilities on the standalone target app (port 8001). A **second**
+ground-truth lab, `depot_target` (UUID ids), has its own **23**-test suite:
+
+```powershell
+python -m pytest depot_target/test_vulns.py -v
+```
 
 `pytest` lives in `backend/requirements-dev.txt` (dev-only); install with
 `pip install -r backend/requirements-dev.txt`.

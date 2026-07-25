@@ -781,7 +781,10 @@ evidence the read gate holds on target #1, not only on Depot.
 - **Public/shared resources remain a residual gap** the downgrade-only gate does not address.
 - Owner credentials are **per-deployment, not per-finding**.
 - This is **two self-built labs and one model** (gemini-2.5-pro), **not** arbitrary real APIs.
-- The AI verdict remains **shadow-only**: this record does **not** make it authoritative (that is D19).
+- This record measures the **engine verdict in shadow** (verdict authority untouched here). D19 has
+  since landed as a **default-OFF** promotion capability, acceptance-passed on its own golden
+  reproduction (`scripts/measure/results/sweep_highN_d19.jsonl`); it is **not enabled by default**, so
+  the shipped persisted verdict is still the rule oracle's unless `AI_DEEP_VERIFY_PROMOTE` is set.
 
 ---
 

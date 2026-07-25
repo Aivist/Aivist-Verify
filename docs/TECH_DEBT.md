@@ -215,20 +215,25 @@
   HAR/proxy-capture inventory, or crawl) into both the Hunter intake and the deep
   verifier's `available_endpoints`. Until then, document the catalog as a known seam.
 
-### D19 — AI deep verifier is shadow-only, not authoritative
+### D19 — verdict promotion: IMPLEMENTED, default OFF, acceptance-passed
 - **Where:** `services/deep_verifier.py` + `fuzzer._run_shadow_deep_verification`
   (Phase 7); flags `AI_DEEP_VERIFY_ENABLED` / `AI_DEEP_VERIFY_SHADOW` in `config.py`
   (both default `False`).
-- **TL;DR:** ✅ the "judge correctly / integrity floor" half (§5) is **DONE — see R6**;
-  ⏳ the **core of D19 — promoting** the AI verdict from observe-only/log to **authoritative**
-  — is still open (gated behind D18/B-1).
+- **TL;DR:** ✅ the "judge correctly / integrity floor" half (§5) is **DONE — see R6**; ✅ the
+  **core of D19 — promoting** the AI verdict to **authoritative** — is now **implemented and
+  acceptance-passed, default OFF** (see the ✅ RESOLVED note below). Enabling it on real targets still
+  waits on Node 3 (model/target diversity + scope-lock).
+  > *The dated **Update (commit …)** bullets below narrate the journey — each accurate as of its
+  > commit (when the verifier was still shadow-only); the current state is the **✅ RESOLVED** note at
+  > the end of this entry.*
 - **Status:** the AI-in-the-loop write-then-read verifier runs **read-only**. In
   shadow mode it re-checks `suspicious` records and **only logs** its verdict
   (`AI_shadow_verdict=… NOT applied (shadow, observe-only)`); it does **not**
   overwrite `verification_status`/`diff_details` or change what the user sees, and
-  it never affects a batch (failures are swallowed). It is therefore **not yet
-  authoritative** — the persisted verdict is still the rule oracle's, which stalls at
-  `suspicious` on silent cases (opaque `200 {"status":"ok"}` writes). Accuracy so far
+  it never affects a batch (failures are swallowed). **In the default (shadow) posture the persisted
+  verdict is still the rule oracle's**, which stalls at `suspicious` on silent cases (opaque
+  `200 {"status":"ok"}` writes); D19 (below, default OFF) is what lets code promote that band when
+  enabled. Accuracy so far
   is recorded in `vulnerable_target/benchmark/RESULTS.md` (n=9 at the time; 8/8 AI
   correct, 0 FP/FN) but that is **measurement, not promotion**.
 - **Update (commit `6832922`, P0):** the shadow verifier has now been run through the
@@ -252,13 +257,24 @@
   The rule oracle `_differential_verdict` is **unchanged (still 3-value)**. This is the
   "judge correctly / integrity floor" half of the work; it changes what gets **logged**, not
   what the user sees — still **shadow-only, observe-only, gated off by default**.
-- **Still pending (the core of D19):** promote the AI verdict from observe-only/log to
-  **authoritative** — let it take over the rule oracle's `suspicious` band in the real flow
-  and decide the gating defaults. Not yet done; gated behind D18/B-1.
-- **Direction:** once shadow data is trusted at scale, decide a promotion policy
-  (e.g. let the AI verdict resolve only the rule oracle's `suspicious` band, with the
-  full evidence trail retained for audit). Do not promote before D18 is addressed —
-  the verifier's reliability depends on being handed the right read-back endpoint.
+- **✅ RESOLVED — the core of D19 landed (default OFF).** The Phase-7 consumer can now PROMOTE a
+  rule-oracle `suspicious` record to `verified`, but ONLY through the single choke point
+  `_code_authorized_channel` (`fuzzer.py`): `ai_verdict=='verified'` AND (one of the four exemption
+  channels fired OR the D24 gate's new `owner_view_corroborated` observability field is `True`). Model
+  opinion alone never promotes. The single writer `_promote_record_verified` opens its own session
+  (the batch writer has already drained), re-checks `suspicious` on the freshly-read row (so it can
+  never override the oracle's own `verified`/`failed`), persists the full evidence chain under
+  `diff_details['ai_promotion']`, and swallows any failure so the rule verdict stands. Flag
+  `AI_DEEP_VERIFY_PROMOTE` defaults `False`; all three of ENABLED ∧ SHADOW ∧ PROMOTE must be on to
+  write. **Acceptance:** offline invariant suite (`test_d19_promotion.py`, 26 mocked-verdict tests,
+  zero API) + golden reproduction **clean 430/430** (`scripts/measure/results/sweep_highN_d19.jsonl`,
+  harness golden-anchored): promotion reproduces the golden `verified` partition case-for-case, **0
+  SAFE promoted, 0 golden-verified dropped, 0 degraded**. **Capability, not real-target readiness** —
+  enabling it on real targets still waits on Node 3.
+- **Direction (for ENABLING promotion — still default OFF):** the promotion *mechanism* is in place;
+  turning it on in a real flow still depends on D18 (handing the verifier the right read-back endpoint)
+  and on the Node-3 broadening (a second model, arbitrary real APIs, scope-lock). The full evidence
+  trail is retained under `diff_details['ai_promotion']` for audit.
 
 ### D20 — D18 cross-path value on the current target (Phase 2) — ✅ RESOLVED (proof landed)
 - **Status: ✅ RESOLVED — see R6.** The cross-path proof is done; only a **confident** verdict
@@ -627,7 +643,8 @@
     (`test_d18_b1_write_record.py`).
 - **Follow-ups (separate items, not B-1 blockers):** D21 (declare the spec field), D23/D23b (tighten
   the id match), broaden beyond the single X-CROSS shape, update `RESULTS.md` with the B-1 result,
-  then D19 (make the verdict authoritative). See [`STATUS.md`](./STATUS.md).
+  then D19 (make the verdict authoritative — ✅ since landed, default OFF; see the D19 entry). See
+  [`STATUS.md`](./STATUS.md).
 
 ### M1.2 (✅ DONE) — silent write confirmed via a code-gathered object-STATE read-back
 - **What:** the third confirmed vuln shape. A silent cross-path write with **no same-path GET and
@@ -811,12 +828,20 @@
    reproducible via `scripts/measure/`. Building the second lab also surfaced and closed a SEV-1
    (D24). **Still open on this axis:** a **second model** (only gemini-2.5-pro) and **arbitrary real
    APIs** (these are two self-built labs). Optional shape breadth (nested-object, multi-step) is extra.
+   > **Framing (recorded, not yet acted on): provider abstraction is DECOUPLED from re-validating the
+   > zero-FP claim on another model.** The zero-FP evidence is, and will remain, stated as **measured on
+   > gemini-2.5-pro** — an honest, sufficient benchmark disclosure for open-source. Adding multi-provider /
+   > BYO-model support gives users **provider freedom, not a zero-FP guarantee we never made**; it does
+   > **not** require re-establishing zero-FP on model X. The provider-abstraction milestone therefore
+   > carries **no "re-validate on every model" dependency** — the two are separate work.
 3. **D24 ✅ RESOLVED** — the read-semantic shape now has a deterministic gate (owner-view
    differential, `033fc9e`), built on the two-account ownership baseline (`5a33cb2`). All five shapes
    are code-gated. **Three boundaries remain open** (public/shared resources, per-deployment rather
    than per-finding owner credentials, and the threshold's lab-only calibration) — see D24.
-4. **D19** — promote the AI verdict from observe-only to authoritative. No longer blocked by D24,
-   but the three D24 boundaries must be weighed in the promotion policy rather than assumed closed.
+4. **D19 — ✅ DONE (default OFF).** The AI verdict can now be promoted to authoritative for the rule
+   oracle's `suspicious` band under a deterministic authorizer; acceptance-passed clean 430/430. The
+   three D24 boundaries are **recorded, not assumed closed** — they must be weighed before promotion is
+   *enabled* on a real target (Node 3), which is why the capability ships default OFF.
 5. **Benchmark vs agent-style PoC validation** — on a public vulnerable target, quantify
    this engine's false-positive / reproducibility rate. The "can it be sold" evidence.
 6. **Scope-lock hardening** before any non-localhost target; **D5** — keep

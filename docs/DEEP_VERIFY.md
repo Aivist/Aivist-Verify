@@ -16,7 +16,9 @@
 > **semantic equivalence**; **M1.2** silent cross-path write via a code-gathered **object-STATE**
 > read-back; **M1.3** **delete**-type via a **NEGATIVE ASSERTION** (pre-flight existence + dual-track
 > absence); **M1.4** **mass-assignment** via a **LOW-ENTROPY STATE JUMP** from a known pre-flight
-> state. The verdict is still **observe-only** — promoting it to authoritative is **D19**.
+> state. Promoting the verdict to authoritative is **D19** — now **implemented and acceptance-passed,
+> default OFF** (clean 430/430, `scripts/measure/results/sweep_highN_d19.jsonl`); it stays observe-only
+> until `AI_DEEP_VERIFY_PROMOTE` is enabled.
 >
 > **Measurement (authoritative — the GOLDEN two-target record).** Each shape was first proven at N=5
 > (per-shape transcripts, still on disk); the authoritative headline is now the **two-target GOLDEN
@@ -469,6 +471,12 @@ completes (`_run_shadow_deep_verification` in `fuzzer.py`). Gated by
 3. **logs** the AI verdict (`[FUZZER · SHADOW] … AI_shadow_verdict=… NOT applied
    (shadow, observe-only)`) **without** changing `verification_status` /
    `diff_details` or anything the user sees.
+
+**D19 (default OFF).** When `AI_DEEP_VERIFY_PROMOTE` is *additionally* enabled, step 3 may instead
+PROMOTE a record `suspicious→verified` — but only when a deterministic code channel authorizes it (one
+of the four exemption channels, or the D24 `owner_view_corroborated` gate), persisting the evidence chain
+under `diff_details['ai_promotion']`. With the flag off (the shipped default) the pass is exactly the
+observe-only log above.
 
 It never raises — any failure is logged and swallowed, so it cannot affect the
 batch result. Phases 1–6, `_execute_single_fuzz`, and `_differential_verdict` are

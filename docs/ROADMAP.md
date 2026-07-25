@@ -92,16 +92,18 @@ deterministic lab data with raw bodies and is unvalidated against real-target vo
 public/shared resources are a residual gap; owner credentials are per-deployment, not per-finding;
 and the real-model confirmation is N=1, not at scale. See TECH_DEBT **D24**.
 
-**Not yet:** it does not yet *act* (shadow-only — the persisted verdict is still the rule
-oracle's; making the AI verdict authoritative is D19); and it is proven on **five vuln shapes,
-one target, one model** — the remaining thin dimensions are target- and model-diversity, not N.
+**Not yet on by default:** promotion (D19) is **implemented but default OFF** — the shipped persisted
+verdict is still the rule oracle's until `AI_DEEP_VERIFY_PROMOTE` is enabled; and it is proven on
+**five vuln shapes, one target, one model** — the remaining thin dimensions are target- and
+model-diversity, not N.
 
 **Bottom line:** the moat's hard-case proof point is met and committed, and now generalizes across
 **five shapes with zero false positives** — including one (delete) whose proof is an *absence*
 rather than a presence, and one (mass-assignment) that **broke the previous causality gate and
 forced it to be narrowed** — a real false positive found and closed, not a hypothetical.
-**M1 is complete**; what's left is promotion (D21 → D19) and the pre-real-target work — not the
-core "can it confirm?" question.
+**M1 is complete**, and **promotion (D21 → D19) has now landed as a default-OFF capability**
+(acceptance-passed clean 430/430); what's left is turning it on and the pre-real-target work (Node 3)
+— not the core "can it confirm?" question.
 
 > Detailed current snapshot (maturity, API summary, run/verify checklist) lives in
 > [`PROJECT_OVERVIEW.md`](./PROJECT_OVERVIEW.md); known gaps in [`TECH_DEBT.md`](./TECH_DEBT.md);
@@ -193,9 +195,10 @@ core "can it confirm?" question.
    > **Strategic radar (decide later, do NOT act now):** black-box (deployable, but a fundamental ceiling
    > on truly-silent writes whose effect surfaces through *no* endpoint) vs. an optional gray-box mode
    > (log/instrumentation ingestion, à la BACFuzz) for higher-assurance confirmation.
-2. **Act.** **D19:** promote the AI verdict from observe-only/log to **authoritative** — take over
-   the `suspicious` records in the real flow; decide the gating defaults. First time the product
-   "does the job." Gated on M1 proving generalization. *(TECH_DEBT.md D19.)*
+2. **Act.** **D19 — ✅ landed (default OFF):** the verifier can promote the rule oracle's `suspicious`
+   band to `verified` under a deterministic authorizer (choke point + single writer +
+   `owner_view_corroborated`), acceptance-passed clean 430/430. Off by default; enabling it in a real
+   flow is Node 3. *(TECH_DEBT.md D19.)*
 3. **Be safe on real targets.** **Scope-lock hardening** (hard prerequisite before pointing at
    anything beyond localhost / self-built labs): consolidate the duplicated host-scope checks —
    the fuzzer's `_send_request` / `ScopeViolationError` enforcement (`fuzzer.py`) **and** the deep
@@ -211,6 +214,9 @@ core "can it confirm?" question.
 > was allowed to fail" (the X-SAFE safety assertion is the allowed-to-fail line).
 
 **Later / optional:** cost & latency budget; model-degradation handling; the nuclei keep-vs-cut decision.
+**Provider abstraction (multi-provider / BYO-model) is decoupled from any "re-validate zero-FP on model X"
+work** — the zero-FP claim stays stated as measured on gemini-2.5-pro; BYO-model users get provider
+freedom, not a zero-FP guarantee (recorded in [`TECH_DEBT.md`](./TECH_DEBT.md) model-diversity).
 
 ## 5. Authorization reality (binding — shapes what the tool is for)
 
@@ -299,10 +305,11 @@ shape, the decisive-evidence standard in the prompt must learn it too, or the tw
   fail-safe to the placeholder at the fuzzer consumption point, in-process dict injection still
   accepted for measurement drivers). The real catalog is reachable in normal use, not only from
   harnesses; zero-regression locked by `test_d21_spec_config.py`.
-- **D19** — promote the AI verdict from observe-only to **authoritative**. This was explicitly gated
-  on M1 proving generalization; that gate is now met (five shapes, zero FP). Decide the promotion
-  policy (e.g. let the AI verdict resolve only the rule oracle's `suspicious` band) with the full
-  evidence trail retained for audit.
+- **D19 — ✅ DONE (default OFF).** The AI verdict can now be promoted to authoritative — but only for
+  the rule oracle's `suspicious` band, only under a deterministic authorizer, and only when
+  `AI_DEEP_VERIFY_PROMOTE` is enabled (shipped default `False`). Acceptance-passed **clean 430/430**
+  (`scripts/measure/results/sweep_highN_d19.jsonl`); full evidence trail retained under
+  `diff_details['ai_promotion']`. Enabling it on real targets is Node 3.
 - **Then the pre-release register** (default `API_HOST` to 127.0.0.1, the 2-minute demo + recorded
   HAR, `run_in_executor` for the similarity compute) and the **pre-real-target register**
   (scope-lock hardening, the UUID wall, WAF circuit-breaker, multi-step auth macro, the two-account
