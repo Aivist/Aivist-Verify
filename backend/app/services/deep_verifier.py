@@ -309,6 +309,17 @@ class DeepVerificationResult:
     #   "confirmed_jump" | "no_jump" | "preflight_unknown" | "postread_unknown"
     #   | "no_sent_fields" | "indeterminate" | None
     state_jump_anchor: Optional[str] = None
+    # D19 observability (additive; set ONLY at the D24 owner-view gate's existing decision point,
+    # below in the turn-1/no-follow-up branch). It RECORDS the gate's already-made pass/block
+    # decision as a positive, machine-readable signal — nothing more. It exists because a
+    # read-semantic 'verified' that the D24 gate corroborated leaves guard_override=None (the gate
+    # deliberately emits no channel marker), making it indistinguishable, from result fields alone,
+    # from a raw model-opinion 'verified'. A downstream authorizer (D19 promotion) needs to tell
+    # those apart. Values: True = gate ran and CORROBORATED; False = gate ran and BLOCKED (verdict
+    # was downgraded); None = the gate did not run (no owner credential, or verdict != 'verified',
+    # or a follow-up occurred so the gate is out of scope). It changes NO verdict, NO channel, and
+    # NO guard_override — it is an observation point, not a piece of gate logic.
+    owner_view_corroborated: Optional[bool] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -1793,6 +1804,8 @@ async def execute_deep_verification(
             # behavior is exactly as before. Configuring the credential is what OPTS IN;
             # once opted in, any failure to obtain the owner view BLOCKS (fail-safe), since
             # an unverifiable claim must never be the one that gets to stand.
+            # D19 observability: None until/unless the gate actually runs below.
+            _owner_view_corroborated: Optional[bool] = None
             if owner_credential is not None and _final_verdict == "verified":
                 _owner_view = await fetch_owner_view(
                     client, attack_req.get("path", ""), base_url, owner_credential,
@@ -1801,6 +1814,9 @@ async def execute_deep_verification(
                 _corroborated = _owner_view.available and _owner_view_corroborates(
                     _anchor_body, _owner_view.body
                 )
+                # D19: record the gate's already-made decision (True=corroborate, False=block).
+                # Single source of truth — the same boolean the gate acts on; changes nothing.
+                _owner_view_corroborated = _corroborated
                 _gated = _apply_owner_view_gate(_final_verdict, _corroborated)
                 if _gated != _final_verdict:
                     logger.info(
@@ -1843,6 +1859,7 @@ async def execute_deep_verification(
                         pre_flight_result.get("response_body"), attacked_object_id, caller_object_id
                     ) if pre_flight_result is not None else None
                 ),
+                owner_view_corroborated=_owner_view_corroborated,
             )
 
         # ---------------- Execute the follow-up (scope-locked) ----------------
