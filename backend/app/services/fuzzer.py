@@ -1269,6 +1269,120 @@ def _resolve_openapi_catalog_source(spec_value: Any) -> Optional[Dict[str, Any]]
     return None
 
 
+# ==============================================================================
+# D19 — CONSERVATIVE VERDICT PROMOTION (shadow -> authoritative). Default OFF.
+# The SINGLE choke point + the SINGLE writer. Structural invariant: a promoted
+# 'verified' can ONLY be produced when _code_authorized_channel returns non-None;
+# there is no other code path in Phase 7 that writes 'verified'.
+# ==============================================================================
+_OWNER_VIEW_PROMOTION_CHANNEL = "owner_view_corroborated"
+
+
+def _code_authorized_channel(result) -> Optional[str]:
+    """The D19 CHOKE POINT — pure, side-effect-free. Returns the deterministic channel that
+    authorizes promoting a rule-oracle 'suspicious' to 'verified', or None if none does.
+
+    A channel authorizes ONLY when the deep verifier's own verdict is 'verified' AND one of:
+      * guard_override is one of the FOUR exemption channels (write-record readback, state
+        readback, delete negative-assertion, mass-assignment state-jump), OR
+      * owner_view_corroborated is True (the D24 read-semantic owner-view gate corroborated).
+    The model's raw opinion ALONE never authorizes: a 'verified' with guard_override=None and
+    owner_view_corroborated is not True (a same-path model-verified, or a read case where the owner
+    gate was not configured) returns None here and is therefore NEVER promoted. This is the
+    structural expression of D19's conservative-only invariant — no other path promotes.
+
+    Attributes are read defensively via getattr so a partial/foreign result can never raise.
+    """
+    if getattr(result, "ai_verdict", None) != "verified":
+        return None
+    # Single source of truth for the four channel names: the constants exported by deep_verifier.
+    # Imported lazily so this module keeps zero import-time dependency on the verifier when
+    # shadow/promotion are off (the default); by the time this runs the verifier module is already
+    # imported (the shadow runner imported it), so it is a cached lookup, not a reload.
+    from backend.app.services.deep_verifier import (
+        WRITE_RECORD_EXEMPTION_REASON,
+        STATE_READBACK_EXEMPTION_REASON,
+        DELETE_READBACK_EXEMPTION_REASON,
+        STATE_JUMP_EXEMPTION_REASON,
+    )
+    override = getattr(result, "guard_override", None)
+    if override in (
+        WRITE_RECORD_EXEMPTION_REASON,
+        STATE_READBACK_EXEMPTION_REASON,
+        DELETE_READBACK_EXEMPTION_REASON,
+        STATE_JUMP_EXEMPTION_REASON,
+    ):
+        return override
+    if getattr(result, "owner_view_corroborated", None) is True:
+        return _OWNER_VIEW_PROMOTION_CHANNEL
+    return None
+
+
+async def _promote_record_verified(record_id: str, channel: str, result) -> None:
+    """The D19 SINGLE WRITER — promote ONE 'suspicious' FuzzingRecord to 'verified', persisting the
+    authorizing evidence chain into diff_details (nullable JSON column, no schema change). Called
+    ONLY for records _code_authorized_channel already authorized (channel is non-None). Opens its
+    own write session — safe because Phase 7 runs after the batch WriterService has drained (sole
+    writer here). NEVER raises: any failure is logged and swallowed so the rule verdict stands.
+
+    Additive by construction: the ONLY mutation it can make is suspicious -> verified, and only
+    under an authorizer. It re-reads the row and re-checks 'suspicious' first, so it can never
+    override the rule oracle's own 'verified'/'failed', and it never downgrades anything.
+    """
+    try:
+        async with async_session_factory() as db:
+            rec = (await db.execute(
+                select(FuzzingRecord).where(FuzzingRecord.id == record_id)
+            )).scalar_one_or_none()
+            if rec is None:
+                return
+            if rec.verification_status != "suspicious":
+                logger.info(
+                    "[FUZZER · PROMOTE] record=%s finding_id=%s is %r (not 'suspicious') — leaving "
+                    "the rule verdict; D19 only ever promotes within the suspicious band.",
+                    record_id, getattr(rec, "finding_id", "?"), rec.verification_status,
+                )
+                return
+            prior = rec.diff_details
+            base = dict(prior) if isinstance(prior, dict) else (
+                {} if prior is None else {"_rule_oracle_diff": prior}
+            )
+            # Preserve the rule-oracle diff already present; nest the promotion audit under its
+            # own key so the full chain is reconstructable from the record alone.
+            base["ai_promotion"] = {
+                "promoted_from": "suspicious",
+                "promoted_to": "verified",
+                "authorizing_channel": channel,
+                "ai_verdict": getattr(result, "ai_verdict", None),
+                "ai_verdict_raw": getattr(result, "ai_verdict_raw", None),
+                "guard_override": getattr(result, "guard_override", None),
+                "owner_view_corroborated": getattr(result, "owner_view_corroborated", None),
+                "anchoring_result": getattr(result, "anchoring_result", None),
+                "caller_identity_anchor": getattr(result, "caller_identity_anchor", None),
+                "payload_causality_anchor": getattr(result, "payload_causality_anchor", None),
+                "negative_assertion_anchor": getattr(result, "negative_assertion_anchor", None),
+                "state_jump_anchor": getattr(result, "state_jump_anchor", None),
+                "ai_confidence": getattr(result, "ai_confidence", None),
+                "model": getattr(result, "model", None),
+                "promoted_at": utcnow().isoformat(),
+            }
+            rec.verification_status = "verified"
+            rec.diff_details = base   # full reassignment marks the JSON column dirty
+            await db.commit()
+            logger.info(
+                "[FUZZER · PROMOTE] record=%s finding_id=%s promoted suspicious->verified via "
+                "channel=%r (ai_verdict_raw=%r owner_view_corroborated=%r).",
+                record_id, rec.finding_id, channel,
+                getattr(result, "ai_verdict_raw", None),
+                getattr(result, "owner_view_corroborated", None),
+            )
+    except Exception as e:
+        logger.warning(
+            "[FUZZER · PROMOTE] promotion write failed for record=%s (swallowed; rule verdict "
+            "stands): %s", record_id, e,
+        )
+
+
 async def _run_shadow_deep_verification(
     jobs: List["_FindingJob"], custody: Optional["AuthCustodyController"]
 ) -> None:
@@ -1354,6 +1468,22 @@ async def _run_shadow_deep_verification(
                     rec.finding_id, rec.payload_index, result.ai_verdict, result.status,
                     result.ai_confidence, result.ai_requested_follow_up,
                 )
+
+                # ---- D19: conservative promotion (default OFF; the shadow log above always
+                #      runs). Promotion is a SEPARATE, opt-in write that fires ONLY when the flag
+                #      is on AND the code choke point authorizes it. A model 'verified' with no
+                #      deterministic authorizer returns None here and is NEVER promoted — the
+                #      record keeps its 'suspicious' rule verdict untouched. ----
+                if settings.AI_DEEP_VERIFY_PROMOTE:
+                    _channel = _code_authorized_channel(result)
+                    if _channel is not None:
+                        await _promote_record_verified(rec.id, _channel, result)
+                    else:
+                        logger.info(
+                            "[FUZZER · PROMOTE] finding_id=%s payload#%s | AI_verdict=%s but NO "
+                            "deterministic authorizer -> NOT promoted ('suspicious' stands).",
+                            rec.finding_id, rec.payload_index, result.ai_verdict,
+                        )
             except Exception as e:
                 logger.warning(
                     "[FUZZER · SHADOW] Shadow deep-verify failed for finding_id=%s payload#%s: %s",
