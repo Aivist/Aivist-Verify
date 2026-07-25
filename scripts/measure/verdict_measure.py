@@ -323,7 +323,36 @@ async def _run_caseset(caseset, selected, n_safe, n_vuln, model, seed_policy, ou
 curated_fh_ids = set()
 
 
-def _summary(all_rows):
+def _load_golden(path):
+    """Load the committed golden record into a per-case partition — the INDEPENDENT acceptance
+    bar. The new run is diffed case-for-case against THIS, so an engine or choke-point regression
+    surfaces as a golden divergence rather than passing against the run's own output.
+
+    Returns {(target, case_id): {"verified": bool, "final_verdicts": set, "channels": set,
+    "n": int, "shape": str}}. `verified` is True iff EVERY golden run for that case was 'verified'.
+    """
+    by_case = defaultdict(list)
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            r = json.loads(line)
+            by_case[(r["target"], r["case_id"])].append(r)
+    golden = {}
+    for key, rs in by_case.items():
+        finals = set(r["final_verdict"] for r in rs)
+        golden[key] = {
+            "verified": finals == {"verified"},
+            "final_verdicts": finals,
+            "channels": set(r.get("guard_override") for r in rs),
+            "n": len(rs),
+            "shape": rs[0].get("shape"),
+        }
+    return golden
+
+
+def _summary(all_rows, golden=None):
     print("\n" + "=" * 108)
     print("STRUCTURED SUMMARY")
     print("=" * 108)
@@ -356,42 +385,74 @@ def _summary(all_rows):
     non_read_moved = [r for r in all_rows
                       if r["shape"] != "read_semantic" and r["regression_ok"] is False]
 
-    # ---- D19 promotion layer (observation): would_promote must reproduce the engine's
-    # 'verified' partition, case-for-case. Two independent divergences to catch:
-    #   * promo_fp   — a SAFE/control the choke point WOULD promote. Must be 0 (SEV-1 at the
-    #                  promotion layer: the model would have been handed authority to fabricate).
-    #   * promo_lost — an engine 'verified' the choke point would NOT reproduce (a verified with
-    #                  no deterministic authorizer, e.g. an unforeseen same-path case). Must be 0
-    #                  (SEV-2 at the promotion layer: promotion would silently drop a true verdict).
-    promo_fp = [r for r in all_rows
-                if r["ground_truth"] in ("SECURE", "CONTROL") and r.get("would_promote")]
-    promo_lost = [r for r in all_rows
-                  if r.get("final_verdict") == "verified" and not r.get("would_promote")
-                  and not r["degraded"]]
+    # ---- §5.2 GOLDEN-ANCHORED acceptance: diff the new run case-for-case against the committed
+    # sweep_highN.jsonl. The golden record is the INDEPENDENT bar — never the run's own output —
+    # so an engine OR choke-point regression surfaces here as a golden divergence:
+    #   * golden_final_div — new-run FINAL (engine verdict) disagrees with the golden case verdict
+    #                        (the classic "reproduce the golden record" check).
+    #   * promo_fp  — new-run would_promote on a case the GOLDEN says is NOT 'verified' (SEV-1:
+    #                 the model would have been handed authority to fabricate a verdict).
+    #   * promo_lost— a GOLDEN-'verified' case the new-run would NOT promote (SEV-2: promotion
+    #                 would silently drop a true verdict — e.g. an unforeseen same-path verified).
+    # NOTE: would_promote is compared to the GOLDEN partition, never to this run's own final.
+    golden_final_div, promo_fp, promo_lost, unknown_case = [], [], [], []
+    if golden is not None:
+        for r in all_rows:
+            key = (r["target"], r["case_id"])
+            g = golden.get(key)
+            if g is None:
+                unknown_case.append(r)
+                continue
+            if not r["degraded"]:
+                new_verified = (r["final_verdict"] == "verified")
+                if new_verified != g["verified"]:
+                    golden_final_div.append((r, g))
+            if r.get("would_promote") and not g["verified"]:
+                promo_fp.append((r, g))
+            if g["verified"] and not r.get("would_promote") and not r["degraded"]:
+                promo_lost.append((r, g))
+        seen = {(r["target"], r["case_id"]) for r in all_rows}
+        missing_golden = [k for k in golden if k not in seen]
+    else:
+        missing_golden = []
 
     for r in all_rows:
         if r["regression_ok"] is False:
             print(f"  FAIL  {r['target']}::{r['case_id']} run {r['run_index']}: {r['regression_note']}")
-    for r in promo_fp:
-        print(f"  PROMO-FP  {r['target']}::{r['case_id']} run {r['run_index']}: "
-              f"SAFE/control would be PROMOTED via {r.get('promotion_channel')!r}")
-    for r in promo_lost:
-        print(f"  PROMO-LOST {r['target']}::{r['case_id']} run {r['run_index']}: engine "
-              f"'verified' has NO authorizer (guard_override={r.get('guard_override')!r} "
-              f"owner_view_corroborated={r.get('owner_view_corroborated')!r})")
+    for r, g in golden_final_div:
+        print(f"  GOLDEN-DIV {r['target']}::{r['case_id']} run {r['run_index']}: FINAL={r['final_verdict']!r} "
+              f"but golden case verified={g['verified']} (golden finals={g['final_verdicts']})")
+    for r, g in promo_fp:
+        print(f"  PROMO-FP  {r['target']}::{r['case_id']} run {r['run_index']}: would PROMOTE via "
+              f"{r.get('promotion_channel')!r} but GOLDEN says this case is NOT verified — SEV-1")
+    for r, g in promo_lost:
+        print(f"  PROMO-LOST {r['target']}::{r['case_id']} run {r['run_index']}: GOLDEN-'verified' case "
+              f"would NOT promote (guard_override={r.get('guard_override')!r} "
+              f"owner_view_corroborated={r.get('owner_view_corroborated')!r}) — SEV-2")
+    for r in unknown_case:
+        print(f"  NO-GOLDEN {r['target']}::{r['case_id']}: case absent from the golden record")
+    for k in missing_golden:
+        print(f"  MISSING   {k[0]}::{k[1]}: golden case has NO run in this sweep (incomplete reproduction)")
+
     print(f"\n  SAFE/control reaching verified (SEV-1): {len(sev1)}")
     print(f"  core VULN not verifying   (SEV-2): {len(sev2)}")
     print(f"  four-non-read-shape movements    : {len(non_read_moved)}  "
           f"(ANY is a regression -> stop before high N)")
     print(f"  degraded/error runs (NOT DATA)   : {len(degraded)}")
-    print(f"  D19 promo would-be false positives (SEV-1): {len(promo_fp)}")
-    print(f"  D19 promo lost verdicts            (SEV-2): {len(promo_lost)}")
-    clean = (not sev1 and not sev2 and not non_read_moved and not degraded
-             and not promo_fp and not promo_lost)
+    print(f"  golden FINAL divergences (case-for-case vs sweep_highN.jsonl): {len(golden_final_div)}")
+    print(f"  D19 promo false positives  (SEV-1, golden-anchored): {len(promo_fp)}")
+    print(f"  D19 promo lost verdicts    (SEV-2, golden-anchored): {len(promo_lost)}")
+    print(f"  cases absent from golden / golden cases unrun: {len(unknown_case)} / {len(missing_golden)}")
+    clean = (golden is not None
+             and not sev1 and not sev2 and not non_read_moved and not degraded
+             and not golden_final_div and not promo_fp and not promo_lost
+             and not unknown_case and not missing_golden)
     if clean:
-        print("\n  CLEAN — all VULN verified via their expected channel; all SAFE/control never")
-        print("  verified; the four non-read shapes match the pre-gate record; and the D19 promotion")
-        print("  decision reproduces the engine's 'verified' partition case-for-case. Bring back before high N.")
+        print("\n  CLEAN — new-run FINAL reproduces the committed golden record case-for-case; the D19")
+        print("  promotion decision (would_promote) reproduces the golden 'verified' partition exactly;")
+        print("  zero SAFE promoted, zero golden-verified dropped, zero degraded. Acceptance met.")
+    elif golden is None:
+        print("\n  NO GOLDEN LOADED — cannot assert §5.2 acceptance. Pass --golden.")
     else:
         print("\n  NOT CLEAN — STOP and report. Do not touch the engine, labels, or threshold.")
     print("=" * 108)
@@ -416,6 +477,11 @@ def main():
                     help="comma-separated case ids to include (default: all)")
     ap.add_argument("--out", default=None,
                     help="structured JSONL output path (the evidence artifact)")
+    ap.add_argument("--golden", default=None,
+                    help="path to the committed golden record (e.g. scripts/measure/results/"
+                         "sweep_highN.jsonl). When set, acceptance is diffed case-for-case against "
+                         "it: FINAL reproduction + golden-anchored promo_fp/promo_lost. The "
+                         "independent bar — a regression surfaces as a golden divergence.")
     ap.add_argument("--curated-transcript", default=None,
                     help="committable transcript file for the --curated-cases only")
     ap.add_argument("--curated-cases", default=None,
@@ -467,7 +533,10 @@ def main():
     out_fh.close()
     if curated_fh:
         curated_fh.close()
-    _summary(rows)
+    golden = _load_golden(args.golden) if args.golden else None
+    if args.golden:
+        print(f"golden record -> {args.golden}  ({len(golden)} cases)")
+    _summary(rows, golden)
 
 
 if __name__ == "__main__":
