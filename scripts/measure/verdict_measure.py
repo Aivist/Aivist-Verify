@@ -57,9 +57,18 @@ from backend.app.services.deep_verifier import (  # noqa: E402
     OwnerCredential,
     fetch_owner_view,
 )
-from backend.app.services.fuzzer import _compute_similarity  # noqa: E402
+from backend.app.services.fuzzer import (  # noqa: E402
+    _compute_similarity,
+    _code_authorized_channel,
+)
 
-SCHEMA_VERSION = 2
+# v3 adds the D19 promotion-layer observation columns (owner_view_corroborated,
+# promotion_channel, would_promote) so the golden reproduction can prove, case-for-case,
+# that the promotion decision reproduces the engine's 'verified' partition. Observation
+# only — this harness never invokes the promotion writer or the PROMOTE flag; it records
+# what the choke point _would_ authorize on the SAME DeepVerificationResult the engine
+# produced.
+SCHEMA_VERSION = 3
 logger = logging.getLogger("verdict_measure")
 
 
@@ -195,6 +204,10 @@ async def _run_one(case, caseset, model, run_index, n, curated_fh):
             model_name=model,
         )
         degraded = res.status == "degraded" or res.ai_verdict is None
+        # D19 promotion-layer observation on the SAME result the engine produced: what the
+        # code choke point would authorize. would_promote must reproduce final_verdict=='verified'
+        # case-for-case in the golden record (checked in _summary); any divergence is a finding.
+        _promo_channel = _code_authorized_channel(res)
         row.update({
             "ai_verdict_raw": res.ai_verdict_raw,
             "final_verdict": res.ai_verdict,
@@ -211,6 +224,9 @@ async def _run_one(case, caseset, model, run_index, n, curated_fh):
             "follow_up_path": (res.follow_up_request or {}).get("path"),
             "owner_view_available": None,
             "owner_view_similarity": None,
+            "owner_view_corroborated": res.owner_view_corroborated,
+            "promotion_channel": _promo_channel,
+            "would_promote": _promo_channel is not None,
             "degraded": degraded,
             "degraded_reason": res.degraded_reason,
             "error": None,
@@ -239,6 +255,8 @@ async def _run_one(case, caseset, model, run_index, n, curated_fh):
             "negative_assertion": None, "anchoring_result": None, "pre_flight_status": None,
             "follow_up_performed": None, "follow_up_path": None,
             "owner_view_available": None, "owner_view_similarity": None,
+            "owner_view_corroborated": None, "promotion_channel": None,
+            "would_promote": False,
             "degraded": True, "degraded_reason": None,
             "error": f"{type(e).__name__}: {e}",
         })
@@ -338,17 +356,42 @@ def _summary(all_rows):
     non_read_moved = [r for r in all_rows
                       if r["shape"] != "read_semantic" and r["regression_ok"] is False]
 
+    # ---- D19 promotion layer (observation): would_promote must reproduce the engine's
+    # 'verified' partition, case-for-case. Two independent divergences to catch:
+    #   * promo_fp   — a SAFE/control the choke point WOULD promote. Must be 0 (SEV-1 at the
+    #                  promotion layer: the model would have been handed authority to fabricate).
+    #   * promo_lost — an engine 'verified' the choke point would NOT reproduce (a verified with
+    #                  no deterministic authorizer, e.g. an unforeseen same-path case). Must be 0
+    #                  (SEV-2 at the promotion layer: promotion would silently drop a true verdict).
+    promo_fp = [r for r in all_rows
+                if r["ground_truth"] in ("SECURE", "CONTROL") and r.get("would_promote")]
+    promo_lost = [r for r in all_rows
+                  if r.get("final_verdict") == "verified" and not r.get("would_promote")
+                  and not r["degraded"]]
+
     for r in all_rows:
         if r["regression_ok"] is False:
             print(f"  FAIL  {r['target']}::{r['case_id']} run {r['run_index']}: {r['regression_note']}")
+    for r in promo_fp:
+        print(f"  PROMO-FP  {r['target']}::{r['case_id']} run {r['run_index']}: "
+              f"SAFE/control would be PROMOTED via {r.get('promotion_channel')!r}")
+    for r in promo_lost:
+        print(f"  PROMO-LOST {r['target']}::{r['case_id']} run {r['run_index']}: engine "
+              f"'verified' has NO authorizer (guard_override={r.get('guard_override')!r} "
+              f"owner_view_corroborated={r.get('owner_view_corroborated')!r})")
     print(f"\n  SAFE/control reaching verified (SEV-1): {len(sev1)}")
     print(f"  core VULN not verifying   (SEV-2): {len(sev2)}")
     print(f"  four-non-read-shape movements    : {len(non_read_moved)}  "
           f"(ANY is a regression -> stop before high N)")
     print(f"  degraded/error runs (NOT DATA)   : {len(degraded)}")
-    if not sev1 and not sev2 and not non_read_moved and not degraded:
+    print(f"  D19 promo would-be false positives (SEV-1): {len(promo_fp)}")
+    print(f"  D19 promo lost verdicts            (SEV-2): {len(promo_lost)}")
+    clean = (not sev1 and not sev2 and not non_read_moved and not degraded
+             and not promo_fp and not promo_lost)
+    if clean:
         print("\n  CLEAN — all VULN verified via their expected channel; all SAFE/control never")
-        print("  verified; the four non-read shapes match the pre-gate record. Bring back before high N.")
+        print("  verified; the four non-read shapes match the pre-gate record; and the D19 promotion")
+        print("  decision reproduces the engine's 'verified' partition case-for-case. Bring back before high N.")
     else:
         print("\n  NOT CLEAN — STOP and report. Do not touch the engine, labels, or threshold.")
     print("=" * 108)
