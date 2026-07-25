@@ -132,6 +132,27 @@ class Settings(BaseSettings):
         description="Owner/victim credential for owner-scoped reads by the deep verifier (two-account baseline). 'Header: value' or a bare bearer token. Empty => absent, byte-identical behavior. One credential per deployment, NOT per finding. Never used for attack requests."
     )
 
+    # D19 — PROMOTE the shadow deep-verify verdict from observe-only to AUTHORITATIVE.
+    # This is the ONLY flag that lets the deep verifier change a user-visible verdict, and it
+    # does so CONSERVATIVELY and STRUCTURALLY: when True, the Phase-7 shadow pass may upgrade a
+    # rule-oracle 'suspicious' record to 'verified' — but ONLY when a DETERMINISTIC code channel
+    # authorizes it (one of the four exemption channels fired, or the D24 owner-view gate
+    # corroborated). The model's raw opinion ALONE can never produce a promoted 'verified'; with
+    # no authorizer the record keeps its rule verdict untouched. D19 only ever touches the
+    # 'suspicious' band — the rule oracle's own 'verified'/'failed' are never overridden.
+    #
+    # Composition: promotion requires ALL THREE — AI_DEEP_VERIFY_ENABLED (verifier runs) AND
+    # AI_DEEP_VERIFY_SHADOW (fuzzer invokes Phase 7) AND AI_DEEP_VERIFY_PROMOTE (Phase 7 writes).
+    # PROMOTE is a no-op unless SHADOW is on. For read-semantic promotion, AI_DEEP_VERIFY_OWNER_AUTH
+    # must ALSO be set (else the D24 gate cannot corroborate -> read-semantic will not promote —
+    # conservative). Default False => behavior is byte-identical to today (shadow observes, never
+    # writes). Any deep-verify error/timeout/disable falls back to the rule verdict — an AI-layer
+    # failure may never upgrade a verdict and never crash the batch.
+    AI_DEEP_VERIFY_PROMOTE: bool = Field(
+        default=False,
+        description="Let the Phase-7 shadow deep verifier PROMOTE a rule-oracle 'suspicious' record to 'verified', but ONLY when a deterministic code channel authorizes it (four exemption channels, or the D24 owner-view corroboration). Model opinion alone never promotes. Off by default => shadow stays observe-only."
+    )
+
     # --------------------------------------------------------------------------
     # 4. Scan & Fuzzing Engine Settings
     # --------------------------------------------------------------------------
