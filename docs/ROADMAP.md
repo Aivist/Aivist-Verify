@@ -31,16 +31,15 @@ reported and highest-impact API bug class). Adjacent: BFLA / vertical access con
 - **Not a fix-code generator.** Generating patch code is unverifiable AI output (you can't send a
   request to prove a patch is correct) — it imports exactly the hallucination risk the whole
   verification discipline exists to avoid. At most: generic, non-code remediation guidance.
-  > Code reality (at HEAD): nuclei Phase 3 (`nuclei.py::generate_gemini_remediation_patch`) and the
-  > Hunter `ai_patch` field still emit Gemini-generated remediation. This non-goal means **winding
-  > that down / relabeling it as non-code guidance**, not that it's already gone.
-- **Not a generic CVE/template scanner.** nuclei is MIT-licensed (no commercialization blocker)
-  but is a category mismatch for stateful, auth-context BOLA. It is quarantined: optional, off by
-  default, isolated from the verification core, excluded from the core product story. Final
-  keep-vs-cut is a later product call once the moat is proven; invest nothing more in it now.
-  > Code reality: nuclei is optional (the binary is not required to boot) and dormant unless
-  > `POST /api/v1/scan/start` is called, but it is still a **first-class HTTP route today** —
-  > "off by default" is the product stance/quarantine, not a runtime flag-gate.
+  > Code reality (at HEAD): with the nuclei subsystem removed, its Gemini remediation-patch path
+  > is gone; only the Hunter `report_markdown` analysis remains (non-code). This non-goal continues
+  > to mean keeping remediation output as non-code guidance.
+- **Not a generic CVE/template scanner — ✅ RESOLVED by removal.** nuclei was a category mismatch
+  for stateful, auth-context BOLA — quarantined, isolated from the verification core, excluded from
+  the core product story, with keep-vs-cut deferred until the moat was proven. The moat (M1 + D19)
+  is now acceptance-passed, so the nuclei scan subsystem has been **removed entirely** (commit
+  `refactor: remove the nuclei scan subsystem`). The product is now solely the BOLA/IDOR
+  verification engine.
 - **No AI free-chat box in the UI** (re-introduces the trust problem at the UI layer). If ever
   added, it must be read-only and grounded strictly in a finding's evidence trail.
 - **No new external tools.** Existing auth-testing tools (Burp Autorize/AuthMatrix; stateful
@@ -213,7 +212,7 @@ forced it to be narrowed** — a real false positive found and closed, not a hyp
 > X-SAFE→never-`verified`. Fits the §6 discipline "a green test proves nothing unless something
 > was allowed to fail" (the X-SAFE safety assertion is the allowed-to-fail line).
 
-**Later / optional:** cost & latency budget; model-degradation handling; the nuclei keep-vs-cut decision.
+**Later / optional:** cost & latency budget; model-degradation handling.
 **Provider abstraction (multi-provider / BYO-model) is decoupled from any "re-validate zero-FP on model X"
 work** — the zero-FP claim stays stated as measured on gemini-2.5-pro; BYO-model users get provider
 freedom, not a zero-FP guarantee (recorded in [`TECH_DEBT.md`](./TECH_DEBT.md) model-diversity).

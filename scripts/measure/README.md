@@ -30,7 +30,7 @@ movement / degraded counts).
 - **Cost ≈ Σ(N over selected cases) model calls.** The full two-lab case set is **28 cases**,
   so `--n 1` ≈ **28 calls**, `--n 10` ≈ **280**, etc. The harness prints the planned call
   count before it starts.
-- `mitmproxy`/nuclei are **not** needed; only the two local targets, booted automatically.
+- `mitmproxy` is **not** needed; only the two local targets, booted automatically.
 
 ## Reproduce the measurement
 

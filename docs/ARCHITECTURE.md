@@ -12,7 +12,6 @@
 > - [`HUNTER_PIPELINE.md`](./HUNTER_PIPELINE.md) — AI Logic Hunter (HAR → analyze → persist)
 > - [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md) — differential fuzzing / verification engine
 > - [`DEEP_VERIFY.md`](./DEEP_VERIFY.md) — `deep_verifier.py` (AI write-then-read; shadow-mode Phase 7, not API-wired)
-> - [`NUCLEI_SCAN_PIPELINE.md`](./NUCLEI_SCAN_PIPELINE.md) — Nuclei 3-phase scanner
 > - [`API_REFERENCE.md`](./API_REFERENCE.md) — every HTTP endpoint
 > - [`DEVELOPMENT.md`](./DEVELOPMENT.md) — how to run & test
 > - [`TECH_DEBT.md`](./TECH_DEBT.md) — known issues / risks / TODO
@@ -22,22 +21,18 @@
 ## 1. What this product is
 
 A single-tenant, locally-run web application for **AI-assisted web application
-penetration testing**. It has two largely independent analysis subsystems that
-share one database and one frontend:
+penetration testing**. Its core analysis subsystem, plus a passive feed, share
+one database and one frontend:
 
-1. **Nuclei Scanner** — point it at a URL, it runs the external `nuclei` binary,
-   ingests findings, and asks Gemini to write remediation patches.
-2. **AI Logic Hunter** — paste a raw HTTP request (or import a HAR file), Gemini
+1. **AI Logic Hunter** — paste a raw HTTP request (or import a HAR file), Gemini
    proposes business-logic exploit payloads (BOLA/IDOR, mass-assignment, etc.),
    and a built-in **differential fuzzing engine** actively *verifies* whether
-   those payloads work against the live target.
+   those payloads work against the live target. This Hunter → Verify path is the
+   product's novel, differentiated core.
 
-The Hunter → Verify path is the more novel/valuable subsystem. The Nuclei path
-is a more conventional scanner wrapper.
+A second, **passive** front-end feeds the Hunter:
 
-A third, **passive** front-end feeds the Hunter:
-
-3. **Proxy Radar (Step 9)** — a supervised `mitmdump` subprocess acts as an
+2. **Proxy Radar (Step 9)** — a supervised `mitmdump` subprocess acts as an
    HTTP/S intercepting proxy. The operator points a browser at it; in-scope
    dynamic flows are captured, scored, persisted to `captured_flows`, streamed
    live to the UI over SSE, and can be promoted into the Hunter → Verify pipeline
@@ -55,7 +50,6 @@ A third, **passive** front-end feeds the Hunter:
 | ORM | SQLAlchemy 2.0 **async** |
 | Database | SQLite via `aiosqlite` (WAL mode) |
 | HTTP client | `httpx.AsyncClient` (TLS verification disabled by design) |
-| External scanner | Nuclei (subprocess) |
 | Intercepting proxy | mitmproxy's `mitmdump` (subprocess, supervised by `ProxyManager`) |
 | AI | Google Gemini via the official `google-genai` SDK |
 | Frontend (canonical) | `preview_dashboard.html` — single-file React (CDN + Babel), Tailwind, light theme |
@@ -74,7 +68,7 @@ A third, **passive** front-end feeds the Hunter:
 anti gravity/
 ├─ preview_dashboard.html         # CANONICAL frontend (single file, talks to :8000)
 ├─ backend/
-│  ├─ .env                        # config (NUCLEI_BINARY_PATH, GEMINI_API_KEY, ...)
+│  ├─ .env                        # config (GEMINI_API_KEY, ...)
 │  ├─ run.py                      # uvicorn entrypoint (reload=True)
 │  ├─ requirements.txt            # runtime deps
 │  ├─ requirements-dev.txt        # pytest (dev-only)
@@ -84,18 +78,15 @@ anti gravity/
 │  │  │  ├─ config.py             # Pydantic Settings + validators (fail-fast)
 │  │  │  └─ database.py           # async engine, session factory, get_db, SQLite pragmas
 │  │  ├─ models/
-│  │  │  └─ scan.py               # ScanTask, VulnerabilityFinding, FuzzingRecord, CapturedFlow
+│  │  │  └─ scan.py               # VulnerabilityFinding, FuzzingRecord, CapturedFlow
 │  │  ├─ schemas/
-│  │  │  ├─ scan.py               # Nuclei scan request/response schemas
 │  │  │  ├─ hunter.py             # Hunter + verify + HAR + batch schemas
 │  │  │  └─ proxy.py              # Step 9: ingest/projection/control/status contracts
 │  │  ├─ api/v1/
-│  │  │  ├─ scan.py               # /api/v1/scan/*  (Nuclei)
 │  │  │  └─ hunter.py             # /api/v1/hunter/* (Hunter, verify, HAR, batch, auth, proxy)
 │  │  ├─ proxy/
 │  │  │  └─ radar_addon.py        # Step 9: mitmdump addon (separate interpreter), Tier-1 filter + loopback POST
 │  │  └─ services/
-│  │     ├─ nuclei.py             # 3-phase scan orchestrator + Gemini patch + profiler
 │  │     ├─ traffic_parser.py     # raw HTTP text → structured dict
 │  │     ├─ pruner.py             # heuristic exposure scoring / HAR noise filter (shared Tier-2 helpers)
 │  │     ├─ fuzzer.py             # differential fuzzing engine + auth custody (the core)
@@ -125,20 +116,7 @@ anti gravity/
 
 ## 4. Request → work flow (high level)
 
-### 4a. Nuclei scan
-```
-POST /api/v1/scan/start
-  → persist ScanTask(status="running")
-  → BackgroundTasks: execute_nuclei_scan_async(...)
-       Phase 0: fingerprint target → adaptive -tags
-       Phase 1: subprocess.Popen(nuclei -jsonl) + reader thread → fast DB inserts (no AI)
-       Phase 2: mark ScanTask completed/failed
-       Phase 3: batch Gemini remediation patches for critical/high findings
-GET /api/v1/scan/{id}            → poll status
-GET /api/v1/scan/{id}/findings   → list findings (scan-scoped)
-```
-
-### 4b. Hunter → Verify (the key path)
+### 4a. Hunter → Verify (the key path)
 ```
 (optional) POST /hunter/ingest-har[-file]  → prune HAR → high-value endpoints
 POST /hunter/analyze            → parse raw HTTP + Gemini → report + automation_payloads
@@ -208,10 +186,6 @@ See [`HUNTER_PIPELINE.md`](./HUNTER_PIPELINE.md) and [`VERIFY_ENGINE.md`](./VERI
 - **One process, one event loop.** uvicorn runs the ASGI app. Long jobs are
   offloaded with FastAPI `BackgroundTasks` (in-process, same loop), *not* a
   separate queue/worker (no Celery/RQ/Redis).
-- **Nuclei reader is threaded.** `nuclei.py` uses `subprocess.Popen` + a daemon
-  `threading.Thread` to read stdout line-by-line, dispatching DB writes back to
-  the event loop via `asyncio.run_coroutine_threadsafe`. This is for Windows
-  compatibility and to avoid blocking the loop on process I/O.
 - **Fuzzing is fully async.** `fuzzer.py` runs concurrent `httpx` requests under
   an `asyncio.Semaphore`, but **all database writes funnel through a single
   consumer coroutine** draining an `asyncio.Queue`. This is the central design
@@ -249,10 +223,6 @@ See [`HUNTER_PIPELINE.md`](./HUNTER_PIPELINE.md) and [`VERIFY_ENGINE.md`](./VERI
 ## 6. Configuration & startup
 
 - `backend/app/core/config.py` loads `backend/.env` via `pydantic-settings`.
-- **`NUCLEI_BINARY_PATH` is required and must be absolute** (validator rejects
-  relative paths to prevent execution hijack). Its *existence* is only
-  soft-checked, so the server boots even if the binary isn't installed (scans
-  will then fail at runtime with a clear log).
 - `GEMINI_API_KEY` is optional; when missing, all AI calls return a graceful
   Chinese "degraded" fallback string instead of crashing.
 - **AI deep-verify flags** (both default `False`, so off by default):
@@ -272,7 +242,7 @@ See [`HUNTER_PIPELINE.md`](./HUNTER_PIPELINE.md) and [`VERIFY_ENGINE.md`](./VERI
   from PATH if blank), `PROXY_LISTEN_PORT`, and bounds — `PROXY_INGEST_QUEUE_MAX`,
   `PROXY_SSE_MAX_CLIENTS`, `PROXY_SSE_CLIENT_QUEUE_MAX`, `PROXY_BODY_CAP`,
   `PROXY_INGEST_MAX_BYTES`.
-- Health check: `GET /` returns status + the configured Nuclei path / DB URL / log level.
+- Health check: `GET /` returns status + the DB URL / log level.
 
 ---
 
@@ -286,8 +256,7 @@ agent must treat the following as deliberate-but-dangerous:
 | API auth | **None.** No auth on any endpoint. | Anyone who can reach `:8000` can launch scans/fuzzing. Keep it bound to localhost. |
 | TLS verification | `verify=False` on every outbound `httpx` client. | Required for self-signed pentest targets; do not "fix" without understanding. |
 | CORS | Allows configured origins **plus `'null'`** (so the `file://` HTML preview works). | `'null'` origin is broad; tighten for any hosted deployment. |
-| Outbound scope | **Scope-lock** guards exist: the Nuclei profiler, the fuzzer's re-auth, and the proxy radar (Tier-1 host lock) refuse to touch hosts outside the approved target. | This is the main guardrail against hitting third-party hosts (Stripe/AWS/etc.). Preserve it. |
-| Command injection | Nuclei is invoked with an argument list (no `shell=True`). | Safe; keep it that way. |
+| Outbound scope | **Scope-lock** guards exist: the fuzzer's re-auth and the proxy radar (Tier-1 host lock) refuse to touch hosts outside the approved target. | This is the main guardrail against hitting third-party hosts (Stripe/AWS/etc.). Preserve it. |
 | Cookie header injection | `ScanRequest.cookie` validator rejects CRLF. | Minimal but present. |
 | Proxy internal ingest | `/hunter/proxy/internal-ingest` is **excluded from OpenAPI** (`include_in_schema=False`), guarded by an **application-level loopback check** (request client must be `127.0.0.1`/`::1`) **plus a per-session shared token** generated on each proxy start. Any failure → **404** (not 401/403, to avoid confirming the route exists). | Shared-socket design (no second uvicorn) — see note below. Do **not** put the app behind a reverse proxy that rewrites client IP without re-adding an equivalent guard. |
 | Proxy CA cert | `/hunter/proxy/cert` streams the generated mitmproxy CA so the operator can trust it for HTTPS interception. | The CA exists only after the proxy has run once; required for HTTPS capture. |
@@ -306,10 +275,9 @@ agent must treat the following as deliberate-but-dangerous:
   routes. The addon imports **shared helpers from `pruner.py`**
   (`is_static_path`, `host_in_scope`, `detect_login_candidate`) so Tier-1 and
   Tier-2 share one definition of "static" / "in scope" / "login candidate".
-- The **two subsystems barely interact**: a Nuclei finding and a Hunter finding
-  are both rows in `vulnerability_findings`, distinguished by the `source`
-  column (single-table inheritance, but *without* SQLAlchemy polymorphic mapping
-  — the discriminator is set manually).
+- Findings live in `vulnerability_findings` with a `source` discriminator column
+  (set manually; no SQLAlchemy polymorphic mapping). Since the nuclei subsystem
+  was removed, the AI Logic Hunter is the sole producer (`source="hunter"`).
 - **"Step D"** is the recently-added bridge that lets a Hunter analysis become a
   fuzzable finding. Anything labelled Step D in code/comments is part of that
   Hunter→Verify link.

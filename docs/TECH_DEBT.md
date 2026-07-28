@@ -5,9 +5,8 @@
 > what was already addressed and don't re-litigate it.
 >
 > Honesty note: this list reflects what is visible in the current source. It is
-> not a guarantee that nothing else is wrong — the **Nuclei subprocess pipeline**
-> (real binary, JSONL reader thread, Phase 3 batch enrichment) still has **no
-> dedicated automated tests**; API routes have partial mock-based coverage (D7).
+> not a guarantee that nothing else is wrong; API routes have partial mock-based
+> coverage (D7).
 
 ---
 
@@ -46,9 +45,9 @@
 
 ### D3 — `analyze` can hang on the external Gemini call
 - **✅ RESOLVED (Stage B).**
-- **Where:** `hunter.py` `_invoke_gemini_logic_hunt`, `nuclei.py`
-  `generate_gemini_remediation_patch`.
-- **Fix:** both wrapped in `asyncio.wait_for(...,
+- **Where:** `hunter.py` `_invoke_gemini_logic_hunt` (the nuclei remediation call site
+  was removed with the scan subsystem).
+- **Fix:** the Gemini call is wrapped in `asyncio.wait_for(...,
   timeout=settings.GEMINI_REQUEST_TIMEOUT_SECONDS)` (default 60s). Timeout → fast
   degraded fallback string; caller no longer blocks indefinitely.
 
@@ -57,10 +56,10 @@
 ## 🟠 Medium severity
 
 ### D4 — `FindingDetails.scan_id` typed as non-optional `str`
-- **✅ RESOLVED (Stage A).**
-- **Where:** `schemas/scan.py` `FindingDetails`.
-- **Fix:** `scan_id: Optional[str] = None` and `source: Optional[str]` added; scan
-  findings endpoint populates both.
+- **✅ RESOLVED (Stage A); the schema itself was later removed with the nuclei scan subsystem.**
+- **Where:** `schemas/scan.py` `FindingDetails` (file deleted).
+- **Fix (historical):** `scan_id: Optional[str] = None` and `source: Optional[str]` were added.
+  Moot now — the scan findings endpoint and its schema no longer exist.
 
 ### D5 — Two divergent frontends
 - **Where:** `preview_dashboard.html` (canonical, light, wired) vs `frontend/`
@@ -77,23 +76,19 @@
 - **Now:** `severity="INFO"`; type lives in `template_id` (e.g. `"logic-hunter:BOLA"`)
   and in `automation_payloads[].type`.
 
-### D7 — No test coverage for the API layer or Nuclei pipeline
-- **Status:** partially resolved (Stage B + Step 9) — API smoke tests + proxy
-  radar tests added; Nuclei pipeline still bare.
+### D7 — API-layer test coverage
+- **Status:** partially resolved (Stage B + Step 9) — API smoke tests + proxy radar
+  tests added. (The untested Nuclei subprocess pipeline this entry once flagged has
+  been removed entirely.)
 - **Where:** `backend/tests/test_api_endpoints.py` (API smoke); `test_step9_proxy.py`
   (proxy radar, Step 9); plus pruner, custody, Step D extraction in other files.
-  Total backend suite: **293 tests** (grew from an old 73 via the verdict-oracle, B-2.2
-  guard, cross-path, catalog, B-1 write-record + shadow-integration, and D21 spec-config tests). See
-  [`STATUS.md`](./STATUS.md).
-- **Covered:** FastAPI `TestClient` over isolated per-test SQLite with Gemini,
-  nuclei subprocess, and background fuzzing mocked — analyze (200 + 422), findings
-  persist (201 + 422), verify/batch 404s, scan start/status (202 + 404), health check.
-  **Step 9:** WriterService serialization, SSEHub fan-out + overflow, ingest
-  backpressure, Tier-2 enrichment, ProxyManager state machine + token, internal-ingest
-  loopback/token/oversize guards.
-- **Still open:** HAR ingest, batch 400 mixed-host, verify results polling, real
-  Nuclei subprocess / JSONL reader / Phase 3 enrichment loop — add mocked-subprocess
-  nuclei tests when touching that code.
+  Total backend suite: **349 tests**. See [`STATUS.md`](./STATUS.md).
+- **Covered:** FastAPI `TestClient` over isolated per-test SQLite with Gemini and
+  background fuzzing mocked — analyze (200 + 422), findings persist (201 + 422),
+  verify/batch 404s, health check. **Step 9:** WriterService serialization, SSEHub
+  fan-out + overflow, ingest backpressure, Tier-2 enrichment, ProxyManager state
+  machine + token, internal-ingest loopback/token/oversize guards.
+- **Still open:** HAR ingest, batch 400 mixed-host, verify results polling.
 
 ### D8 — `requirements.txt` gaps
 - **✅ RESOLVED (Stage A).**
@@ -108,15 +103,16 @@
 
 ### D9 — `datetime.datetime.utcnow()` is deprecated
 - **✅ RESOLVED (Stage B).**
-- **Where:** `utcnow()` helper in `models/scan.py`; call sites in `models/scan.py`,
-  `fuzzer.py`, `nuclei.py`, `api/v1/scan.py`.
+- **Where:** `utcnow()` helper in `models/scan.py`; call sites in `models/scan.py`
+  and `fuzzer.py`.
 - **Fix:** replaced deprecated `datetime.utcnow()` while keeping **naive UTC**
   values (columns are not `timezone=True`).
 
 ### D10 — Single-table inheritance without polymorphic mapping
 - **Where:** `vulnerability_findings.source` is set manually by each producer.
 - **Problem:** no enforcement; a code path could forget to set `source` (defaults
-  to `"nuclei"`) and silently misclassify a row.
+  to `"hunter"`) and silently misclassify a row. Lower risk now that Hunter is the
+  sole producer (the nuclei producer was removed).
 - **Direction:** acceptable for v1; if it grows, consider SQLAlchemy polymorphic
   identity or a CHECK constraint.
 
@@ -126,14 +122,12 @@
 - **Direction:** a multi-host batch would need per-host custody controllers; only
   build if a real use case appears.
 
-### D12 — Nuclei reader thread serializes DB writes with a 10s wait
-- **Where:** `nuclei.py` `_nuclei_reader_thread` → `future.result(timeout=10)`
-  per finding.
-- **Problem:** very high finding rates could bottleneck on per-finding dispatch.
-- **Direction:** batch findings before dispatch if it ever matters; low priority.
+### D12 — Nuclei reader thread serializes DB writes with a 10s wait — ✅ RESOLVED by removal
+- **Where:** `nuclei.py` `_nuclei_reader_thread` (file deleted with the scan subsystem).
+- **Resolution:** moot — the nuclei subprocess reader no longer exists.
 
 ### D13 — `verify=False` (TLS) everywhere
-- **Where:** all outbound `httpx` clients (fuzzer, profiler, nuclei patch path).
+- **Where:** all outbound `httpx` clients (fuzzer, deep verifier, proxy radar).
 - **Status:** intentional for self-signed pentest targets. **Not a bug** — just
   be aware it disables cert validation globally for outbound calls.
 
@@ -333,9 +327,9 @@
   asserting the B-1 outcomes as a CI asset: X-CROSS→`verified`, X-SAFE→`inconclusive` even when
   the model wrongly says `verified` (the safety line), HALF 2 never fabricates `verified`, and
   same-path cases untouched. Suite 140→**145** green.
-- **Still bare:** the real Nuclei subprocess pipeline (D7) and the `_run_shadow_deep_verification`
-  Phase-7 *wrapper* itself (the integration test drives `execute_deep_verification` directly, not
-  via `execute_parallel_fuzzing`) — add if that wrapper changes.
+- **Still bare:** the `_run_shadow_deep_verification` Phase-7 *wrapper* itself (the integration test
+  drives `execute_deep_verification` directly, not via `execute_parallel_fuzzing`) — add if that
+  wrapper changes.
 
 ### D23 — Content match matched the attacked id against a record's own `id` — ✅ RESOLVED
 - **Where:** `deep_verifier._write_record_content_match` (the B-1 HALF-2 safety gate).

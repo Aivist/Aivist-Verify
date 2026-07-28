@@ -7,17 +7,15 @@
 ## Tables overview
 
 ```
-scan_tasks (1) ──< vulnerability_findings (1) ──< fuzzing_records
+vulnerability_findings (1) ──< fuzzing_records
 
 captured_flows            (Step 9 — standalone; no FK, optional one-way
                            promoted_finding_id back-reference into findings)
 ```
 
-- A **ScanTask** is one Nuclei scan run.
-- A **VulnerabilityFinding** is one issue. It comes from EITHER a Nuclei scan
-  (`source="nuclei"`, has a `scan_id`) OR the AI Logic Hunter
-  (`source="hunter"`, `scan_id=NULL`). This is single-table inheritance by
-  convention.
+- A **VulnerabilityFinding** is one issue produced by the AI Logic Hunter
+  (`source="hunter"`, `scan_id=NULL`). The `scan_id` column is vestigial after the
+  nuclei scan subsystem was removed.
 - A **FuzzingRecord** is one differential-fuzz attempt (one payload) against a
   finding, with its verdict + diff.
 - A **CapturedFlow** (Step 9) is one HTTP exchange intercepted by the passive
@@ -27,43 +25,25 @@ captured_flows            (Step 9 — standalone; no FK, optional one-way
 
 ---
 
-## `scan_tasks`
-
-| Column | Type | Null | Notes |
-|---|---|---|---|
-| `id` | String(36) PK | no | UUID4 string |
-| `target_url` | String(1024) | no | |
-| `status` | String(32) | no | `pending` → `running` → `completed`/`failed` |
-| `cookie` | Text | yes | optional auth cookie passed to Nuclei |
-| `created_at` | DateTime | no | `utcnow` default |
-| `updated_at` | DateTime | no | `utcnow`, `onupdate=utcnow` |
-
-Relationship: `findings` → `VulnerabilityFinding` with
-`cascade="all, delete-orphan"`, `passive_deletes=True` (relies on the DB-level
-`ON DELETE CASCADE`).
-
----
-
 ## `vulnerability_findings`
 
 | Column | Type | Null | Notes |
 |---|---|---|---|
 | `id` | Integer PK | no | autoincrement |
-| `scan_id` | String(36) FK→scan_tasks | **yes** | **NULL for Hunter findings** (Step D made this nullable) |
-| `source` | String(16) | no | discriminator: `"nuclei"` (default) or `"hunter"` (Step D) |
-| `template_id` | String(256) | no | Nuclei template id, or `"logic-hunter:<type>"` for Hunter (e.g. `logic-hunter:BOLA`) |
+| `scan_id` | String(36) | **yes** | Plain nullable column; **always NULL** now (was an FK to the removed `scan_tasks`; kept vestigial so existing DBs are undisturbed) |
+| `source` | String(16) | no | producer discriminator; now always `"hunter"` (default `"hunter"`; nuclei removed) |
+| `template_id` | String(256) | no | `"logic-hunter:<type>"` for Hunter findings (e.g. `logic-hunter:BOLA`) |
 | `severity` | String(64) | no | upper-cased real level (`CRITICAL`…`INFO`). Hunter rows store `"INFO"`; their vuln *type* lives in `template_id` + the payload JSON (D6) |
 | `matched_at` | String(2048) | no | URL; for Hunter this is the derived base URL used as the fuzz target |
-| `poc_request` | Text | yes | Nuclei request capture (legacy fuzz input lived here) |
-| `poc_response` | Text | yes | Nuclei response capture |
-| `ai_patch` | Text | yes | Gemini remediation (Nuclei) or Hunter `report_markdown` |
+| `poc_request` | Text | yes | request capture (legacy fuzz input lived here) |
+| `poc_response` | Text | yes | response capture |
+| `ai_patch` | Text | yes | Hunter `report_markdown` (the Nuclei remediation producer was removed) |
 | `parsed_request` | **JSON** | yes | **Step D** — structured request the fuzzer mutates |
 | `automation_payloads` | **JSON** | yes | **Step D** — list of payload instructions for the fuzzer |
 | `auth_refresh_request` | **JSON** | yes | **Step D** — optional cached re-auth request (Identity Anchor) |
 | `created_at` | DateTime | no | |
 
-Relationships: `task` (back to ScanTask), `fuzz_records` → `FuzzingRecord`
-(cascade delete).
+Relationships: `fuzz_records` → `FuzzingRecord` (cascade delete).
 
 ### Step D: why the three JSON columns exist
 Before Step D, the only way to feed structured data to the fuzzer was to embed

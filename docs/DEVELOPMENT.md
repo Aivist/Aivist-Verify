@@ -6,8 +6,6 @@
 
 ## 1. Prerequisites
 - **Python 3.11** (the project is run on CPython 3.11).
-- **Nuclei** binary (only needed to actually run scans; the server boots without
-  it). Download from ProjectDiscovery.
 - A **Gemini API key** (optional; without it, AI features degrade gracefully).
 - **mitmproxy** (Step 9 proxy radar): pinned as `mitmproxy==11.0.2` in
   `requirements.txt`, so `pip install -r backend/requirements.txt` installs the
@@ -40,8 +38,6 @@ Loaded by `backend/app/core/config.py`. Required/important keys:
 
 | Key | Required | Notes |
 |---|---|---|
-| `NUCLEI_BINARY_PATH` | **yes** | Must be an **absolute** path (validator rejects relative). Existence is **not** checked at startup (the validator only enforces an absolute path); a missing binary surfaces only at scan time as a Phase-1 `FileNotFoundError` → scan marked `failed`. The server still boots. |
-| `NUCLEI_DEFAULT_SEVERITY` | no | default `critical,high`; passed to Nuclei `-severity`. |
 | `GEMINI_API_KEY` | no | Without it, analyze/patch return degraded fallbacks. |
 | `GEMINI_PRO_MODEL` | no | default `gemini-2.5-flash` in code; `.env` may set `gemini-2.5-pro`. |
 | `GEMINI_BATCH_COOLDOWN_SECONDS` | no | default 3 |
@@ -53,7 +49,7 @@ Loaded by `backend/app/core/config.py`. Required/important keys:
 | `CORS_ALLOWED_ORIGINS` | no | comma list; `'null'` is auto-appended for `file://` previews |
 | `FUZZER_HTTP_TIMEOUT_CONNECT` / `_READ` | no | 10s / 20s |
 | `FUZZER_RESPONSE_BODY_MAX_LENGTH` | no | 5000 chars |
-| `MITMDUMP_PATH` | no | **Step 9.** Absolute path to `mitmdump`; empty ⇒ PATH lookup (`shutil.which`). Validated absolute when set (rejects relative, like Nuclei). |
+| `MITMDUMP_PATH` | no | **Step 9.** Absolute path to `mitmdump`; empty ⇒ PATH lookup (`shutil.which`). Validated absolute when set (rejects relative). |
 | `PROXY_LISTEN_PORT` | no | **Step 9.** Proxy listen port, default `8888`; must differ from `API_PORT`. |
 | `PROXY_INGEST_QUEUE_MAX` | no | **Step 9.** Bounded ingest queue, default `1000`; over this the internal-ingest endpoint returns 503 (backpressure). |
 | `PROXY_SSE_MAX_CLIENTS` | no | **Step 9.** Max concurrent SSE subscribers, default `32`. |
@@ -65,7 +61,7 @@ Loaded by `backend/app/core/config.py`. Required/important keys:
 | `AI_DEEP_VERIFY_OPENAPI_SPEC` | no | **Declared `Optional[str]` field (D21).** Absolute path to an OpenAPI/Swagger **JSON** file; when set it feeds the real endpoint catalog into the Phase-7 shadow pass. Resolved to a parsed spec at the fuzzer consumption point, which **fails safe** to the placeholder on any missing-file / parse / wrong-type error; an already-parsed spec **dict** injected in-process is also accepted (measurement drivers). Unset ⇒ byte-identical placeholder (zero behavior change). JSON only; observe-only (never affects a verdict). See [`DEEP_VERIFY.md`](./DEEP_VERIFY.md). |
 
 > Invalid config fails fast: `config.py` raises on import if a required/validated
-> setting is wrong (e.g. relative `NUCLEI_BINARY_PATH` or `MITMDUMP_PATH`, or an
+> setting is wrong (e.g. relative `MITMDUMP_PATH`, or an
 > out-of-range `API_PORT`/`PROXY_LISTEN_PORT`).
 
 ## 3. Running the backend
@@ -107,7 +103,7 @@ Current suite: **351 tests** (backend). See [`STATUS.md`](./STATUS.md).
 - `test_step8_custody.py` — auth custody / parallel engine
 - `test_step_d_hunter_link.py` — Step D extraction (column-first + legacy fallback)
 - `test_api_endpoints.py` — API-layer integration tests (FastAPI TestClient, isolated
-  per-test SQLite, Gemini/nuclei/background-fuzzing mocked) — D7
+  per-test SQLite, Gemini/background-fuzzing mocked) — D7
 - `test_step9_proxy.py` — proxy radar: WriterService serialization, SSEHub fan-out +
   overflow, ingest backpressure, Tier-2 enrichment, ProxyManager state machine + token,
   internal-ingest loopback/token/oversize guards

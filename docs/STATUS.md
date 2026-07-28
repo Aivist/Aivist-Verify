@@ -292,7 +292,7 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
 ## Deferred on purpose (do not invest until the moat is broadened)
 
 Authentication (D2), multi-tenancy, Alembic migrations (D1), Postgres, hosted
-deployment, the nuclei keep-vs-cut decision — parked until a benchmark justifies them.
+deployment — parked until a benchmark justifies them.
 
 ## Immediate next steps
 

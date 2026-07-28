@@ -2,7 +2,7 @@
 
 > Base URL: `http://127.0.0.1:8000`. All routes are mounted under `/api/v1`.
 > Interactive docs: `GET /api/docs` (Swagger) and `GET /api/redoc`.
-> Schemas: `backend/app/schemas/scan.py` and `backend/app/schemas/hunter.py`.
+> Schemas: `backend/app/schemas/hunter.py`.
 >
 > ⚠️ **No authentication on any endpoint.** Keep the server bound to localhost.
 >
@@ -16,38 +16,7 @@
 
 ### `GET /`
 Health check. Returns `{ status, service, version, diagnostics: {
-nuclei_configured_path, database_url_configured, logging_level } }`.
-
----
-
-## Nuclei Scanner — `/api/v1/scan` (router in `api/v1/scan.py`)
-
-### `POST /scan/start` → 202 / 422 / 500
-Start an async Nuclei scan.
-```json
-// request (ScanRequest)
-{ "target_url": "https://example.com", "cookie": "PHPSESSID=...; security=low" }
-// response (ScanResponse)
-{ "scan_id": "uuid", "status": "started", "message": "..." }
-```
-- `target_url` must be a valid HTTP/HTTPS URL (Pydantic `HttpUrl`).
-- `cookie` optional; rejects CRLF (header-injection guard).
-- Side effect: persists `ScanTask(status="running")`, enqueues
-  `execute_nuclei_scan_async` on BackgroundTasks.
-- **422** if `target_url` or `cookie` fails Pydantic validation.
-- **500** if DB persist or task enqueue fails (rare; surfaces as HTTP error detail).
-
-### `GET /scan/{scan_id}` → 200 / 404 / 500
-Poll status. Returns `ScanTaskState { scan_id, target_url, status, updated_at }`.
-`status` ∈ `pending|running|completed|failed`.
-- **500** on an unexpected DB error (`"Database inquiry failed"`).
-
-### `GET /scan/{scan_id}/findings` → 200 / 404 / 500
-List findings for a scan (`List[FindingDetails]`), ordered by id. 404 if the
-scan id doesn't exist.
-- **500** on an unexpected DB error (`"Database inquiry failed"`).
-> Only returns rows whose `scan_id` matches — i.e. **Nuclei findings only**.
-> Hunter findings (`scan_id=NULL`) never appear here.
+database_url_configured, logging_level } }`.
 
 ---
 
@@ -224,18 +193,16 @@ Stream the locally-generated mitmproxy CA cert
 ---
 
 ## Status-code conventions
-- `202 Accepted` — long job queued (scan start, verify, batch) or flow accepted
+- `202 Accepted` — long job queued (verify, batch) or flow accepted
   into the proxy ingest queue.
 - `200 OK` — analyze/HAR/dry-run/results + all `/proxy/*` control & read endpoints
   (analyze & HAR handlers never 500; logical failures come back as `status:"error"`).
-- `404` — unknown scan/finding id; CA not yet generated (`/proxy/cert`); or a
+- `404` — unknown finding id; CA not yet generated (`/proxy/cert`); or a
   fail-closed reject on the internal-ingest guard (loopback/token).
 - `413` — oversize internal-ingest body (`PROXY_INGEST_MAX_BYTES`).
 - `422` — Pydantic validation (e.g. short `raw_traffic`, empty `automation_payloads`,
-  invalid scan request, malformed proxy flow) or no derivable host on `/hunter/findings`.
+  malformed proxy flow) or no derivable host on `/hunter/findings`.
 - `400` — mixed-host / out-of-scope batch.
 - `503` — proxy SSE client cap reached (`/proxy/stream`) or ingest queue saturated
   (`/proxy/internal-ingest` backpressure).
-- `500` — unhandled failure on `/scan/start` (DB or dispatcher error), or an
-  unexpected DB error on `GET /scan/{scan_id}` and `GET /scan/{scan_id}/findings`
-  (`"Database inquiry failed"`).
+- `500` — an unexpected/unhandled server or DB error.

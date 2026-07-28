@@ -10,9 +10,9 @@
 
 ## 1. 一句话定位
 
-**一个本地运行、AI 辅助的 Web 应用渗透测试平台**:既能跑传统的"已知漏洞"扫描,又能用大模型挖"业务逻辑漏洞"并**自动主动验证漏洞是否真实可利用**。
+**一个本地运行、AI 辅助的 Web 应用渗透测试平台**:用大模型挖"业务逻辑漏洞"(BOLA/IDOR 等),并**自动主动验证漏洞是否真实可利用**。
 
-后者(逻辑挖掘 + 差分验证)是本项目的技术纵深与差异化所在;前者(Nuclei 扫描)是相对常规的扫描器封装。
+逻辑挖掘 + 差分验证是本项目的技术纵深与差异化核心。(早期附带的 Nuclei 通用扫描器因品类不匹配已移除。)
 
 ---
 
@@ -36,7 +36,7 @@
 两个相对独立的分析子系统,共享同一套数据库与前端:
 
 ```
-   浏览器 ─(HTTP/S 代理)→ ③ 被动代理雷达 (mitmdump 子进程)
+   浏览器 ─(HTTP/S 代理)→ 被动代理雷达 (mitmdump 子进程)
                                 │  Tier-1 内联过滤(域锁+静态veto)
                                 │  环回 HTTP POST → /proxy/internal-ingest
                                 ▼
@@ -44,15 +44,15 @@
    操作员/前端 → │  FastAPI (ASGI, uvicorn) · /api/v1/*          │
                 └───────────────┬──────────────────────────────┘
                                 │
-          ┌─────────────────────┼─────────────────────┐
-          ▼                     ▼                      ▼
-  ① Nuclei 扫描引擎      ② AI 逻辑狩猎 Logic Hunter   ③ 代理雷达管线
-  - 调用本地 nuclei      - 解析原始 HTTP / 导入 HAR    - 有界摄取队列(背压)
-    子进程               - pruner 剪枝(暴露评分)       - Tier-2 异步评分(复用 pruner)
-  - 流式解析 JSONL 发现   - Gemini 分析越权类逻辑漏洞    - SSE 实时推流(/proxy/stream)
-  - 对高危发现调 Gemini   - 产出结构化攻击 payload      - 落库 captured_flows
-    生成修复补丁         - 【差分 Fuzzing 引擎】主动验证 ★
-          └─────────────────────┼─────────────────────┘
+                ┌───────────────┴────────────────┐
+                ▼                                ▼
+   ① AI 逻辑狩猎 Logic Hunter(核心)         ② 代理雷达管线
+   - 解析原始 HTTP / 导入 HAR                - 有界摄取队列(背压)
+   - pruner 剪枝(暴露评分)                   - Tier-2 异步评分(复用 pruner)
+   - Gemini 分析越权类逻辑漏洞               - SSE 实时推流(/proxy/stream)
+   - 产出结构化攻击 payload                  - 落库 captured_flows
+   - 【差分 Fuzzing 引擎】主动验证 ★
+                └───────────────┬────────────────┘
                                 ▼
    SQLAlchemy 2.0 async + SQLite(WAL) · 统一单写者服务(WriterService)串行落库
    —— fuzzing 记录与代理流量共用同一个写协程,全局至多一个 SQLite 写者
@@ -114,9 +114,7 @@
 | 数据校验 | Pydantic v2 + pydantic-settings(启动即校验,fail-fast) |
 | ORM | SQLAlchemy 2.0 **异步** |
 | 数据库 | SQLite（`aiosqlite`,WAL 模式） |
-| HTTP 客户端 | `httpx.AsyncClient`(对自签名靶机刻意关闭 TLS 校验) |
-| 外部扫描器 | Nuclei(子进程调用,需本地安装) |
-| 被动代理 | mitmproxy 的 `mitmdump`(子进程,由 `ProxyManager` 托管 + 监督;跨平台进程树清杀) |
+| HTTP 客户端 | `httpx.AsyncClient`(对自签名靶机刻意关闭 TLS 校验) || 被动代理 | mitmproxy 的 `mitmdump`(子进程,由 `ProxyManager` 托管 + 监督;跨平台进程树清杀) |
 | AI | Google Gemini,官方 `google-genai` SDK(Gemini 2.5) |
 | 前端(主用) | `preview_dashboard.html` — 单文件 React(CDN+Babel)+ Tailwind,白色清新风,已联通后端 |
 | 前端(遗留) | `frontend/` — Vite + TS,深色 + mock 数据,**非产品基线** |
@@ -140,11 +138,11 @@ anti gravity/
 │  ├─ app/
 │  │  ├─ main.py                  # 应用装配、生命周期(建表+schema自检)、CORS、路由
 │  │  ├─ core/                    # config.py(配置校验) / database.py(异步引擎、会话)
-│  │  ├─ models/scan.py           # ORM：ScanTask / VulnerabilityFinding / FuzzingRecord / CapturedFlow
+│  │  ├─ models/scan.py           # ORM：VulnerabilityFinding / FuzzingRecord / CapturedFlow
 │  │  ├─ schemas/                 # Pydantic 契约（scan.py / hunter.py / proxy.py）
-│  │  ├─ api/v1/                  # 路由：scan.py(Nuclei) / hunter.py(Hunter/验证/HAR/批量/proxy)
+│  │  ├─ api/v1/                  # 路由：hunter.py(Hunter/验证/HAR/批量/proxy)
 │  │  ├─ proxy/radar_addon.py     # mitmdump 插件(独立解释器,Tier-1 过滤 + 环回上报)
-│  │  └─ services/                # nuclei.py / traffic_parser.py / pruner.py / fuzzer.py(核心)
+│  │  └─ services/                # traffic_parser.py / pruner.py / fuzzer.py(核心)
 │  │                              # + proxy_manager.py(进程状态机) / proxy_pipeline.py(队列+SSE+统一写者)
 │  │                              # + deep_verifier.py(AI 深度验证,影子 Phase 7) / endpoint_catalog.py(D18 端点目录)
 │  └─ tests/                      # pytest（293 个）
@@ -160,19 +158,13 @@ anti gravity/
 
 > 图例：✅ 已实现且经测试/E2E 验证　🟡 已实现、可用(自动化覆盖有限)　⚪ 占位/受限
 
-### A. Nuclei 扫描引擎（查"已知"漏洞）
-- 🟡 **异步扫描**:`POST /scan/start` 提交目标 → 后台跑 nuclei 子进程,立即返回 `scan_id`;轮询状态与结果。
-- 🟡 **三阶段管线**:启动 → 流式解析 JSONL 发现 → 完成后对 **critical/high** 发现批量调 Gemini 生成**修复补丁 + 根因分析**。
-- 🟡 **自适应扫描参数**:按目标特征拼装 nuclei 参数。
-- 说明:依赖本地安装的 `nuclei` 二进制;自动化测试中对子进程做了 mock(未在 CI 里跑真实外网扫描)。
-
-### B. AI 逻辑狩猎 Logic Hunter（挖"未知"业务逻辑漏洞）
+### A. AI 逻辑狩猎 Logic Hunter（挖"未知"业务逻辑漏洞）
 - ✅ **原始流量解析**:粘贴原始 HTTP 报文 → 结构化(method/path/query/headers/body)。
 - ✅ **HAR 摄取与剪枝**:导入浏览器/抓包导出的 HAR → `pruner` 按"暴露评分"过滤噪声、识别疑似登录端点;支持 JSON body 与大文件流式上传两种入口。
 - 🟡 **Gemini 逻辑分析**:针对越权类漏洞(BOLA/IDOR、垂直越权、Mass-Assignment、参数污染、竞态)给出**专家级 Markdown 报告** + 机器可执行的 `automation_payloads`。无 API Key 时优雅降级(不报 500)。
 - ✅ **分析落库为可验证发现**(Step D 桥接):`POST /hunter/findings` 把分析结果存成可 fuzz 的 finding,返回 `finding_id`。
 
-### C. 差分 Fuzzing 验证引擎 ★（产品核心壁垒）
+### B. 差分 Fuzzing 验证引擎 ★（产品核心壁垒）
 - ✅ **差分验证**:发基线请求 → 按 payload 变异重放 → **差分预言机**比对(状态码、响应长度偏移、相似度等),配合降噪/否决/升级规则,判定 `verified / suspicious / failed`。
 - ✅ **自愈式 auth 托管**:会话(session/token)在扫描途中失效时,自动重放"身份提供方锚点"(登录请求)刷新凭证后继续,避免误判;期间对前端透出 `running` 诊断态。
 - ✅ **真并行批量**:`POST /hunter/verify/batch` 在**单一共享 auth 托管**下并发验证多个端点(并发上限可配 1–20)。
@@ -186,7 +178,7 @@ anti gravity/
   - 🟢 **M1.4「批量赋值 · 低熵状态跳变」(✅ 已完成 —— M1 收官)**:第五种也是最后一种 M1 形态。攻击者把特权字段(`role`/`is_admin`/`tier`)夹带进对**受害者对象**的写入。**这里 payload-causality 本身失效**:它假设写入值是唯一的,而 `"admin"` 是**低熵**值——「读到 role 是 admin」无法区分「是我写的」和「本来就是」。因果改由 **STATE JUMP(状态跳变)** 证明:攻击发出的**每一个字段**都必须从**已知的前置状态**跳变到注入值。**MISSING(在一次成功 2xx 读里字段不存在)是合法的原始状态**(特权字段常被隐藏),所以 `missing→injected` 成立(隐藏字段提权);但**请求失败/非 2xx/JSON 畸形是 UNKNOWN**,永远不能确认跳变、永远不会 `verified`、也绝不崩。第四条互斥通道 `STATE_JUMP_EXEMPTION_REASON`。**顺带修掉了一个真实误报**:在「特权字段被白名单剥离、但合法字段确实落地」的安全用例上,旧的 causality 闸门会放行一个**安全**端点;现在**只要存在前置状态基线,就一律由 state-jump 闸门接管**(按证据而非按声明的攻击类型路由)——这是**收窄**而非削弱,只会产生更少的豁免,其余四种形态判定不变(离线 285 个测试全绿证明)。线上 N=5:X-MASS-VULN(有值 / MISSING→注入)→`verified` **5/5 各**、**X-MASS-SAFE(有值 + 缺失)→`verified` 0/5**、**CONTROL(注入值==原值,无跳变)→`verified` 0/5**。安全用例上模型**原始判定说 `verified`**,而闸门**每一次都拒绝了**——守住底线的是代码,不是模型的听话程度。**修复后线上回归复测:四种既有形态全部确认无回归**(N=5 各,**30/30 次全部干净、零降级**,`scripts/audit/shadow_m14_regress_run.out.txt`):B-1 X-CROSS→`verified` **5/5**(仍走 `write_record` 通道)、X-SILENT-VULN→`verified` **5/5**、X-DELETE-VULN-HARD/SOFT→`verified` **5/5 各**(`confirmed_physical`/`confirmed_logical`)、**X-SILENT-SAFE 与 X-DELETE-SAFE 均 0 次 `verified`**。其中 X-SILENT-VULN 的豁免通道从 `state_readback` 变为 `state_jump`——这**正是路由修复按设计生效**(存在前置状态基线时由更严的闸门接管),判定本身未变。(首轮复测曾因 Gemini 月度支出上限中断:55 次里 27 次 `429 RESOURCE_EXHAUSTED` → `status=degraded` 不出判定;预算恢复后**完整重跑**,而非当作「仅离线覆盖」的缺口交付。)
   - ✅ **M1 完成**:五种形态、零误报。**D21 ✅、D19 ✅**(判定提升能力已实现,**默认关闭**,已通过验收——干净 430/430 复现金标 `scripts/measure/results/sweep_highN_d19.jsonl`;仅在确定性通道授权下把 `suspicious` 提升为 `verified`,0 个 SAFE 被提升)。下一条线是**发布前清单 → 真实靶标前清单(scope-lock)**;在真实靶标上**开启**提升仍属 Node 3(能力 ≠ 真实可用:仍是单模型 gemini-2.5-pro、两个自建靶场,0.95 阈值未经真实目标波动性验证,owner 凭证按部署非按发现)。
 
-### D. 被动流量摄取 · 代理雷达(Step 9)
+### C. 被动流量摄取 · 代理雷达(Step 9)
 - 🟡 **托管式拦截代理**:`POST /hunter/proxy/start` 启动并监督一个 `mitmdump` 子进程;浏览器把 HTTP 代理指向 `127.0.0.1`,即可被动捕获流量。`/proxy/stop` 跨平台强制清杀整个进程树(Windows `taskkill /F /T`、Unix 进程组信号),不漏端口。
 - 🟡 **两级低延迟过滤**:Tier-1 在 mitmdump 钩子内联做域锁 + 静态资源否决(不阻塞浏览器);Tier-2 在 FastAPI 侧异步复用 `pruner.calculate_exposure_score` 评分,并标记疑似登录端点。
 - 🟡 **实时雷达推流**:`GET /hunter/proxy/stream` 以 SSE(`text/event-stream`)实时推送捕获流;每客户端有界队列 + 断开即清理,杜绝内存泄漏。
@@ -201,7 +193,7 @@ anti gravity/
 | 表 | 作用 |
 |---|---|
 | `scan_tasks` | 一次扫描任务(目标、状态、cookie、时间戳) |
-| `vulnerability_findings` | 漏洞发现。用 `source` 字段区分来源:`"nuclei"`(有 `scan_id`)或 `"hunter"`(`scan_id=NULL`)。Step D 新增 `parsed_request` / `automation_payloads` 等 JSON 列承载可 fuzz 数据 |
+| `vulnerability_findings` | 漏洞发现(来源均为 Logic Hunter,`source="hunter"`;nuclei 已移除,`scan_id` 恒为 NULL)。Step D 新增 `parsed_request` / `automation_payloads` 等 JSON 列承载可 fuzz 数据 |
 | `fuzzing_records` | 每条 payload 的验证记录(发出的请求、收到的响应、判定状态、差分细节) |
 | `captured_flows` | **(Step 9)** 被动代理雷达捕获的一次 HTTP 交换:方法/主机/路径、请求与响应(截断)、Tier-2 暴露评分、是否登录候选、是否在域内。独立表(不与发现表强耦合),`promoted_finding_id` 单向回链已送入 Hunter 的流量 |
 
@@ -217,9 +209,6 @@ anti gravity/
 | 方法 & 路径 | 作用 | 状态码 |
 |---|---|---|
 | `GET /` | 健康检查 / 诊断信息 | 200 |
-| `POST /api/v1/scan/start` | 启动 Nuclei 异步扫描 | 202 |
-| `GET /api/v1/scan/{id}` | 查询扫描状态 | 200/404 |
-| `GET /api/v1/scan/{id}/findings` | 列出该扫描的发现(仅 Nuclei) | 200/404 |
 | `POST /api/v1/hunter/analyze` | 原始 HTTP + Gemini 逻辑分析 | 200(永不 500) |
 | `POST /api/v1/hunter/findings` | 把分析存为可验证发现 | 201/422 |
 | `POST /api/v1/hunter/verify/{id}` | 触发单目标差分验证 | 202/404 |
@@ -246,7 +235,7 @@ anti gravity/
   - `test_pruner.py` — 剪枝评分 + 去除非确定性(随机种子下稳定);
   - `test_step8_custody.py` — auth 自愈托管 / 并行引擎;
   - `test_step_d_hunter_link.py` — Hunter→验证 数据桥接(列优先 + 旧格式回退);
-  - `test_api_endpoints.py` — **API 层集成测试**(FastAPI TestClient,隔离临时库,Gemini/nuclei/后台任务均 mock):analyze、findings 落库、verify/batch 的 404、scan 启动/状态等;
+  - `test_api_endpoints.py` — **API 层集成测试**(FastAPI TestClient,隔离临时库,Gemini/后台任务均 mock):analyze、findings 落库、verify/batch 的 404 等;
   - `test_step9_proxy.py` —(**Step 9**)统一写者串行化、SSE 扇出 + 溢出丢弃、摄取背压、Tier-2 富化、ProxyManager 状态机、内部摄取端点环回/令牌/超限守卫;
   - `test_verdict_oracle.py` — 规则预言机判定正确性(离线,含误报杀手 / 弱信号守卫);
   - `test_endpoint_catalog.py` — 端点目录 OpenAPI→目录适配(Phase-7 影子输入);
@@ -256,7 +245,7 @@ anti gravity/
   - Hunter→验证:真实服务 + 真实本地靶机 + 真实数据库,走通 `analyze → 保存 → verify`,产出带判定的 `FuzzingRecord`。
   - 代理雷达三路(Step 9):①浏览器(代理客户端)→ mitmdump → 摄取 → 队列 → 统一写者 → DB(`captured_flows`);②摄取 → SSE → 实时事件;③代理流量 → analyze → findings → verify → `FuzzingRecord` → results。三路均以真实运行证据(DB 读 + 后端日志)确认。另:真机验证了 mitmdump 启动/绑定端口/`stop` 进程树清杀后端口释放无残留。
 - **版本管理**:已纳入 git,提交历史清晰(基线 → 卫生清理 → 加固 → Step 9 → 验证判定层 → B-1 `37769b3`);`.env`、本地数据库、缓存均已 `.gitignore` 排除,**不会泄露密钥**。当前**唯一**未提交改动是代理雷达前端页(属后续前端阶段),见 [`STATUS.md`](./STATUS.md)。
-- **配置即密钥分离**:所有外部依赖(nuclei 路径、Gemini Key、超时、host/port)走 `.env` + Pydantic 校验,启动即校验。
+- **配置即密钥分离**:所有外部依赖(Gemini Key、超时、host/port)走 `.env` + Pydantic 校验,启动即校验。
 - **文档体系**:`docs/` 下有 8 份工程文档（架构、数据模型、各管线、API、开发指南、技术债 + 索引 README）；验收入口见根目录 `PROJECT_OVERVIEW.md`。文档以当前代码为准，发现冲突时请更新文档。
 
 ---
@@ -276,14 +265,14 @@ anti gravity/
 | **D15** | **HTTPS 拦截需信任 CA** | 需在浏览器/系统导入 mitmproxy CA 证书才能解密 HTTPS;证书在代理**首次启动后**才生成,故 `/proxy/cert` 在那之前返回 404。 |
 | **D16** | **mitmproxy 引入的版本耦合** | 安装 mitmproxy 强制锁定 `httpcore==1.0.7`、`bcrypt==4.0.1`(详见 `docs/DEVELOPMENT.md`)。升级 mitmproxy/httpx/passlib 前需复核此约束。 |
 | — | **数据库为单机 SQLite** | 适合本地/单租户;高并发或多实例场景需迁移到 Postgres 等。 |
-| — | **强依赖外部服务** | Gemini 需联网 + API Key(已加 60s 超时兜底);Nuclei 需本地安装二进制。 |
+| — | **强依赖外部服务** | Gemini 需联网 + API Key(已加 60s 超时兜底)。 |
 
 ---
 
 ## 9. 如何运行 & 验收清单（合伙人可亲手过一遍）
 
 ### 前置
-- Python 3.11;本地安装 **Nuclei** 二进制(用于 ① 扫描引擎);一个 **Gemini API Key**(用于 AI 分析,可选——无 Key 会优雅降级)。
+- Python 3.11;一个 **Gemini API Key**(用于 AI 分析,可选——无 Key 会优雅降级)。
 - **mitmproxy**(用于 ③ 代理雷达)随 `backend/requirements.txt` 一并安装(`mitmdump`);默认从 PATH 解析,也可用 `.env` 的 `MITMDUMP_PATH` 指定绝对路径。
 
 ### 启动
@@ -294,7 +283,7 @@ pip install -r backend/requirements-dev.txt   # 跑测试用
 
 # 2. 配置（复制样例后填入真实值）
 copy backend\.env.example backend\.env
-#   关键项：NUCLEI_BINARY_PATH(绝对路径)、GEMINI_API_KEY、API_HOST(默认 0.0.0.0)
+#   关键项：GEMINI_API_KEY、API_HOST(默认 0.0.0.0)
 
 # 3. 启动后端
 python backend/run.py
@@ -309,7 +298,6 @@ python backend/run.py
 - [ ] **服务健康**:`GET http://127.0.0.1:8000/` 返回 `status: online` 与诊断信息。
 - [ ] **API 文档**:`/api/docs` 能看到全部端点与请求/响应模型。
 - [ ] **逻辑狩猎链路**:在前端粘贴一段原始 HTTP 报文 → analyze 出报告与 payloads → 保存为 finding → 触发 verify → 在结果里看到带判定(verified/suspicious/failed)的验证记录。
-- [ ] **(可选)Nuclei 扫描**:对一个你拥有/授权的靶机 `POST /scan/start` → 轮询状态 → 查看发现与 AI 修复建议。
 - [ ] **(可选)代理雷达**:在前端「Proxy Radar」页填入授权域并 `start` → 浏览器把 HTTP 代理指向 `127.0.0.1:<PROXY_LISTEN_PORT>`(HTTPS 需先在 `/proxy/cert` 下载并信任 CA)→ 访问目标 → 雷达里实时看到捕获流 → 一键「Send to Hunter」进入分析。
 - [ ] **诚信项核对**:确认 §8 的限制(尤其"无鉴权""仅本地")你能接受作为当前阶段定位。
 
