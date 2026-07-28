@@ -51,14 +51,6 @@ class Settings(BaseSettings):
     )
 
     # --------------------------------------------------------------------------
-    # 2. External Penetration Testing Binary Paths
-    # --------------------------------------------------------------------------
-    NUCLEI_BINARY_PATH: str = Field(
-        ...,
-        description="The absolute filesystem path to the local Nuclei security scanner."
-    )
-
-    # --------------------------------------------------------------------------
     # 3. AI Orchestration Settings (Future Extensibility)
     # --------------------------------------------------------------------------
     GEMINI_API_KEY: Optional[str] = Field(
@@ -156,11 +148,6 @@ class Settings(BaseSettings):
     # --------------------------------------------------------------------------
     # 4. Scan & Fuzzing Engine Settings
     # --------------------------------------------------------------------------
-    NUCLEI_DEFAULT_SEVERITY: str = Field(
-        default="critical,high",
-        description="Comma-separated severity levels to filter Nuclei scan results."
-    )
-
     GEMINI_BATCH_COOLDOWN_SECONDS: int = Field(
         default=3,
         description="Rate-limit cooldown (seconds) between sequential Gemini API calls during batch enrichment."
@@ -196,7 +183,7 @@ class Settings(BaseSettings):
     # --------------------------------------------------------------------------
     # Absolute path to the 'mitmdump' executable. Left empty by default: the
     # ProxyManager falls back to a PATH lookup (shutil.which). Set this only if
-    # mitmdump is not on PATH. Validated as absolute (like NUCLEI_BINARY_PATH) to
+    # mitmdump is not on PATH. Validated as an absolute path to
     # avoid relative-path execution hijacks.
     MITMDUMP_PATH: Optional[str] = Field(
         default=None,
@@ -286,7 +273,7 @@ class Settings(BaseSettings):
         """
         MITMDUMP_PATH is optional. When empty/None, the ProxyManager discovers
         mitmdump on PATH at runtime. When explicitly set, enforce an absolute,
-        normalized path (mirrors NUCLEI_BINARY_PATH) to prevent relative-path
+        normalized absolute path to prevent relative-path
         execution hijacks. Existence is verified at radar-start, not here.
         """
         if path is None or not str(path).strip():
@@ -305,27 +292,6 @@ class Settings(BaseSettings):
             raise ValueError(f"PROXY_LISTEN_PORT must be in [1, 65535]. Got: {port}")
         return port
 
-    @field_validator("NUCLEI_BINARY_PATH")
-    @classmethod
-    def validate_nuclei_path(cls, path: str) -> str:
-        """
-        Deep Validation for Nuclei Path:
-        1. Guarantees that the path is specified as an absolute path to mitigate path-traversal/relative hijacks.
-        2. Normalizes path formatting to match the underlying operating system (Windows/Linux).
-        """
-        # Ensure path is absolute
-        if not os.path.isabs(path):
-            raise ValueError(
-                f"NUCLEI_BINARY_PATH MUST be an absolute path to prevent traversal or path execution hijacks. Got: '{path}'"
-            )
-
-        # Normalize paths for Windows/Unix compatibility
-        normalized_path = os.path.normpath(path)
-
-        # Soft Verification: In production, we log if the file does not exist,
-        # but do not necessarily crash at build-time to allow developers to configure their environments.
-        # We will do a check to verify if the file exists when the app starts.
-        return normalized_path
 
 # ==============================================================================
 # Instantiation - Load config immediately on import to validate settings
@@ -334,6 +300,6 @@ try:
     settings = Settings()
 except Exception as e:
     sys.stderr.write(f"[CRITICAL CONFIG ERROR] Settings initialization failed: {e}\n")
-    sys.stderr.write("Ensure that all mandatory environment variables (e.g., NUCLEI_BINARY_PATH) are defined either in system environment variables or in your local '.env' file.\n")
+    sys.stderr.write("Ensure that environment variables are defined either in system environment variables or in your local '.env' file.\n")
     # In a real startup, we want to fail fast if config is invalid
     raise e

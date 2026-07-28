@@ -2,11 +2,11 @@
 # D7 — API-layer integration tests (FastAPI TestClient).
 #
 # Establishes the safety net the tech-debt register called out as missing for
-# api/v1/scan.py and api/v1/hunter.py. These tests exercise the real route
+# api/v1/hunter.py. These tests exercise the real route
 # handlers and Pydantic contracts against an ISOLATED, per-test SQLite database
 # (dependency-overridden), with all external side effects neutralized:
 #   - Gemini AI calls are monkeypatched (no network).
-#   - Nuclei subprocess + background fuzzing jobs are monkeypatched to no-ops.
+#   - Background fuzzing jobs are monkeypatched to no-ops.
 #
 # We deliberately construct TestClient WITHOUT a `with` block so the app's real
 # lifespan (which would create_all on the production engine) never runs; schema
@@ -105,7 +105,6 @@ def client(tmp_path, monkeypatch):
         return None
 
     # Neutralize all real side effects triggered by background tasks.
-    monkeypatch.setattr("backend.app.api.v1.scan.execute_nuclei_scan_async", _noop)
     monkeypatch.setattr("backend.app.api.v1.hunter.execute_differential_fuzzing", _noop)
 
     test_client = TestClient(app)
@@ -222,30 +221,4 @@ def test_batch_verify_unknown_finding_returns_404(client):
         "/api/v1/hunter/verify/batch",
         json={"finding_ids": [999999]},
     )
-    assert resp.status_code == 404
-
-
-# -----------------------------------------------------------------------------
-# Scan · start / status (Nuclei subprocess mocked)
-# -----------------------------------------------------------------------------
-
-def test_scan_start_then_status(client):
-    start = client.post(
-        "/api/v1/scan/start",
-        json={"target_url": "https://good.com"},
-    )
-    assert start.status_code == 202
-    scan_id = start.json()["scan_id"]
-    assert scan_id
-
-    status_resp = client.get(f"/api/v1/scan/{scan_id}")
-    assert status_resp.status_code == 200
-    state = status_resp.json()
-    assert state["scan_id"] == scan_id
-    assert state["status"] == "running"
-    assert state["target_url"].startswith("https://good.com")
-
-
-def test_scan_status_unknown_returns_404(client):
-    resp = client.get("/api/v1/scan/does-not-exist")
     assert resp.status_code == 404

@@ -26,57 +26,6 @@ def utcnow() -> datetime.datetime:
     """
     return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
-class ScanTask(Base):
-    """
-    ScanTask stores structural properties of targeted scanning tasks.
-    Coordinates overall progress status and serves as root key for vulnerability findings.
-    """
-    __tablename__ = "scan_tasks"
-
-    id = Column(
-        String(36),
-        primary_key=True,
-        default=generate_uuid
-    )
-    
-    target_url = Column(
-        String(1024),
-        nullable=False
-    )
-    
-    status = Column(
-        String(32),
-        nullable=False,
-        default="pending"
-    )
-    
-    cookie = Column(
-        Text,
-        nullable=True
-    )
-    
-    created_at = Column(
-        DateTime,
-        nullable=False,
-        default=utcnow
-    )
-    
-    updated_at = Column(
-        DateTime,
-        nullable=False,
-        default=utcnow,
-        onupdate=utcnow
-    )
-
-    # Establishes cascading relationship to automatically drop findings if parent task is purged.
-    findings = relationship(
-        "VulnerabilityFinding",
-        back_populates="task",
-        cascade="all, delete-orphan",
-        passive_deletes=True
-    )
-
-
 class VulnerabilityFinding(Base):
     """
     VulnerabilityFinding captures parsed diagnostic vulnerability logs
@@ -90,22 +39,21 @@ class VulnerabilityFinding(Base):
         autoincrement=True
     )
     
-    # Step D: nullable so AI-Hunter findings (which have no parent Nuclei scan)
-    # can live in the same table. Nuclei findings still set scan_id; Hunter
-    # findings leave it NULL (and are therefore naturally excluded from the
-    # scan-scoped GET /scan/{id}/findings query).
+    # Vestigial after the nuclei scan subsystem was removed: a plain nullable
+    # column (no longer a ForeignKey to the dropped scan_tasks table). Hunter
+    # findings leave it NULL; kept so existing DBs are undisturbed (create_all
+    # never ALTERs, and there is no Alembic).
     scan_id = Column(
         String(36),
-        ForeignKey("scan_tasks.id", ondelete="CASCADE"),
         nullable=True
     )
 
-    # Step D: discriminator distinguishing the two producers of this row.
-    # "nuclei" = template scanner finding; "hunter" = AI Logic Hunter analysis.
+    # Producer discriminator. The only producer now is the AI Logic Hunter
+    # (nuclei removed); Hunter always sets source="hunter" explicitly.
     source = Column(
         String(16),
         nullable=False,
-        default="nuclei"
+        default="hunter"
     )
 
     template_id = Column(
@@ -163,12 +111,6 @@ class VulnerabilityFinding(Base):
         DateTime,
         nullable=False,
         default=utcnow
-    )
-
-    # Inverse relationship mapper pointing to the primary scan task controller
-    task = relationship(
-        "ScanTask",
-        back_populates="findings"
     )
 
     # Forward relationship to FuzzingRecord for automated verification results

@@ -11,13 +11,12 @@ from fastapi.middleware.cors import CORSMiddleware
 # Core Config, Database, Routing, and Model imports
 from backend.app.core.config import settings
 from backend.app.core.database import engine, Base
-from backend.app.api.v1.scan import router as scan_router_v1
 from backend.app.api.v1.hunter import router as hunter_router_v1
 from backend.app.services.proxy_pipeline import get_writer_service, get_ingest_pipeline
 from backend.app.services.proxy_manager import get_proxy_manager
 
 # Import models to register ORM structures within Base metadata prior to engine.run_sync
-from backend.app.models.scan import ScanTask, VulnerabilityFinding, FuzzingRecord
+from backend.app.models.scan import VulnerabilityFinding, FuzzingRecord
 
 # 1. Initialize structured logging diagnostics
 logging.basicConfig(
@@ -139,14 +138,13 @@ logger.info(f"[BOOTSTRAP] CORS Middleware successfully registered. Allowed Origi
 #
 # SECURITY NOTE (D2 — authentication DEFERRED, tracked in docs/TECH_DEBT.md):
 # None of these routes are authenticated yet. Anyone who can reach the bound
-# host:port can launch scans and active fuzzing against arbitrary targets.
+# host:port can launch active fuzzing against arbitrary targets.
 # This is acceptable ONLY for local / trusted-network use (the current usage:
 # share the dashboard URL with a teammate while the server runs, then stop it).
 # Add an API key / local token here before any shared or hosted deployment.
-app.include_router(scan_router_v1, prefix="/api/v1")
 app.include_router(hunter_router_v1, prefix="/api/v1")
 
-logger.info("[BOOTSTRAP] API v1 routes (scan + hunter) successfully mapped and active.")
+logger.info("[BOOTSTRAP] API v1 routes (hunter) successfully mapped and active.")
 
 
 @app.get("/", tags=["Diagnostic Systems"])
@@ -159,7 +157,6 @@ async def root_health_check():
         "service": _APP_TITLE,
         "version": _APP_VERSION,
         "diagnostics": {
-            "nuclei_configured_path": settings.NUCLEI_BINARY_PATH,
             "database_url_configured": settings.DATABASE_URL,
             "logging_level": settings.LOG_LEVEL
         }
