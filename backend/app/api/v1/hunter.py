@@ -351,7 +351,7 @@ async def persist_hunter_finding(
         )
 
     payloads = [p.model_dump() for p in request.automation_payloads]
-    # Synthesize the NOT NULL columns that only Nuclei findings populate natively.
+    # Synthesize the NOT NULL columns for a Hunter finding (severity / template_id).
     # D6: `severity` must hold a real severity level (CRITICAL/HIGH/.../INFO), NOT
     # a vulnerability *type*. Hunter has no real severity, so we record "INFO" and
     # keep the detected type both in the payloads JSON (`type`) and, for UI
