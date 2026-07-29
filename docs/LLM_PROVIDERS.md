@@ -63,7 +63,8 @@ LLM_MODEL=claude-3-5-sonnet-latest
 ```
 
 ## Notes
-- **Optional SDKs.** `openai` / `anthropic` are **not** in `requirements.txt`; the
+- **Optional SDKs.** `openai` / `anthropic` are **not** in `requirements.txt`. Install the
+  ones you need with `pip install -r backend/requirements-llm.txt` (or individually); the
   provider raises a clear `pip install X` error (`LLMConfigError`) if the SDK is missing.
 - **JSON mode.** Gemini and OpenAI enforce JSON at the API layer
   (`response_mime_type` / `response_format`); Claude has no strict flag, so JSON relies on

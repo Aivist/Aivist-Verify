@@ -7,6 +7,9 @@
 ## 1. Prerequisites
 - **Python 3.11** (the project is run on CPython 3.11).
 - A **Gemini API key** (optional; without it, AI features degrade gracefully).
+- **(Optional) other LLM backends** — to use OpenAI-compatible (incl. DeepSeek/Kimi/GLM/
+  Qwen/Grok/Ollama) or Anthropic instead of Gemini: `pip install -r backend/requirements-llm.txt`
+  and set the `LLM_*` env vars (see [`LLM_PROVIDERS.md`](./LLM_PROVIDERS.md)).
 - **mitmproxy** (Step 9 proxy radar): pinned as `mitmproxy==11.0.2` in
   `requirements.txt`, so `pip install -r backend/requirements.txt` installs the
   `mitmdump` CLI. By default `ProxyManager` discovers it on PATH; set

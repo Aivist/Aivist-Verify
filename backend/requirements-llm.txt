@@ -1,0 +1,17 @@
+# ------------------------------------------------------------------------------
+# OPTIONAL LLM provider SDKs — only needed for NON-Gemini backends.
+#
+# The default (LLM_PROVIDER=gemini) needs only `google-genai`, which is already in
+# requirements.txt. Install these ONLY if you switch providers:
+#     pip install -r backend/requirements-llm.txt
+#
+# Each provider lazy-imports its SDK and raises a clear LLMConfigError if it is
+# absent, so the default install stays lean. See docs/LLM_PROVIDERS.md.
+# ------------------------------------------------------------------------------
+
+# LLM_PROVIDER=openai — OpenAI-compatible ecosystem via LLM_BASE_URL:
+# OpenAI, relays/中转站, DeepSeek, Kimi/Moonshot, GLM/Zhipu, Qwen, Grok/xAI, Ollama/vLLM.
+openai>=1.30
+
+# LLM_PROVIDER=anthropic — Claude Messages API.
+anthropic>=0.39
