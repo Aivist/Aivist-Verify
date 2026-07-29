@@ -222,3 +222,25 @@ def test_batch_verify_unknown_finding_returns_404(client):
         json={"finding_ids": [999999]},
     )
     assert resp.status_code == 404
+
+
+# -----------------------------------------------------------------------------
+# Hunter · analyze routes through the LLM provider seam (not the raw genai client)
+# -----------------------------------------------------------------------------
+
+def test_invoke_gemini_logic_hunt_routes_through_provider(monkeypatch):
+    """_invoke_gemini_logic_hunt now calls get_provider().generate(...); prove it parses
+    the provider's JSON into the report/payloads contract (single-turn, JSON, no retry)."""
+    from backend.app.api.v1 import hunter
+    from backend.tests._llmstub import as_provider
+
+    class _R:
+        def __init__(self, t): self.text = t
+
+    async def _gen():
+        return _R('{"report_markdown": "## OK", "automation_payloads": [{"type": "BOLA"}]}')
+
+    monkeypatch.setattr(hunter, "get_provider", as_provider(_gen))
+    out = asyncio.run(hunter._invoke_gemini_logic_hunt({"method": "GET", "path": "/x"}, None))
+    assert out["report_markdown"] == "## OK"
+    assert out["automation_payloads"] == [{"type": "BOLA"}]

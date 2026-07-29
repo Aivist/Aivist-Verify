@@ -46,6 +46,7 @@ from backend.app.schemas.proxy import (
 from backend.app.services.proxy_manager import get_proxy_manager
 from backend.app.services.proxy_pipeline import get_ingest_pipeline, get_sse_hub
 from backend.app.core.config import settings
+from backend.app.services.llm import get_provider, LLMConfigError
 from backend.app.core.database import get_db
 from backend.app.models.scan import VulnerabilityFinding, FuzzingRecord, CapturedFlow
 
@@ -117,13 +118,18 @@ async def _invoke_gemini_logic_hunt(
     Returns a dict with keys: report_markdown (str), automation_payloads (list).
     On failure, returns a graceful fallback dict.
     """
-    if not settings.GEMINI_API_KEY:
-        logger.warning("[HUNTER · GEMINI] No GEMINI_API_KEY configured. Returning local fallback.")
+    try:
+        provider = get_provider()
+    except LLMConfigError as e:
+        logger.warning(f"[HUNTER · LLM] Provider misconfigured ({e}); returning local fallback.")
+        provider = None
+    if provider is None or not provider.is_configured():
+        logger.warning("[HUNTER · LLM] No usable LLM provider configured. Returning local fallback.")
         return {
             "report_markdown": (
                 "## ⚠️ 本地降级提示\n\n"
-                "系统未配置 `GEMINI_API_KEY` 环境变量，无法调用 Gemini AI 决策层进行深度逻辑分析。\n\n"
-                "请在 `backend/.env` 中配置有效的 API Key 后重试。"
+                "系统未配置可用的大模型(LLM)后端(缺少 API Key 或提供商配置有误)，无法调用 AI 决策层进行深度逻辑分析。\n\n"
+                "请在 `backend/.env` 中配置有效的 `LLM_*` / `GEMINI_API_KEY` 后重试。"
             ),
             "automation_payloads": [],
         }
@@ -142,48 +148,37 @@ async def _invoke_gemini_logic_hunt(
 """
 
     try:
-        from google import genai
-        from google.genai import types
-
-        # Let the SDK resolve to its default 'v1beta' endpoint automatically
-        client = genai.Client(api_key=settings.GEMINI_API_KEY)
-
         # Sanitize model name — strip any legacy 'models/' prefix
-        model_name = settings.GEMINI_PRO_MODEL
+        model_name = provider.default_model
         if model_name.startswith("models/"):
             model_name = model_name[len("models/"):]
 
-        # Bounded by a hard timeout budget so a slow/hung upstream cannot block
-        # the analyze endpoint indefinitely; surface a fast degraded response (D3).
-        response = await asyncio.wait_for(
-            client.aio.models.generate_content(
-                model=model_name,
-                contents=user_content,
-                config=types.GenerateContentConfig(
-                    system_instruction=_SYSTEM_PROMPT,
-                    response_mime_type="application/json",
-                    temperature=0.4,
-                ),
-            ),
-            timeout=settings.GEMINI_REQUEST_TIMEOUT_SECONDS,
-        )
+        # Single-turn, JSON mode, NO retry (max_attempts=1) — functionally identical to
+        # hunter's prior single generate_content call. Bounded by a hard timeout budget so
+        # a slow/hung upstream cannot block the analyze endpoint indefinitely (D3).
+        raw_text = (await provider.generate(
+            messages=[{"role": "user", "text": user_content}],
+            system=_SYSTEM_PROMPT, json_mode=True, temperature=0.4,
+            model=model_name, timeout=settings.GEMINI_REQUEST_TIMEOUT_SECONDS,
+            max_attempts=1,
+        )).strip()
 
         # Parse the structured JSON response
-        raw_text = response.text.strip()
         ai_result = json.loads(raw_text)
 
-        logger.info(f"[HUNTER · GEMINI] Successfully received structured analysis from Gemini AI ({model_name}).")
+        logger.info(f"[HUNTER · LLM] Successfully received structured analysis ({model_name}).")
         return {
             "report_markdown": ai_result.get("report_markdown", ""),
             "automation_payloads": ai_result.get("automation_payloads", []),
         }
 
-    except ImportError:
-        logger.error("[HUNTER · GEMINI] google-genai SDK not installed.")
+    except LLMConfigError as e:
+        logger.error(f"[HUNTER · LLM] Provider SDK/config error: {e}")
         return {
             "report_markdown": (
-                "## ⚠️ SDK 缺失\n\n"
-                "Python 环境缺少 `google-genai` 官方 SDK。请执行 `pip install google-genai` 后重试。"
+                "## ⚠️ 依赖缺失 / 提供商配置错误\n\n"
+                f"无法初始化 LLM 提供商:{e}。请检查 `LLM_PROVIDER` 及对应 SDK"
+                "(如 `pip install google-genai` / `openai` / `anthropic`)。"
             ),
             "automation_payloads": [],
         }
