@@ -213,9 +213,10 @@ forced it to be narrowed** — a real false positive found and closed, not a hyp
 > was allowed to fail" (the X-SAFE safety assertion is the allowed-to-fail line).
 
 **Later / optional:** cost & latency budget; model-degradation handling.
-**Provider abstraction (multi-provider / BYO-model) is decoupled from any "re-validate zero-FP on model X"
-work** — the zero-FP claim stays stated as measured on gemini-2.5-pro; BYO-model users get provider
-freedom, not a zero-FP guarantee (recorded in [`TECH_DEBT.md`](./TECH_DEBT.md) model-diversity).
+**Provider abstraction (multi-provider / BYO-model) — ✅ IMPLEMENTED** (`services/llm/`: Gemini default +
+OpenAI-compatible + Anthropic; see [`LLM_PROVIDERS.md`](./LLM_PROVIDERS.md)). Decoupled from
+"re-validate zero-FP on model X": the zero-FP claim stays measured on gemini-2.5-pro; BYO-model users get
+provider freedom (connectivity), not a zero-FP guarantee. A second *measured* model is still open.
 
 ## 5. Authorization reality (binding — shapes what the tool is for)
 

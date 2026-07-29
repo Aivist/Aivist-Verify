@@ -822,12 +822,13 @@
    reproducible via `scripts/measure/`. Building the second lab also surfaced and closed a SEV-1
    (D24). **Still open on this axis:** a **second model** (only gemini-2.5-pro) and **arbitrary real
    APIs** (these are two self-built labs). Optional shape breadth (nested-object, multi-step) is extra.
-   > **Framing (recorded, not yet acted on): provider abstraction is DECOUPLED from re-validating the
-   > zero-FP claim on another model.** The zero-FP evidence is, and will remain, stated as **measured on
-   > gemini-2.5-pro** — an honest, sufficient benchmark disclosure for open-source. Adding multi-provider /
-   > BYO-model support gives users **provider freedom, not a zero-FP guarantee we never made**; it does
-   > **not** require re-establishing zero-FP on model X. The provider-abstraction milestone therefore
-   > carries **no "re-validate on every model" dependency** — the two are separate work.
+   > **Provider abstraction — ✅ IMPLEMENTED (`services/llm/`), decoupled from zero-FP re-validation.**
+   > The engine now talks to Gemini / OpenAI-compatible / Anthropic behind one interface (see
+   > [`LLM_PROVIDERS.md`](./LLM_PROVIDERS.md)); the Gemini path is byte-identical (proven by
+   > `test_llm_provider.py`'s request-capture anchor). As designed, it gives **provider freedom, not a
+   > zero-FP guarantee**: the zero-FP evidence stays **measured on gemini-2.5-pro only** and was NOT
+   > re-validated on any other model (connectivity, not correctness). A **second *measured* model**
+   > remains the open model-diversity item — separate work from the (now-done) abstraction.
 3. **D24 ✅ RESOLVED** — the read-semantic shape now has a deterministic gate (owner-view
    differential, `033fc9e`), built on the two-account ownership baseline (`5a33cb2`). All five shapes
    are code-gated. **Three boundaries remain open** (public/shared resources, per-deployment rather

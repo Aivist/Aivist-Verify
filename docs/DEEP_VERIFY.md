@@ -454,9 +454,11 @@ against ground truth** — but note the honest limits:
   X-EQUIV-SAFE → `failed` 5/5 (0 false positives) with `anchoring_result='value_mismatch'`.
 
 **Provider seam (JSON mode):** strict JSON output is enforced at the **provider call site**, not
-by prompt text alone — `_build_provider_config` centralizes the Gemini-specific
-`response_mime_type="application/json"` so it stays swappable when other LLM providers are added
-(business logic never hardcodes provider params).
+by prompt text alone. The model call goes through the `LLMProvider` interface (`services/llm/`):
+the Gemini provider sets `response_mime_type="application/json"`; the OpenAI-compatible / Anthropic
+providers set their own JSON flag. Business logic never hardcodes provider params. See
+[`LLM_PROVIDERS.md`](./LLM_PROVIDERS.md); the Gemini path is byte-identical to before the seam
+(proven by `test_llm_provider.py`).
 
 ---
 

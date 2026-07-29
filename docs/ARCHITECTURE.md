@@ -51,7 +51,7 @@ A second, **passive** front-end feeds the Hunter:
 | Database | SQLite via `aiosqlite` (WAL mode) |
 | HTTP client | `httpx.AsyncClient` (TLS verification disabled by design) |
 | Intercepting proxy | mitmproxy's `mitmdump` (subprocess, supervised by `ProxyManager`) |
-| AI | Google Gemini via the official `google-genai` SDK |
+| AI | Pluggable LLM provider (`services/llm/`): **Gemini** default (`google-genai`) · OpenAI-compatible · Anthropic. See [`LLM_PROVIDERS.md`](./LLM_PROVIDERS.md). |
 | Frontend (canonical) | `preview_dashboard.html` — single-file React (CDN + Babel), Tailwind, light theme |
 | Frontend (legacy) | `frontend/` Vite + TypeScript app — **dark theme, mock data, NOT the product baseline** |
 

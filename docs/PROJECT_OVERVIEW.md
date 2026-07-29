@@ -115,7 +115,7 @@
 | ORM | SQLAlchemy 2.0 **异步** |
 | 数据库 | SQLite（`aiosqlite`,WAL 模式） |
 | HTTP 客户端 | `httpx.AsyncClient`(对自签名靶机刻意关闭 TLS 校验) || 被动代理 | mitmproxy 的 `mitmdump`(子进程,由 `ProxyManager` 托管 + 监督;跨平台进程树清杀) |
-| AI | Google Gemini,官方 `google-genai` SDK(Gemini 2.5) |
+| AI | 可插拔 LLM 提供商(`services/llm/`):默认 **Gemini**(`google-genai`)· OpenAI 兼容 · Anthropic。详见 [`LLM_PROVIDERS.md`](./LLM_PROVIDERS.md) |
 | 前端(主用) | `preview_dashboard.html` — 单文件 React(CDN+Babel)+ Tailwind,白色清新风,已联通后端 |
 | 前端(遗留) | `frontend/` — Vite + TS,深色 + mock 数据,**非产品基线** |
 | 运行环境 | Python 3.11 |
