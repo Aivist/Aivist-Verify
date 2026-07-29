@@ -63,6 +63,31 @@ class Settings(BaseSettings):
         description="Google Gemini model identifier used for all AI calls (logic-hunt analysis + remediation patches)."
     )
 
+    # --------------------------------------------------------------------------
+    # LLM provider abstraction (services/llm/). Lets a deployment bring its own
+    # model/gateway WITHOUT changing verdict logic. Default 'gemini' + all LLM_*
+    # unset => resolves to GEMINI_API_KEY / GEMINI_PRO_MODEL, i.e. behavior is
+    # byte-identical to before this seam existed. The zero-FP evidence is, and stays,
+    # measured on gemini-2.5-pro only; non-Gemini backends get CONNECTIVITY, not a
+    # correctness guarantee.
+    # --------------------------------------------------------------------------
+    LLM_PROVIDER: str = Field(
+        default="gemini",
+        description="Which LLM backend to use: 'gemini' (default) | 'openai' (OpenAI-compatible, incl. relays/DeepSeek/Kimi/GLM/Qwen/Grok/Ollama via LLM_BASE_URL) | 'anthropic'."
+    )
+    LLM_API_KEY: Optional[str] = Field(
+        default=None,
+        description="API key for the selected provider. For 'gemini', falls back to GEMINI_API_KEY when unset (byte-compat)."
+    )
+    LLM_BASE_URL: Optional[str] = Field(
+        default=None,
+        description="OpenAI-compatible base_url (relay/gateway/local, e.g. https://host/v1 or http://localhost:11434/v1). Used by the 'openai' provider; ignored by 'gemini'."
+    )
+    LLM_MODEL: Optional[str] = Field(
+        default=None,
+        description="Model identifier for the selected provider. For 'gemini', falls back to GEMINI_PRO_MODEL when unset (byte-compat)."
+    )
+
     # Feature flag for the NEW, isolated AI-in-the-loop deep verification component
     # (services/deep_verifier.py). Default False so existing behavior is unchanged:
     # nothing calls the deep verifier unless this is explicitly enabled. This gate
