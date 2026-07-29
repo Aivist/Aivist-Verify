@@ -43,6 +43,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from backend.app.core.config import settings
+from backend.app.services.llm import get_provider, LLMConfigError
 # Reuse ONLY stable request primitives from the existing engine (no verdict-path
 # functions are imported, called, or modified).
 from backend.app.services.fuzzer import (
@@ -86,8 +87,6 @@ logger = logging.getLogger("app.services.deep_verifier")
 
 # Max characters of a response body embedded in the prompt / evidence trail.
 _EVIDENCE_BODY_MAX = 2000
-# Transient-503 retry budget for the Gemini call (still degrades after this).
-_GEMINI_503_RETRIES = 3
 
 
 SYSTEM_PROMPT = (
@@ -746,43 +745,11 @@ def _build_turn1_prompt(context_note: str, evidence_block: str,
 
 
 # ==============================================================================
-# Provider seam — ALL provider-specific generation config (incl. structured/JSON
-# output mode) lives here, NOT in the business logic, so a different LLM provider is
-# a swap of this one function. Gemini enforces strict JSON via
-# response_mime_type="application/json"; another provider's adapter would set its own
-# JSON-mode flag here. Enforcing JSON at the API layer (not by prompt alone) is what
-# guarantees the {verdict, evidence_path, reasoning} contract parses.
+# Provider seam — the model call (JSON-mode config, Content assembly, 503-retry,
+# timeout, `.text`) now lives behind the LLMProvider interface (services/llm/).
+# execute_deep_verification routes the Gemini path through it byte-identically via
+# get_provider(); NOTHING here builds a provider-specific request anymore.
 # ==============================================================================
-def _build_provider_config(types, system_instruction: str, temperature: float = 0.4):
-    return types.GenerateContentConfig(
-        system_instruction=system_instruction,
-        response_mime_type="application/json",   # provider-specific JSON mode (swappable)
-        temperature=temperature,
-    )
-
-
-async def _gemini_generate(client, types, model_name: str, contents, cfg):
-    """One generate_content call with transient-503 retry; raises on final failure."""
-    from google.genai import errors as genai_errors
-
-    last_exc: Any = None
-    for attempt in range(_GEMINI_503_RETRIES):
-        try:
-            return await asyncio.wait_for(
-                client.aio.models.generate_content(
-                    model=model_name, contents=contents, config=cfg
-                ),
-                timeout=settings.GEMINI_REQUEST_TIMEOUT_SECONDS,
-            )
-        except genai_errors.ServerError as e:
-            last_exc = e
-            if getattr(e, "status_code", None) == 503 or "503" in str(e):
-                await asyncio.sleep(3 * (attempt + 1))
-                continue
-            raise
-    raise last_exc
-
-
 def _parse_model_json(text: str) -> Dict[str, Any]:
     """Parse the model's JSON; raise ValueError on anything unusable."""
     obj = json.loads(text)
@@ -1405,7 +1372,8 @@ async def execute_deep_verification(
         available_endpoints: optional discoverable API surface (e.g.
             ["GET /api/users/{id}/avatar", ...]) so the model can request the
             CORRECT read-back endpoint for its one follow-up instead of guessing.
-        model_name: override the Gemini model; defaults to settings.GEMINI_PRO_MODEL.
+        model_name: override the model; defaults to the selected provider's default
+            model (for gemini: LLM_MODEL or GEMINI_PRO_MODEL).
         owner_credential: OPTIONAL owner/victim credential (two-account baseline).
             **RESERVED AND INTENTIONALLY INERT IN THIS MILESTONE.** It is accepted so the
             second identity genuinely reaches the real Phase-7 pipeline rather than only a
@@ -1446,8 +1414,15 @@ async def execute_deep_verification(
         logger.info("[DEEP-VERIFY] Skipped: AI_DEEP_VERIFY_ENABLED is False.")
         return _disabled_or_degraded("disabled", "AI_DEEP_VERIFY_ENABLED is False")
 
-    # Resolve / sanitize model name (mirror hunter.py)
-    resolved_model = model_name or settings.GEMINI_PRO_MODEL
+    # Select the LLM backend (default 'gemini' => byte-identical to before this seam).
+    try:
+        provider = get_provider()
+    except LLMConfigError as e:
+        return _disabled_or_degraded("degraded", f"LLM provider misconfigured: {e}")
+
+    # Resolve / sanitize model name. The default comes from the provider (gemini's is
+    # LLM_MODEL or GEMINI_PRO_MODEL, i.e. identical to today when LLM_MODEL is unset).
+    resolved_model = model_name or provider.default_model
     if resolved_model.startswith("models/"):
         resolved_model = resolved_model[len("models/"):]
 
@@ -1677,31 +1652,25 @@ async def execute_deep_verification(
                 + "\n"
             )
 
-        # ---------------- Need an API key to run the AI step ----------------
-        if not settings.GEMINI_API_KEY:
+        # ---------------- Need a configured provider to run the AI step ----------------
+        if not provider.is_configured():
             return _disabled_or_degraded(
-                "degraded", "GEMINI_API_KEY not configured", baseline_trail, attack_trail
+                "degraded",
+                f"LLM provider '{settings.LLM_PROVIDER}' not configured (no API key)",
+                baseline_trail, attack_trail,
             )
 
         # ---------------- AI turn 1 ----------------
         turns_raw: List[str] = []
-        try:
-            from google import genai
-            from google.genai import types
-        except ImportError:
-            return _disabled_or_degraded(
-                "degraded", "google-genai SDK not installed", baseline_trail, attack_trail
-            )
-
-        client_ai = genai.Client(api_key=settings.GEMINI_API_KEY)
-        cfg = _build_provider_config(types, SYSTEM_PROMPT)
-
         turn1_prompt = _build_turn1_prompt(context_note, evidence_block, available_endpoints)
-        contents = [types.Content(role="user", parts=[types.Part(text=turn1_prompt)])]
+        messages: List[Dict[str, str]] = [{"role": "user", "text": turn1_prompt}]
 
         try:
-            resp1 = await _gemini_generate(client_ai, types, resolved_model, contents, cfg)
-            turn1_text = resp1.text
+            turn1_text = await provider.generate(
+                messages=messages, system=SYSTEM_PROMPT, json_mode=True,
+                temperature=0.4, model=resolved_model,
+                timeout=settings.GEMINI_REQUEST_TIMEOUT_SECONDS, max_attempts=3,
+            )
             turns_raw.append(turn1_text)
             turn1_obj = _parse_model_json(turn1_text)
         except (asyncio.TimeoutError, ValueError, json.JSONDecodeError) as e:
@@ -1962,12 +1931,15 @@ async def execute_deep_verification(
                     "as the follow-up (this was NOT your choice). Treat the verbatim result "
                     "below as that record of write activity.\n\n"
                 ) + turn2_msg
-        contents.append(types.Content(role="model", parts=[types.Part(text=turn1_text)]))
-        contents.append(types.Content(role="user", parts=[types.Part(text=turn2_msg)]))
+        messages.append({"role": "assistant", "text": turn1_text})
+        messages.append({"role": "user", "text": turn2_msg})
 
         try:
-            resp2 = await _gemini_generate(client_ai, types, resolved_model, contents, cfg)
-            turn2_text = resp2.text
+            turn2_text = await provider.generate(
+                messages=messages, system=SYSTEM_PROMPT, json_mode=True,
+                temperature=0.4, model=resolved_model,
+                timeout=settings.GEMINI_REQUEST_TIMEOUT_SECONDS, max_attempts=3,
+            )
             turns_raw.append(turn2_text)
             turn2_obj = _parse_model_json(turn2_text)
         except (asyncio.TimeoutError, ValueError, json.JSONDecodeError) as e:

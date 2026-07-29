@@ -253,6 +253,7 @@ def test_ZERO_REGRESSION_unset_is_unchanged_and_set_adds_exactly_the_owner_read(
     carry the owner's credential."""
     pytest.importorskip("google.genai")
     import backend.app.services.deep_verifier as dv
+    from backend.tests._llmstub import as_provider
     from backend.app.core.config import settings
 
     monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", True, raising=False)
@@ -266,7 +267,7 @@ def test_ZERO_REGRESSION_unset_is_unchanged_and_set_adds_exactly_the_owner_read(
     def _run(owner_cred):
         sink = []
         monkeypatch.setattr(dv, "_send_request", _recording_send(sink))
-        monkeypatch.setattr(dv, "_gemini_generate", _fake_gemini_verdict())
+        monkeypatch.setattr(dv, "get_provider", as_provider(_fake_gemini_verdict()))
         res = asyncio.run(dv.execute_deep_verification(
             parsed_request=parsed, payload=payload, base_url="http://127.0.0.1:8001",
             approved_host="127.0.0.1:8001", auth_context={"Authorization": ATTACKER},

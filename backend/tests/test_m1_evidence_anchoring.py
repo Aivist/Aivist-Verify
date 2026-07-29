@@ -20,7 +20,6 @@ import pytest
 from backend.app.services.deep_verifier import (
     _resolve_json_path,
     _anchor_evidence,
-    _build_provider_config,
     _caller_object_id,
     _anchor_caller_identity,
     _anchor_payload_causality,
@@ -128,25 +127,9 @@ def test_anchor_never_raises_on_weird_input():
         }
 
 
-# -----------------------------------------------------------------------------
-# provider seam — JSON mode is enforced at the API layer, not by prompt alone
-# -----------------------------------------------------------------------------
-
-class _FakeConfig:
-    def __init__(self, **kw):
-        self.__dict__.update(kw)
-
-
-class _FakeTypes:
-    GenerateContentConfig = _FakeConfig
-
-
-def test_provider_config_enforces_json_mode():
-    cfg = _build_provider_config(_FakeTypes, "SYS")
-    assert cfg.response_mime_type == "application/json"
-    assert cfg.system_instruction == "SYS"
-    assert cfg.temperature == 0.4
-
+# The provider-seam JSON-mode enforcement (response_mime_type="application/json")
+# moved to services/llm/gemini.py; it is asserted by test_llm_provider.py's
+# byte-identity anchor. (Was: test_provider_config_enforces_json_mode.)
 
 # =============================================================================
 # M1.2 — caller-identity + payload-causality anchoring (observe-only). BAC requires

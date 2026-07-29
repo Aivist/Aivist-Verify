@@ -32,6 +32,7 @@ import pytest
 pytest.importorskip("google.genai")
 
 import backend.app.services.deep_verifier as dv
+from backend.tests._llmstub import as_provider
 from backend.app.core.config import settings
 from backend.app.services.deep_verifier import (
     OwnerCredential,
@@ -76,7 +77,7 @@ def _load(module_name: str, env_var: str):
 
 def _run_case(app, path, attacker, owner_raw, monkeypatch):
     """Drive the real verifier over the real app; only the model call is stubbed."""
-    monkeypatch.setattr(dv, "_gemini_generate", _always_verified())
+    monkeypatch.setattr(dv, "get_provider", as_provider(_always_verified()))
     parsed = {"method": "GET", "path": path, "query_params": {}, "headers": {}, "body": None}
 
     async def _go():

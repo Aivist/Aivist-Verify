@@ -32,6 +32,7 @@ pytest.importorskip("google.genai")
 from vulnerable_target.main import app
 from backend.app.core.config import settings
 import backend.app.services.deep_verifier as dv
+from backend.tests._llmstub import as_provider
 from backend.app.services.endpoint_catalog import (
     catalog_from_openapi,
     select_write_record_endpoint,
@@ -144,7 +145,7 @@ def _enable(monkeypatch):
 def _run(parsed_request, payload, *, record_body, turn1, turn2, monkeypatch,
          state_path=None, state_body='{"ok":true}'):
     monkeypatch.setattr(dv, "_send_request", _fake_send(record_body, state_path, state_body))
-    monkeypatch.setattr(dv, "_gemini_generate", _fake_gemini(turn1, turn2))
+    monkeypatch.setattr(dv, "get_provider", as_provider(_fake_gemini(turn1, turn2)))
     return asyncio.run(dv.execute_deep_verification(
         parsed_request=parsed_request, payload=payload, base_url=BASE_URL,
         approved_host=APPROVED_HOST, auth_context={"Authorization": ALICE},

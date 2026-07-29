@@ -183,6 +183,7 @@ pytest.importorskip("google.genai")
 from vulnerable_target.main import app                              # noqa: E402
 from backend.app.core.config import settings                       # noqa: E402
 import backend.app.services.deep_verifier as dv                    # noqa: E402
+from backend.tests._llmstub import as_provider
 from backend.app.services.endpoint_catalog import catalog_from_openapi  # noqa: E402
 
 CATALOG = catalog_from_openapi(app.openapi())
@@ -244,8 +245,7 @@ def _run(delete_path, state_path, *, pre_state, post_state, turn2_verdict, monke
                       "headers": {}, "body": None}
     monkeypatch.setattr(dv, "_send_request", _fake_send(state_path, pre_state, post_state))
     # The model asks for nothing (turn 1 verdict); the code force-gathers the state read anyway.
-    monkeypatch.setattr(dv, "_gemini_generate",
-                        _fake_gemini(_verdict_turn("inconclusive"), _verdict_turn(turn2_verdict)))
+    monkeypatch.setattr(dv, "get_provider", as_provider(_fake_gemini(_verdict_turn("inconclusive"), _verdict_turn(turn2_verdict))))
     return asyncio.run(dv.execute_deep_verification(
         parsed_request=parsed_request, payload=_BOLA, base_url=BASE_URL,
         approved_host=APPROVED_HOST, auth_context={"Authorization": ALICE},
@@ -322,8 +322,7 @@ def test_non_delete_shapes_have_no_preflight_anchor(monkeypatch):
         (200, json.dumps({"id": 2, "owner_id": 2, "code": "old-value"})),      # pre-flight
         (200, json.dumps({"id": 2, "owner_id": 2, "code": "zz-unique-1"})),    # post-attack
     ))
-    monkeypatch.setattr(dv, "_gemini_generate",
-                        _fake_gemini(_verdict_turn("inconclusive"), _verdict_turn("verified", "code")))
+    monkeypatch.setattr(dv, "get_provider", as_provider(_fake_gemini(_verdict_turn("inconclusive"), _verdict_turn("verified", "code"))))
     res = asyncio.run(dv.execute_deep_verification(
         parsed_request=parsed, payload=_BOLA, base_url=BASE_URL,
         approved_host=APPROVED_HOST, auth_context={"Authorization": ALICE},

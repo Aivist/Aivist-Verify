@@ -227,6 +227,7 @@ pytest.importorskip("google.genai")
 from vulnerable_target.main import app                                  # noqa: E402
 from backend.app.core.config import settings                           # noqa: E402
 import backend.app.services.deep_verifier as dv                        # noqa: E402
+from backend.tests._llmstub import as_provider
 from backend.app.services.endpoint_catalog import catalog_from_openapi  # noqa: E402
 
 CATALOG = catalog_from_openapi(app.openapi())
@@ -289,8 +290,8 @@ def _run(write_path, state_path, *, pre_state, post_state, turn2_verdict, monkey
               "headers": {"Content-Type": "application/json"},
               "body": dict(body if body is not None else {"plan": PLAN, "role": "admin"})}
     monkeypatch.setattr(dv, "_send_request", _fake_send(state_path, pre_state, post_state))
-    monkeypatch.setattr(dv, "_gemini_generate", _fake_gemini(_verdict("inconclusive"),
-                                                             _verdict(turn2_verdict, "role")))
+    monkeypatch.setattr(dv, "get_provider", as_provider(_fake_gemini(_verdict("inconclusive"),
+                                                             _verdict(turn2_verdict, "role"))))
     return asyncio.run(dv.execute_deep_verification(
         parsed_request=parsed, payload=payload or _MASS_PAYLOAD, base_url=BASE_URL,
         approved_host=APPROVED_HOST, auth_context={"Authorization": ALICE},
