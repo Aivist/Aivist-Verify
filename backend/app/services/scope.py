@@ -389,7 +389,16 @@ class ScopePolicy:
                 return ScopeDecision(False, "link_local_ip", nhost, port, matched.raw)
             return ScopeDecision(True, "ok", nhost, port, matched.raw)
 
-        # DNS name -> resolve and classify.
+        # DNS name. The rebinding guard applies ONLY to PUBLIC registrable names, so only
+        # those are resolved. An intranet / single-label name (an internal host, or an
+        # in-process test host) is an explicitly-declared internal target whose private
+        # resolution is intended and honored — it is NOT resolved here. Resolving it would
+        # be pointless (the guard would never refuse a non-public name) and would wrongly
+        # block a non-resolvable in-process host. IP-literals were already handled above.
+        # The guard's set of refusable cases is unchanged; we simply do not resolve names
+        # it would never act on.
+        if not _is_public_registrable(nhost):
+            return ScopeDecision(True, "ok", nhost, port, matched.raw)
         resolve = resolver or _system_resolver
         try:
             ips = resolve(nhost)
@@ -400,9 +409,9 @@ class ScopePolicy:
             return ScopeDecision(False, "metadata_ip", nhost, port, matched.raw)
         if any(c == "link_local" for c in classes):
             return ScopeDecision(False, "link_local_ip", nhost, port, matched.raw)
-        if _is_public_registrable(nhost) and any(c != "global" for c in classes):
-            # A real, registrable domain resolving to loopback/private is the DNS
-            # rebinding signature — refuse even though the NAME is in scope.
+        if any(c != "global" for c in classes):
+            # A public, registrable domain resolving to loopback/private/reserved is the
+            # DNS rebinding signature — refuse even though the NAME is in scope.
             return ScopeDecision(False, "rebinding_private_ip", nhost, port, matched.raw)
         return ScopeDecision(True, "ok", nhost, port, matched.raw)
 

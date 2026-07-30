@@ -218,15 +218,22 @@ def test_metadata_ip_refused_even_when_declared():
     assert not d.allowed and d.reason == "metadata_ip"
 
 
-def test_intranet_single_label_name_private_ok():
-    # A bare hostname is an intranet target: private resolution is expected, allowed.
+def _boom_resolver(host):
+    """A resolver that fails if called — proves an intranet name is NOT resolved."""
+    raise AssertionError(f"intranet name {host!r} must NOT be resolved")
+
+
+def test_intranet_single_label_name_not_resolved_and_allowed():
+    # A bare hostname is an explicitly-declared intranet target: allowed WITHOUT resolution
+    # (the rebinding guard never acts on non-public names). The resolver raises if called,
+    # proving no resolution is attempted.
     pol = ScopePolicy.from_declaration(["myhost"])
-    assert pol.check("http://myhost/api", resolver=_resolver({"myhost": ["10.0.0.5"]})).allowed
+    assert pol.check("http://myhost/api", resolver=_boom_resolver).allowed
 
 
-def test_intranet_pseudo_tld_private_ok():
+def test_intranet_pseudo_tld_not_resolved_and_allowed():
     pol = ScopePolicy.from_declaration(["printer.local"])
-    assert pol.check("http://printer.local/", resolver=_resolver({"printer.local": ["192.168.1.7"]})).allowed
+    assert pol.check("http://printer.local/", resolver=_boom_resolver).allowed
 
 
 def test_decimal_encoded_loopback_does_not_bypass_domain_scope():
