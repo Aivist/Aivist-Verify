@@ -295,3 +295,39 @@ def test_classify_ip(ip, cls):
 ])
 def test_normalize_host(raw, expected):
     assert _normalize_host(raw) == expected
+
+
+# ------------------------------------------------------------------------------
+# netloc_allowed (host-level, no resolution) — the pre-send convergence helper
+# ------------------------------------------------------------------------------
+def test_netloc_allowed_port_rules():
+    pol = ScopePolicy.from_declaration(["example.com:8443"])
+    assert pol.netloc_allowed("example.com:8443")
+    assert not pol.netloc_allowed("example.com:443")     # explicit port is strict
+    assert not pol.netloc_allowed("evil.com:8443")
+
+
+def test_netloc_allowed_ipv6_and_unlocked():
+    assert ScopePolicy.from_declaration(["[::1]:8000"]).netloc_allowed("[::1]:8000")
+    # unlocked (empty declaration) allows any netloc — byte-identical lab pass-through
+    assert ScopePolicy.from_declaration([]).netloc_allowed("anything.example.org:1234")
+
+
+# ------------------------------------------------------------------------------
+# Unified declaration: the legacy single-approved_host path maps cleanly to scope
+# ------------------------------------------------------------------------------
+def test_legacy_approved_host_maps_to_scope_identically():
+    # The engine/custody build `from_declaration([approved_host])` for the legacy alias and
+    # `from_declaration(scope)` for the unified field — for scope=[host] they must be identical.
+    host = "api.example.com:8001"
+    legacy = ScopePolicy.from_declaration([host])          # legacy approved_host alias
+    unified = ScopePolicy.from_declaration([host])         # scope=[host]
+    for netloc in (host, "api.example.com:9", "evil.com:8001", "example.com:8001", "x.api.example.com:8001"):
+        assert legacy.netloc_allowed(netloc) == unified.netloc_allowed(netloc)
+
+
+def test_declared_localhost_lab_is_reachable_at_policy():
+    # A declared localhost lab target is reachable (IP-literal => allowed, no resolution).
+    lab = ScopePolicy.from_declaration(["127.0.0.1:8001"])
+    assert lab.check("http://127.0.0.1:8001/api/users/2", resolver=_boom_resolver).allowed
+    assert lab.netloc_allowed("127.0.0.1:8001")

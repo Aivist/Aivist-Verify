@@ -135,3 +135,19 @@ def test_effective_policy_derives_from_custody():
 def test_effective_policy_unlocked_when_nothing_declared():
     assert _effective_scope_policy(None, None) is None
     assert _effective_scope_policy(None, _StubCustody("")) is None
+
+
+# ------------------------------------------------------------------------------
+# Positive reachability: a legitimately-declared target IS reachable (zero real traffic).
+# This is the "allowed-to-fail" freedom anchor — if the scope wrongly blocked the
+# declared lab target, this fails.
+# ------------------------------------------------------------------------------
+def test_declared_localhost_lab_target_is_reachable():
+    def handler(request):
+        return httpx.Response(200, text='{"id":2,"owner":"victim"}')
+    # Built exactly as the entry builds it from the unified declaration: scope=[host].
+    pol = ScopePolicy.from_declaration(["127.0.0.1:8001"])
+    res = asyncio.run(_send(handler, {"method": "GET", "path": "/api/users/2"},
+                            "http://127.0.0.1:8001", scope=pol))
+    assert res["status_code"] == 200
+    assert res["response_body"] == '{"id":2,"owner":"victim"}'

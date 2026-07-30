@@ -341,6 +341,15 @@ class ScopePolicy:
         nhost = _normalize_host(host)
         return any(e.matches(nhost, port) for e in self._entries)
 
+    def netloc_allowed(self, netloc: str) -> bool:
+        """host_allowed for a bare 'host[:port]' netloc string (as callers hold via
+        _host_of / urlsplit.netloc). Splits host/port and defers to host_allowed —
+        host-level only, NO resolution. Used by the pre-send scope checks (batch
+        authorization, custody re-auth, dry-run) so all host decisions share one matcher;
+        the resolved-IP rebinding guard stays at the _send_request chokepoint."""
+        parts = urlsplit("//" + (netloc or ""))
+        return self.host_allowed(parts.hostname or "", parts.port)
+
     # -- active-side check (full guard: host + port + resolved-IP) ---------
     def check(self, url: str, *, resolver: Optional[Resolver] = None) -> ScopeDecision:
         """The authoritative active-side decision for a concrete request URL.

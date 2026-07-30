@@ -551,10 +551,20 @@ async def trigger_batch_verification(
             detail=f"Vulnerability finding(s) not found: {missing}",
         )
 
-    # --- Single-host scope lock ---
+    # --- Unified scope declaration + single-host batch lock ---
     from backend.app.services.fuzzer import _extract_base_url  # local import: internal helper
+    from backend.app.services.scope import ScopePolicy, ScopeError  # the one audited policy
     hosts = {_host_of(_extract_base_url(findings[fid])) for fid in request.finding_ids}
     hosts.discard("")
+    # The unified scope: an explicit `scope` list, else the legacy approved_host alias,
+    # else empty (UNLOCKED). This is the ONE audited authorization boundary.
+    scope_decl = request.scope or ([request.approved_host] if request.approved_host else [])
+    try:
+        scope_policy = ScopePolicy.from_declaration(scope_decl)
+    except ScopeError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid scope: {e}")
+    # v1 single-host batch label (custody + response): the declared approved_host, else the
+    # single shared finding host; a mixed-host batch with no approved_host is rejected.
     if request.approved_host:
         approved = request.approved_host.lower()
     elif len(hosts) == 1:
@@ -567,14 +577,14 @@ async def trigger_batch_verification(
                 f"Provide a single 'approved_host' or select endpoints from one host."
             ),
         )
-
-    out_of_scope = {h for h in hosts if h != approved}
+    # Scope authorization, converged onto the one ScopePolicy (host-level).
+    out_of_scope = {h for h in hosts if scope_policy.locked and not scope_policy.netloc_allowed(h)}
     if out_of_scope:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                f"Selected endpoints include hosts outside the approved scope '{approved}': "
-                f"{sorted(out_of_scope)}. Refusing to probe third-party domains (Constraint 2)."
+                f"Selected endpoints include hosts outside the declared scope: "
+                f"{sorted(out_of_scope)}. Refusing to probe unauthorized domains (Constraint 2)."
             ),
         )
 
@@ -592,6 +602,8 @@ async def trigger_batch_verification(
         refresh_payload,
         approved,
         request.max_concurrency,
+        scope_decl,
+        request.model,
     )
 
     return BatchVerifyResponse(

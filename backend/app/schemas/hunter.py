@@ -176,9 +176,28 @@ class BatchVerifyRequest(BaseModel):
     All findings must resolve to a single approved host (v1 single-host lock).
     """
     finding_ids: List[int] = Field(..., min_length=1, description="Findings to fuzz concurrently.")
+    scope: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Unified host-scope declaration: an allow-list of host patterns "
+            "(e.g. ['example.com', '*.api.example.com', '10.0.0.5:8443']). Empty => UNLOCKED "
+            "(lab/localhost, byte-identical to today). When set it supersedes approved_host and "
+            "is the single authorized boundary all traffic is fail-closed to."
+        ),
+    )
+    model: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional per-run LLM model override for the shadow deep verifier "
+            "(unset => the configured provider default)."
+        ),
+    )
     approved_host: Optional[str] = Field(
         default=None,
-        description="The single user-approved target host (netloc). Derived from findings if omitted.",
+        description=(
+            "LEGACY single approved host (netloc). Kept as a backward-compatible alias: when "
+            "`scope` is empty this maps to scope=[approved_host]. Derived from findings if omitted."
+        ),
     )
     auth_refresh_request: Optional[AuthRefreshRequestSchema] = Field(
         default=None,

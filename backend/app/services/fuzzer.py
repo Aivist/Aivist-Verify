@@ -164,6 +164,7 @@ class AuthCustodyController:
         auth_kind: str = "cookie",
         approved_host: str = "",
         max_reauth_cycles: int = _MAX_REAUTH_CYCLES,
+        scope_policy: Optional["ScopePolicy"] = None,
     ) -> None:
         self.finding_id = finding_id  # label only (first finding in a batch)
         # Barrier: set == valid/open; cleared == re-authenticating/blocked.
@@ -179,6 +180,12 @@ class AuthCustodyController:
         self.auth_refresh_request: Optional[dict] = auth_refresh_request
         # Step 8: domain scope lock — re-auth/probe may only target this host.
         self.approved_host: str = (approved_host or "").lower()
+        # Scope-lock (node 3): the ONE audited policy for the re-auth probe + outbound
+        # sends. An explicit policy wins; else derive from approved_host (byte-compat).
+        # None => unlocked.
+        self.scope_policy: Optional["ScopePolicy"] = scope_policy or (
+            ScopePolicy.from_declaration([self.approved_host]) if self.approved_host else None
+        )
         # Step 8: anti-thrash re-auth cycle cap
         self.max_reauth_cycles: int = max_reauth_cycles
         self.reauth_count: int = 0
@@ -233,7 +240,9 @@ class AuthCustodyController:
             body = req.get("body")
 
             # Step 8 Constraint 2(a): domain scope lock — never probe a 3rd-party host.
-            if self.approved_host and _host_of(url) != self.approved_host:
+            # Converged onto the ONE audited ScopePolicy (host-level; the resolved-IP guard
+            # lives at the _send_request chokepoint).
+            if self.scope_policy is not None and not self.scope_policy.netloc_allowed(_host_of(url)):
                 self.refresh_failed = True
                 self.last_diagnostic = (
                     f"[RE-AUTH BLOCKED] Refresh host '{_host_of(url)}' is outside approved "
@@ -542,8 +551,12 @@ def _effective_scope_policy(
     approved host on either => None (UNLOCKED / lab mode; byte-identical to today)."""
     if scope is not None:
         return scope
-    if custody is not None and getattr(custody, "approved_host", ""):
-        return ScopePolicy.from_declaration([custody.approved_host])
+    if custody is not None:
+        pol = getattr(custody, "scope_policy", None)
+        if pol is not None:
+            return pol
+        if getattr(custody, "approved_host", ""):
+            return ScopePolicy.from_declaration([custody.approved_host])
     return None
 
 
@@ -1037,6 +1050,8 @@ async def execute_parallel_fuzzing(
     auth_refresh_request: Optional[dict] = None,
     approved_host: Optional[str] = None,
     max_concurrency: int = _PARALLEL_MAX_CONCURRENCY,
+    scope: Optional[List[str]] = None,
+    model: Optional[str] = None,
 ) -> None:
     """
     Step 8 master engine: true-concurrent multi-endpoint fuzzing that shares ONE
@@ -1086,10 +1101,19 @@ async def execute_parallel_fuzzing(
         logger.warning("[FUZZER · PARALLEL] No runnable jobs in batch. Aborting.")
         return
 
-    # --- Phase 2: single-host scope lock (Constraint 2) ---
+    # --- Phase 2: single-host batch lock (Constraint 2) + unified scope policy ---
     hosts = {_host_of(job.base_url) for job in jobs if _host_of(job.base_url)}
-    if approved_host:
+    # Build the ONE audited scope policy from the unified `scope` declaration, or the
+    # legacy `approved_host` alias. None => UNLOCKED (single-finding legacy path),
+    # byte-identical to before. `approved` stays the single-host label (v1 batch
+    # constraint + custody + response), derived when not explicitly declared.
+    if scope:
+        scope_policy = ScopePolicy.from_declaration(scope)
+        approved = (approved_host or (next(iter(hosts)) if hosts else "")).lower()
+        enforce_scope = True
+    elif approved_host:
         approved = approved_host.lower()
+        scope_policy = ScopePolicy.from_declaration([approved])
         enforce_scope = True
     else:
         approved = next(iter(hosts)) if hosts else ""
@@ -1097,6 +1121,8 @@ async def execute_parallel_fuzzing(
         # preserve exact Step 6/7 behavior (zero regression). Implicit multi-
         # finding batches still get locked to their shared derived host.
         enforce_scope = len(jobs) > 1
+        scope_policy = ScopePolicy.from_declaration([approved]) if enforce_scope else None
+    # v1 single-host batch constraint: every finding must share the one approved host.
     out_of_scope = {h for h in hosts if h != approved}
     if out_of_scope:
         logger.error(
@@ -1104,12 +1130,24 @@ async def execute_parallel_fuzzing(
             f"out-of-scope={out_of_scope}. v1 enforces single-host batches."
         )
         return
+    # Scope authorization, converged onto the one ScopePolicy: every finding host must be
+    # within the declared scope. Host-level here; the _send_request chokepoint owns the
+    # resolved-IP rebinding guard.
+    if scope_policy is not None:
+        unauthorized = {h for h in hosts if not scope_policy.netloc_allowed(h)}
+        if unauthorized:
+            logger.error(
+                f"[FUZZER · PARALLEL] Out-of-scope batch rejected: hosts {unauthorized} are "
+                f"outside the declared scope. Refusing to probe unauthorized hosts."
+            )
+            return
 
     # --- Phase 3: build ONE shared custody controller ---
     custody = AuthCustodyController(
         finding_id=jobs[0].finding_id,
         auth_refresh_request=auth_refresh_request or fallback_refresh,
         approved_host=(approved if enforce_scope else ""),
+        scope_policy=(scope_policy if enforce_scope else None),
     )
     for job in jobs:
         _ACTIVE_CUSTODY[job.finding_id] = custody  # many ids → same controller
@@ -1200,7 +1238,7 @@ async def execute_parallel_fuzzing(
     # It is READ-ONLY: it observes "suspicious" records and logs an AI second
     # opinion without touching verification_status / diff_details / the writer path.
     # Any failure is logged and swallowed — it can never affect the batch result.
-    await _run_shadow_deep_verification(jobs, custody)
+    await _run_shadow_deep_verification(jobs, custody, model=model)
 
 
 # ==============================================================================
@@ -1463,7 +1501,8 @@ async def _promote_record_verified(record_id: str, channel: str, result) -> None
 
 
 async def _run_shadow_deep_verification(
-    jobs: List["_FindingJob"], custody: Optional["AuthCustodyController"]
+    jobs: List["_FindingJob"], custody: Optional["AuthCustodyController"],
+    model: Optional[str] = None,
 ) -> None:
     """
     Phase 7 shadow runner (read-only). For each "suspicious" FuzzingRecord produced
@@ -1538,6 +1577,7 @@ async def _run_shadow_deep_verification(
                     auth_context=_shadow_auth_context(custody, job.parsed_request),
                     available_endpoints=_shadow_endpoint_catalog(job.parsed_request, catalog_source),
                     owner_credential=owner_credential,
+                    model_name=model,
                 )
 
                 logger.info(
@@ -1583,7 +1623,8 @@ async def dry_run_auth_refresh(auth_refresh_request: dict, approved_host: str = 
     url = req.get("url", "")
     if not url:
         return {"success": False, "message": "No URL provided in the refresh request."}
-    if approved_host and _host_of(url) != approved_host.lower():
+    scope_policy = ScopePolicy.from_declaration([approved_host]) if approved_host else None
+    if scope_policy is not None and not scope_policy.netloc_allowed(_host_of(url)):
         return {
             "success": False,
             "message": (
