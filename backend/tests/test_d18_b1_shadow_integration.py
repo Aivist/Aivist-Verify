@@ -94,7 +94,7 @@ def _fake_send(record_body: str, readback_body: str = '{"ok":true}'):
     """Stand in for deep_verifier._send_request. Writes -> opaque 200 {"status":"ok"};
     a GET to the structurally-chosen record path -> the audit body; any other GET ->
     a generic same-path read-back body."""
-    async def _send(client, parsed_request, base_url, custody=None):
+    async def _send(client, parsed_request, base_url, custody=None, scope=None):
         method = str(parsed_request.get("method", "GET")).upper()
         path = parsed_request.get("path", "")
         if method in ("POST", "PUT", "PATCH", "DELETE"):

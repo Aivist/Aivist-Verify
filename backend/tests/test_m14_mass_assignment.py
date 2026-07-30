@@ -250,7 +250,7 @@ def _fake_send(state_path, pre_state, post_state):
     pre-flight) and `post_state` afterwards (the code-gathered AFTER read). Each is (status, body)."""
     calls = {"n": 0}
 
-    async def _send(client, parsed_request, base_url, custody=None):
+    async def _send(client, parsed_request, base_url, custody=None, scope=None):
         method = str(parsed_request.get("method", "GET")).upper()
         path = parsed_request.get("path", "")
         if method in ("POST", "PUT", "PATCH", "DELETE"):

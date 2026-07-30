@@ -102,7 +102,7 @@ def _resp(status: int, body: str) -> dict:
 
 
 def _fake_send(record_body: str, state_path: str = None, state_body: str = '{"ok":true}'):
-    async def _send(client, parsed_request, base_url, custody=None):
+    async def _send(client, parsed_request, base_url, custody=None, scope=None):
         method = str(parsed_request.get("method", "GET")).upper()
         path = parsed_request.get("path", "")
         if method in ("POST", "PUT", "PATCH", "DELETE"):

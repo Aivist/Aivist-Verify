@@ -158,7 +158,7 @@ def _fake_send(state_path: str, state_body: str, record_body: str = '{"events":[
     default, so HALF-1 steps back); the object's own cross-path STATE read returns state_body."""
     _calls = {"n": 0}
 
-    async def _send(client, parsed_request, base_url, custody=None):
+    async def _send(client, parsed_request, base_url, custody=None, scope=None):
         method = str(parsed_request.get("method", "GET")).upper()
         path = parsed_request.get("path", "")
         if method in ("POST", "PUT", "PATCH", "DELETE"):

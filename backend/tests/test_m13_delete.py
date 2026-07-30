@@ -203,7 +203,7 @@ def _fake_send(state_path: str, pre_state, post_state):
     (status_code, body) pair. This models the object changing across the attack."""
     calls = {"n": 0}
 
-    async def _send(client, parsed_request, base_url, custody=None):
+    async def _send(client, parsed_request, base_url, custody=None, scope=None):
         method = str(parsed_request.get("method", "GET")).upper()
         path = parsed_request.get("path", "")
         if method == "DELETE":

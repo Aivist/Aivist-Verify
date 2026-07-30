@@ -54,6 +54,10 @@ from backend.app.services.fuzzer import (
     _compute_similarity,
     ScopeViolationError,
 )
+# Scope-lock (node 3): the single audited host-scope decision. Every request this
+# verifier issues is gated by ONE ScopePolicy — the pre-send checks below and the
+# _send_request chokepoint both consult it, replacing the former inline _host_of math.
+from backend.app.services.scope import ScopePolicy
 # B-1: generic, target-agnostic catalog queries used to deterministically gather a
 # write-record read-back (HALF 1) — no concrete target path/field/tag is referenced.
 # M1.2(B) adds the parallel object-STATE resolver used when no RELEVANT write-record exists.
@@ -1260,9 +1264,10 @@ async def fetch_owner_view(
            "headers": owner.as_read_headers(), "body": None}
     try:
         approved = (approved_host or "").lower()
-        if approved and _host_of(_reconstruct_url(req, base_url)) != approved:
+        scope_policy = ScopePolicy.from_declaration([approved]) if approved else None
+        if scope_policy is not None and not scope_policy.check(_reconstruct_url(req, base_url)).allowed:
             return OwnerViewResult(available=False, reason="outside_approved_scope")
-        res = await _send_request(client, req, base_url)          # custody deliberately omitted
+        res = await _send_request(client, req, base_url, scope=scope_policy)   # custody deliberately omitted
         status = res.get("status_code")
         if isinstance(status, int) and 200 <= status < 300:
             return OwnerViewResult(available=True, status=status,
@@ -1390,6 +1395,11 @@ async def execute_deep_verification(
     """
     approved = (approved_host or _host_of(base_url) or "").lower()
     auth_context = auth_context or {}
+    # Scope-lock (node 3): the ONE audited policy for every request this verifier issues,
+    # derived from `approved`. None (unlocked) when no host is approved -> byte-identical to
+    # before. It is threaded into every _send_request call below AND drives the pre-send
+    # checks, so all host decisions flow through a single ScopePolicy (no _host_of scope math).
+    scope_policy = ScopePolicy.from_declaration([approved]) if approved else None
 
     def _disabled_or_degraded(status: str, reason: str,
                               baseline=None, attack=None, turns=None) -> DeepVerificationResult:
@@ -1445,7 +1455,7 @@ async def execute_deep_verification(
     async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
         # ---------------- Step 1: real baseline (+ M1.3 pre-flight) + attack ----------------
         try:
-            baseline_result = await _send_request(client, baseline_req, base_url)
+            baseline_result = await _send_request(client, baseline_req, base_url, scope=scope_policy)
             if payload:
                 attack_req = await mutate_request(baseline_req, payload)
             else:
@@ -1476,7 +1486,7 @@ async def execute_deep_verification(
                 if pre_flight_path and pre_flight_path.startswith("/"):
                     _pf_req = {"method": "GET", "path": pre_flight_path, "query_params": {},
                                "headers": dict(auth_context), "body": None}
-                    if approved and _host_of(_reconstruct_url(_pf_req, base_url)) != approved:
+                    if scope_policy is not None and not scope_policy.check(_reconstruct_url(_pf_req, base_url)).allowed:
                         logger.warning(
                             "[DEEP-VERIFY] M1.3 pre-flight %r is outside approved scope %r -> skipped "
                             "(existence unproven -> the delete cannot reach 'verified').",
@@ -1485,7 +1495,7 @@ async def execute_deep_verification(
                         pre_flight_path = None
                     else:
                         try:
-                            pre_flight_result = await _send_request(client, _pf_req, base_url)
+                            pre_flight_result = await _send_request(client, _pf_req, base_url, scope=scope_policy)
                             logger.info(
                                 "[DEEP-VERIFY] M1.3 pre-flight: read victim object state %r BEFORE the "
                                 "DELETE -> status=%s (existence anchor for the negative assertion).",
@@ -1498,7 +1508,7 @@ async def execute_deep_verification(
                             )
                             pre_flight_result = None
 
-            attack_result = await _send_request(client, attack_req, base_url)
+            attack_result = await _send_request(client, attack_req, base_url, scope=scope_policy)
         except Exception as e:
             logger.warning(f"[DEEP-VERIFY] Baseline/attack send failed: {e}")
             return _disabled_or_degraded("degraded", f"baseline/attack request failed: {e}")
@@ -1570,11 +1580,11 @@ async def execute_deep_verification(
                     try:
                         _probe = {"method": "GET", "path": _candidate, "query_params": {},
                                   "headers": dict(auth_context), "body": None}
-                        if approved and _host_of(_reconstruct_url(_probe, base_url)) != approved:
+                        if scope_policy is not None and not scope_policy.check(_reconstruct_url(_probe, base_url)).allowed:
                             raise ScopeViolationError(
                                 f"record probe host outside approved scope '{approved}'"
                             )
-                        _probe_result = await _send_request(client, _probe, base_url)
+                        _probe_result = await _send_request(client, _probe, base_url, scope=scope_policy)
                         _object_scoped = _record_is_relevant_to_write(
                             (_probe_result or {}).get("response_body"),
                             caller_object_id, written_values,
@@ -1854,14 +1864,14 @@ async def execute_deep_verification(
                 "headers": dict(auth_context), "body": fu_body,
             }
             fu_url = _reconstruct_url(fu_parsed, base_url)
-            if approved and _host_of(fu_url) != approved:
+            if scope_policy is not None and not scope_policy.check(fu_url).allowed:
                 follow_up_feedback = (
                     f"REFUSED (scope lock): follow-up host '{_host_of(fu_url)}' is outside the "
                     f"approved scope '{approved}'. No request was executed."
                 )
             else:
                 try:
-                    fu_result = await _send_request(client, fu_parsed, base_url)
+                    fu_result = await _send_request(client, fu_parsed, base_url, scope=scope_policy)
                     follow_up_response = _summarize_response(fu_result)
                     follow_up_feedback = (
                         f"HTTP {fu_result.get('status_code')} | "

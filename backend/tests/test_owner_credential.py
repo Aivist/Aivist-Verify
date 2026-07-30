@@ -207,7 +207,7 @@ def test_OWNER_VIEW_returns_the_owners_authentic_view_not_the_attackers():
 
 def _recording_send(sink):
     """Stand in for deep_verifier._send_request, recording every request issued."""
-    async def _send(client, parsed_request, base_url, custody=None):
+    async def _send(client, parsed_request, base_url, custody=None, scope=None):
         sink.append({
             "method": str(parsed_request.get("method", "GET")).upper(),
             "path": parsed_request.get("path", ""),
