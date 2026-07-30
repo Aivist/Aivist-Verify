@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, List, Dict
 
-from backend.app.core.config import settings
+from backend.app.core.config import settings, reveal_secret
 from backend.app.services.llm import LLMConfigError
 
 # Matches the historical deep_verifier._GEMINI_503_RETRIES; the caller passes
@@ -39,7 +39,8 @@ class GeminiProvider:
 
     def _api_key(self):
         # LLM_API_KEY takes precedence; falls back to GEMINI_API_KEY (byte-compat).
-        return settings.LLM_API_KEY or settings.GEMINI_API_KEY
+        # Unwrap the SecretStr at point of use — the value at call time is unchanged.
+        return reveal_secret(settings.LLM_API_KEY) or reveal_secret(settings.GEMINI_API_KEY)
 
     def is_configured(self) -> bool:
         return bool(self._api_key())

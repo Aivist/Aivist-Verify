@@ -27,7 +27,9 @@ from collections import deque
 from pathlib import Path
 from typing import List, Optional, Deque
 
-from backend.app.core.config import settings
+from pydantic import SecretStr
+
+from backend.app.core.config import settings, reveal_secret
 
 logger = logging.getLogger("app.services.proxy_manager")
 
@@ -59,7 +61,9 @@ class ProxyManager:
         self._state: str = STOPPED
         self._proc: Optional[asyncio.subprocess.Process] = None
         self._pid: Optional[int] = None
-        self._ingest_token: str = ""
+        # SecretStr so no repr / log / crash-dump ever emits the real IPC token; the real
+        # value is revealed only at point of use (child env + constant-time verify).
+        self._ingest_token: SecretStr = SecretStr("")
         self._scope: List[str] = []
         self._listen_port: int = settings.PROXY_LISTEN_PORT
         self._started_at: Optional[float] = None
@@ -77,7 +81,7 @@ class ProxyManager:
         return self._state
 
     @property
-    def ingest_token(self) -> str:
+    def ingest_token(self) -> SecretStr:
         return self._ingest_token
 
     @property
@@ -90,9 +94,10 @@ class ProxyManager:
 
     def verify_ingest_token(self, token: Optional[str]) -> bool:
         """Constant-time token check; false if radar isn't active or no token."""
-        if not self._ingest_token or not token:
+        tok = reveal_secret(self._ingest_token)
+        if not tok or not token:
             return False
-        return secrets.compare_digest(token, self._ingest_token)
+        return secrets.compare_digest(token, tok)
 
     def status(self) -> dict:
         uptime = None
@@ -146,7 +151,7 @@ class ProxyManager:
     def _child_env(self) -> dict:
         env = os.environ.copy()
         env["RADAR_INGEST_URL"] = f"http://127.0.0.1:{settings.API_PORT}/api/v1/hunter/proxy/internal-ingest"
-        env["RADAR_INGEST_TOKEN"] = self._ingest_token
+        env["RADAR_INGEST_TOKEN"] = reveal_secret(self._ingest_token) or ""
         env["RADAR_SCOPE"] = ",".join(self._scope)
         env["RADAR_BODY_CAP"] = str(settings.PROXY_BODY_CAP)
         # Ensure the addon can import backend.app.services.pruner (shared Tier-1).
@@ -211,7 +216,7 @@ class ProxyManager:
                 logger.error(f"[PROXY-MGR] {self._last_error}")
                 return self.status()
             self._listen_port = listen_port or settings.PROXY_LISTEN_PORT
-            self._ingest_token = secrets.token_urlsafe(32)
+            self._ingest_token = SecretStr(secrets.token_urlsafe(32))
             self._stopping = False
             self._last_error = None
             self._stderr_ring.clear()

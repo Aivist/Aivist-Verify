@@ -26,7 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import async_session_factory
-from backend.app.core.config import settings
+from backend.app.core.config import settings, reveal_secret
 from backend.app.models.scan import VulnerabilityFinding, FuzzingRecord, utcnow
 from backend.app.services.proxy_pipeline import is_writer_running, get_writer_service
 # Scope-lock (node 3): the single audited host-scope decision. Pure/stdlib-only, so
@@ -1555,7 +1555,7 @@ async def _run_shadow_deep_verification(
         # harness. Absent by default -> None -> byte-identical behavior. It is passed
         # through only; nothing consumes it yet (the D24 read-semantic gate is a separate
         # milestone), and it is NEVER used for an attack request.
-        owner_credential = OwnerCredential.from_config(settings.AI_DEEP_VERIFY_OWNER_AUTH)
+        owner_credential = OwnerCredential.from_config(reveal_secret(settings.AI_DEEP_VERIFY_OWNER_AUTH))
 
         for rec in rows:
             # Each record is independent; one failure must not stop the others.

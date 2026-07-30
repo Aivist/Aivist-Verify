@@ -6,8 +6,21 @@
 import os
 import sys
 from typing import Optional
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def reveal_secret(value) -> Optional[str]:
+    """Unwrap a SecretStr to its real value at point of use; pass a plain str/None
+    through unchanged. Robust to test doubles that set a plain string on a SecretStr
+    field (e.g. monkeypatch settings.GEMINI_API_KEY = "test-key"). This is the ONLY
+    place a wrapped secret is revealed — everywhere else it stays a SecretStr, so no
+    repr / log / crash-dump / JSON serialization ever emits the real value."""
+    if value is None:
+        return None
+    if isinstance(value, SecretStr):
+        return value.get_secret_value()
+    return str(value)
 
 class Settings(BaseSettings):
     """
@@ -53,9 +66,10 @@ class Settings(BaseSettings):
     # --------------------------------------------------------------------------
     # 3. AI Orchestration Settings (Future Extensibility)
     # --------------------------------------------------------------------------
-    GEMINI_API_KEY: Optional[str] = Field(
+    GEMINI_API_KEY: Optional[SecretStr] = Field(
         default=None,
-        description="API Key for the Google Gemini Orchestration Layer."
+        description="API Key for the Google Gemini Orchestration Layer. SecretStr — never "
+                    "serialized/logged; read at point of use via reveal_secret()."
     )
 
     GEMINI_PRO_MODEL: str = Field(
@@ -75,9 +89,9 @@ class Settings(BaseSettings):
         default="gemini",
         description="Which LLM backend to use: 'gemini' (default) | 'openai' (OpenAI-compatible, incl. relays/DeepSeek/Kimi/GLM/Qwen/Grok/Ollama via LLM_BASE_URL) | 'anthropic'."
     )
-    LLM_API_KEY: Optional[str] = Field(
+    LLM_API_KEY: Optional[SecretStr] = Field(
         default=None,
-        description="API key for the selected provider. For 'gemini', falls back to GEMINI_API_KEY when unset (byte-compat)."
+        description="API key for the selected provider. For 'gemini', falls back to GEMINI_API_KEY when unset (byte-compat). SecretStr — never serialized/logged."
     )
     LLM_BASE_URL: Optional[str] = Field(
         default=None,
@@ -144,9 +158,9 @@ class Settings(BaseSettings):
     # to before. Nothing consumes this yet: it is a credential CHANNEL only, with no
     # verdict logic attached. Fail-safe direction is BLOCK — a missing or failed owner
     # view may only ever REDUCE downstream confidence, never increase it.
-    AI_DEEP_VERIFY_OWNER_AUTH: Optional[str] = Field(
+    AI_DEEP_VERIFY_OWNER_AUTH: Optional[SecretStr] = Field(
         default=None,
-        description="Owner/victim credential for owner-scoped reads by the deep verifier (two-account baseline). 'Header: value' or a bare bearer token. Empty => absent, byte-identical behavior. One credential per deployment, NOT per finding. Never used for attack requests."
+        description="Owner/victim credential for owner-scoped reads by the deep verifier (two-account baseline). 'Header: value' or a bare bearer token. Empty => absent, byte-identical behavior. One credential per deployment, NOT per finding. Never used for attack requests. SecretStr — never serialized/logged."
     )
 
     # D19 — PROMOTE the shadow deep-verify verdict from observe-only to AUTHORITATIVE.

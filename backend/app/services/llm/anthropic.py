@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Dict, List
 
-from backend.app.core.config import settings
+from backend.app.core.config import settings, reveal_secret
 from backend.app.services.llm import LLMConfigError, LLMError, LLMTransientError
 
 _MISSING_SDK = (
@@ -30,7 +30,7 @@ class AnthropicProvider:
         return settings.LLM_MODEL or ""
 
     def _api_key(self):
-        return settings.LLM_API_KEY
+        return reveal_secret(settings.LLM_API_KEY)
 
     def is_configured(self) -> bool:
         return bool(self._api_key())
