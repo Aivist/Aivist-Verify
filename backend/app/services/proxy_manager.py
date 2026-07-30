@@ -199,6 +199,17 @@ class ProxyManager:
             if self.is_active:
                 return self.status()
             self._scope = [s.strip() for s in (scope or []) if s and s.strip()]
+            # Node 3: validate the proxy scope against the ONE audited policy, exactly as the
+            # active batch route does — reject an over-broad / malformed declaration early
+            # (fail-fast) instead of spawning the child and silently over-capturing.
+            from backend.app.services.scope import ScopePolicy, ScopeError
+            try:
+                ScopePolicy.from_declaration(self._scope)
+            except ScopeError as e:
+                self._state = FAILED
+                self._last_error = f"Invalid scope declaration: {e}"
+                logger.error(f"[PROXY-MGR] {self._last_error}")
+                return self.status()
             self._listen_port = listen_port or settings.PROXY_LISTEN_PORT
             self._ingest_token = secrets.token_urlsafe(32)
             self._stopping = False

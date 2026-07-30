@@ -85,19 +85,25 @@ def is_static_path(path: str) -> bool:
 
 def host_in_scope(host: str, scope) -> bool:
     """
-    Scope-lock check. Empty/falsy scope == no host filter (everything in scope).
-    A host matches if it equals an approved entry or is a subdomain of it.
+    Scope-lock check — converged onto the ONE audited ScopePolicy (node 3), so passive
+    capture and active fuzzing share a single matcher (no drift between the two paths).
+
+    HOST-LEVEL ONLY: the resolved-IP DNS-rebinding guard is an active-connection concern;
+    the passive proxy does not initiate connections (the browser does), so this does
+    host/port/wildcard matching without any resolution.
+
+    Semantics (the unified wildcard model): empty/falsy scope => no filter (everything in
+    scope), matching the active UNLOCKED convention. A bare host matches the APEX ONLY;
+    subdomains require an explicit `*.host` (which also matches the apex). A malformed /
+    over-broad scope fails SAFE (out of scope).
     """
-    if not scope:
-        return True
-    h = (host or "").lower()
-    for s in scope:
-        s = (s or "").lower().strip()
-        if not s:
-            continue
-        if h == s or h.endswith("." + s):
-            return True
-    return False
+    from backend.app.services.scope import ScopePolicy, ScopeError
+    try:
+        # netloc_allowed accepts a bare host OR a 'host:port' — the same matcher the active
+        # _send_request path uses, so passive and active decisions are identical.
+        return ScopePolicy.from_declaration(scope).netloc_allowed(host)
+    except ScopeError:
+        return False
 
 
 def detect_login_candidate(method: str, path: str, body) -> bool:

@@ -22,12 +22,16 @@ import datetime
 import httpx
 
 # --- shared Tier-1 helpers (single source of truth with the backend) ----------
-# PYTHONPATH is set by ProxyManager so this import resolves to the same code the
-# pruner uses. Fall back to local copies if it can't be imported, so the proxy
-# still works standalone.
+# PYTHONPATH is set by ProxyManager so these resolve to the SAME code the active engine
+# uses. Node 3: host-scope matching is the ONE audited ScopePolicy, so passive capture and
+# active fuzzing never drift. The scope module is PURE (stdlib + a vendored suffix list; no
+# FastAPI/SQLAlchemy), so importing it here in mitmproxy's own interpreter is clean.
+# Fall back to local copies if the import can't be resolved, so the proxy still works
+# standalone (last-resort only; the fallback mirrors the same apex / `*.host` semantics).
 try:
-    from backend.app.services.pruner import is_static_path, host_in_scope
-except Exception:  # pragma: no cover - defensive fallback
+    from backend.app.services.pruner import is_static_path
+    from backend.app.services.scope import ScopePolicy
+except Exception:  # pragma: no cover - defensive standalone fallback
     _STATIC_EXT = (
         ".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".woff", ".woff2",
         ".svg", ".map", ".html", ".ttf", ".eot", ".mp4", ".webm", ".mp3", ".pdf",
@@ -37,16 +41,44 @@ except Exception:  # pragma: no cover - defensive fallback
         p = (path or "").lower().split("?", 1)[0]
         return any(p.endswith(e) for e in _STATIC_EXT)
 
-    def host_in_scope(host: str, scope) -> bool:
-        if not scope:
-            return True
-        h = (host or "").lower()
-        return any(h == s or h.endswith("." + s) for s in (x.lower().strip() for x in scope) if s)
+    ScopePolicy = None
 
 
 _INGEST_URL = os.environ.get("RADAR_INGEST_URL", "")
 _INGEST_TOKEN = os.environ.get("RADAR_INGEST_TOKEN", "")
 _SCOPE = [s.strip() for s in os.environ.get("RADAR_SCOPE", "").split(",") if s.strip()]
+
+
+def _build_scope_check():
+    """A host-level in-scope predicate over _SCOPE, built ONCE (the addon's hot path).
+    Uses the audited ScopePolicy when importable; else a last-resort inline matcher with
+    the SAME apex / `*.host` semantics. Host-level only (no resolution): the passive proxy
+    never initiates connections, so the resolved-IP guard does not apply here. Empty scope
+    => everything in scope (the active UNLOCKED convention)."""
+    if ScopePolicy is not None:
+        try:
+            policy = ScopePolicy.from_declaration(_SCOPE)
+            return lambda host: policy.netloc_allowed(host)
+        except Exception:
+            return lambda host: True   # defensive: never crash the proxy on a bad env
+    def _fallback(host: str) -> bool:
+        if not _SCOPE:
+            return True
+        h = (host or "").lower()
+        for s in (x.lower().strip() for x in _SCOPE):
+            if not s:
+                continue
+            if s.startswith("*."):
+                base = s[2:]
+                if h == base or h.endswith("." + base):
+                    return True
+            elif h == s:
+                return True
+        return False
+    return _fallback
+
+
+_host_allowed = _build_scope_check()
 try:
     _BODY_CAP = int(os.environ.get("RADAR_BODY_CAP", "65536"))
 except ValueError:
@@ -80,7 +112,7 @@ class RadarAddon:
             path = raw_path.split("?", 1)[0]
 
             # --- Tier-1: release immediately if out of scope or static ---------
-            if not host_in_scope(host, _SCOPE):
+            if not _host_allowed(host):
                 return
             if is_static_path(path):
                 return

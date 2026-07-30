@@ -151,3 +151,34 @@ def test_declared_localhost_lab_target_is_reachable():
                             "http://127.0.0.1:8001", scope=pol))
     assert res["status_code"] == 200
     assert res["response_body"] == '{"id":2,"owner":"victim"}'
+
+
+# ------------------------------------------------------------------------------
+# ONE DECISION TREE (commit 4): passive capture (proxy/pruner) and active fuzzing
+# (the ScopePolicy the _send_request chokepoint uses) must give the IDENTICAL host
+# decision for the same host + scope. That is the whole point of the convergence.
+# ------------------------------------------------------------------------------
+import backend.app.services.pruner as pruner   # noqa: E402
+
+
+@pytest.mark.parametrize("scope,host,expected", [
+    (["example.com"], "example.com", True),
+    (["example.com"], "api.example.com", False),   # apex-only (unified semantics)
+    (["example.com"], "evil.com", False),
+    (["example.com"], "notexample.com", False),    # substring trap
+    (["*.example.com"], "api.example.com", True),
+    (["*.example.com"], "example.com", True),       # apex auto-include
+    (["*.example.com"], "evilexample.com", False),  # endswith trap
+    ([], "anything.example.org", True),             # empty => all (unlocked)
+    (["10.0.0.5:8443"], "10.0.0.5:8443", True),
+    (["10.0.0.5:8443"], "10.0.0.5:9000", False),    # port strict
+])
+def test_active_and_passive_agree_one_decision_tree(scope, host, expected):
+    passive = pruner.host_in_scope(host, scope)                      # proxy / radar path
+    active = ScopePolicy.from_declaration(scope).netloc_allowed(host)  # _send_request path
+    assert passive == active == expected
+
+
+def test_passive_over_broad_scope_fails_safe():
+    # A malformed / over-broad passive scope is refused (out of scope), never captured.
+    assert pruner.host_in_scope("anything.com", ["*.com"]) is False
