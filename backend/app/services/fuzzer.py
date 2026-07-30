@@ -19,7 +19,7 @@ import asyncio
 import random
 import difflib
 from typing import Dict, Any, Optional, List
-from urllib.parse import urlencode, urlparse, urlunparse
+from urllib.parse import urlencode, urlparse, urlunparse, urljoin
 
 import httpx
 from sqlalchemy import select
@@ -29,6 +29,10 @@ from backend.app.core.database import async_session_factory
 from backend.app.core.config import settings
 from backend.app.models.scan import VulnerabilityFinding, FuzzingRecord, utcnow
 from backend.app.services.proxy_pipeline import is_writer_running, get_writer_service
+# Scope-lock (node 3): the single audited host-scope decision. Pure/stdlib-only, so
+# importing it here adds no import-time weight and cannot cycle (scope.py imports
+# neither fuzzer nor config).
+from backend.app.services.scope import ScopePolicy
 
 logger = logging.getLogger("app.services.fuzzer")
 
@@ -524,11 +528,83 @@ def _extract_base_url(finding: VulnerabilityFinding) -> str:
     return f"https://{host_part}"
 
 
+# Bounded manual-redirect chain length (scope-lock node 3). Only reached when a scope
+# is LOCKED; unlocked/lab mode keeps httpx's own auto-follow, byte-identically.
+_MAX_REDIRECTS = 5
+
+
+def _effective_scope_policy(
+    scope: Optional["ScopePolicy"], custody: Optional["AuthCustodyController"]
+) -> Optional["ScopePolicy"]:
+    """The scope policy this dispatch enforces. An explicit `scope` wins; else it is
+    derived from `custody.approved_host` (so the existing fuzzer call sites, which pass
+    only custody, converge onto the ONE audited gate without any call-site change). No
+    approved host on either => None (UNLOCKED / lab mode; byte-identical to today)."""
+    if scope is not None:
+        return scope
+    if custody is not None and getattr(custody, "approved_host", ""):
+        return ScopePolicy.from_declaration([custody.approved_host])
+    return None
+
+
+def _build_request_kwargs(
+    method: str, url: str, headers: dict, body: Any, follow_redirects: bool
+) -> Dict[str, Any]:
+    """Assemble httpx request kwargs — the SAME json/content/Content-Type logic the
+    initial request and every manual-redirect re-issue share (kept identical to the
+    pre-scope-lock inline build; only `follow_redirects` is now a parameter)."""
+    kwargs: Dict[str, Any] = {
+        "method": method, "url": url, "headers": headers,
+        "follow_redirects": follow_redirects,
+    }
+    if body is not None and method in ("POST", "PUT", "PATCH", "DELETE"):
+        if isinstance(body, dict):
+            kwargs["json"] = body
+        else:
+            kwargs["content"] = str(body)
+            if "Content-Type" not in headers and "content-type" not in headers:
+                kwargs["headers"] = {**headers, "Content-Type": "text/plain"}
+    return kwargs
+
+
+async def _follow_redirects_scoped(
+    client: httpx.AsyncClient, response: "httpx.Response",
+    method: str, headers: dict, body: Any, policy: "ScopePolicy",
+) -> "httpx.Response":
+    """Per-hop redirect enforcement (LOCKED scope only). httpx auto-follow is disabled
+    for a locked scope; instead each redirect Location is re-validated against the SAME
+    policy (host + resolved-IP) BEFORE it is followed, and the FIRST out-of-scope hop is
+    refused. Redirect method/body semantics mirror httpx: 307/308 preserve; 301/302/303
+    become GET with no body. Bounded by `_MAX_REDIRECTS`."""
+    hops = 0
+    while response.status_code in (301, 302, 303, 307, 308) and hops < _MAX_REDIRECTS:
+        location = response.headers.get("location")
+        if not location:
+            break
+        next_url = urljoin(str(response.request.url), location)
+        decision = policy.check(next_url)
+        if not decision.allowed:
+            raise ScopeViolationError(
+                f"redirect to out-of-scope target refused ({decision.reason}): {next_url}"
+            )
+        if response.status_code in (307, 308):
+            next_method, next_body = method, body
+        else:
+            next_method, next_body = "GET", None
+        response = await client.request(
+            **_build_request_kwargs(next_method, next_url, headers, next_body,
+                                    follow_redirects=False)
+        )
+        method, body, hops = next_method, next_body, hops + 1
+    return response
+
+
 async def _send_request(
     client: httpx.AsyncClient,
     parsed_request: dict,
     base_url: str,
     custody: Optional["AuthCustodyController"] = None,
+    scope: Optional["ScopePolicy"] = None,
 ) -> Dict[str, Any]:
     """
     Sends an HTTP request based on the parsed request structure.
@@ -538,39 +614,38 @@ async def _send_request(
     Section 7.1/7.3.3: when a custody controller is supplied, this dispatch
     gates on the barrier event and inline-injects the current active auth value
     immediately before the socket opens.
+
+    SCOPE LOCK (node 3): this is the ONE audited outbound gate. It enforces the scope
+    policy UNCONDITIONALLY (no longer only when a custody controller is present),
+    fail-closed, before the socket opens; and when the scope is LOCKED it disables
+    httpx auto-follow and validates every redirect hop against the same policy. An
+    UNLOCKED policy (no scope declared — the labs / 430/430 harness default) is a
+    pass-through that keeps httpx auto-follow, so behavior is byte-identical to before.
     """
     url = _reconstruct_url(parsed_request, base_url)
     method = parsed_request.get("method", "GET").upper()
     headers = parsed_request.get("headers", {})
     body = parsed_request.get("body")
 
+    # --- Scope lock: fail-closed gate on the initial URL, before anything else ------
+    policy = _effective_scope_policy(scope, custody)
+    locked = policy is not None and policy.locked
+    if locked:
+        decision = policy.check(url)
+        if not decision.allowed:
+            raise ScopeViolationError(
+                f"out-of-scope target refused ({decision.reason}): {url}"
+            )
+
     # --- Section 7.1: barrier gate + Section 7.3.3: O(1) inline auth injection ---
     if custody is not None:
-        # Step 8 Constraint 2(b): hard out-bound scope闸 — never let a fuzz worker
-        # open a socket to a host outside the user-approved target.
-        if custody.approved_host and _host_of(url) != custody.approved_host:
-            raise ScopeViolationError(
-                f"Target host '{_host_of(url)}' is outside approved scope "
-                f"'{custody.approved_host}'."
-            )
         await custody.session_valid_event.wait()
         headers = _inject_active_auth(headers, custody)
 
-    # Build httpx-compatible kwargs
-    kwargs: Dict[str, Any] = {
-        "method": method,
-        "url": url,
-        "headers": headers,
-        "follow_redirects": True,
-    }
-
-    if body is not None and method in ("POST", "PUT", "PATCH", "DELETE"):
-        if isinstance(body, dict):
-            kwargs["json"] = body
-        else:
-            kwargs["content"] = str(body)
-            if "Content-Type" not in headers and "content-type" not in headers:
-                kwargs["headers"] = {**headers, "Content-Type": "text/plain"}
+    # Build httpx-compatible kwargs. follow_redirects stays True (httpx auto-follow,
+    # byte-identical) when UNLOCKED; a LOCKED scope disables it so redirects are
+    # validated per-hop below.
+    kwargs = _build_request_kwargs(method, url, headers, body, follow_redirects=not locked)
 
     start_time = time.monotonic()
     response = await client.request(**kwargs)
@@ -591,6 +666,10 @@ async def _send_request(
         # Single retry after back-off
         start_time = time.monotonic()
         response = await client.request(**kwargs)
+
+    # Per-hop redirect enforcement (LOCKED scope only; unlocked already auto-followed).
+    if locked:
+        response = await _follow_redirects_scoped(client, response, method, headers, body, policy)
 
     elapsed_ms = round((time.monotonic() - start_time) * 1000, 2)
 
