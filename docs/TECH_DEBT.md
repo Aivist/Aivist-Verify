@@ -41,7 +41,10 @@
   against arbitrary targets. `requirements.txt` even ships `python-jose` +
   `passlib` (auth was clearly intended) but **nothing is wired**.
 - **Direction:** keep bound to localhost for now; add at least an API key / local
-  token before any shared or hosted deployment.
+  token before any shared or hosted deployment. **NOTE (scope-lock, D25):** the node-3
+  scope-lock hardening adds a traffic-EGRESS guardrail (attack traffic is fail-closed to the
+  declared scope) — it is **NOT** authentication and does **not** close D2; anyone who can reach
+  the port can still drive the API. Keep bound to localhost.
 
 ### D3 — `analyze` can hang on the external Gemini call
 - **✅ RESOLVED (Stage B).**
@@ -803,6 +806,35 @@
 - **Why open:** hard prerequisite before pointing at anything beyond localhost / self-built
   labs (relates to D2 — no auth).
 
+### D25 — Scope-lock hardening — ✅ RESOLVED (IP-pinning follow-up open)
+- **Status: ✅ RESOLVED.** Node-3 scope-lock hardening landed as six commits
+  (`2b6e457` → `633c015`). ALL host-scope decisions now go through ONE audited `ScopePolicy`
+  (`backend/app/services/scope.py`), replacing the former duplicated `_host_of` checks.
+- **Active enforcement** is converged at the `_send_request` chokepoint: fail-closed
+  (unconditional — no longer only when a custody controller is present), per-hop redirect
+  validation (httpx auto-follow disabled under a locked scope; the FIRST out-of-scope hop is
+  refused), and a resolved-IP DNS-rebinding / SSRF guard (a PUBLIC registrable name resolving to
+  loopback/private/reserved is refused; cloud-metadata + link-local are always refused; an
+  explicitly-declared private/intranet target is honored). The deep verifier's four inline checks,
+  the custody re-auth probe, `dry_run_auth_refresh`, and the batch route all consult the same policy.
+- **Passive capture** (`pruner.host_in_scope` / `radar_addon`) shares the SAME matcher — passive and
+  active return the IDENTICAL host decision (proven by test). Passive is host/port/wildcard only: the
+  resolved-IP guard is an active-connection concern (the browser, not the proxy, opens those sockets).
+- **Also delivered:** a unified run-time `scope`+`model` declaration (`approved_host` a legacy
+  alias); over-broad-wildcard rejection via a vendored Public Suffix List snapshot; port rules (no
+  port ⇒ any; explicit ⇒ strict host+port); adversarial normalization tests (substring / endswith /
+  protocol-relative / userinfo / trailing-dot / IDN / decimal+hex IP encodings); and SecretStr
+  wrapping of the API key + owner-auth + ingest token (no repr/log/serialization leak; verifiable
+  no-leak test).
+- **OPEN FOLLOW-UP — IP-pinning (the DNS TOCTOU window).** The resolved-IP guard currently does
+  *resolve+validate*: it resolves the declared name and validates the IP class BEFORE the request,
+  but httpx re-resolves at connect time, leaving a small time-of-check-to-time-of-use window a fast
+  DNS-rebinding attacker could exploit. Recorded httpx judgment: clean IP-pinning has no public
+  resolver hook and forcing it breaks TLS SNI / cert validation, so fragile pinning was deliberately
+  kept OUT of the core network path for v1. **Follow-up:** pin the validated IP for the connection
+  (a custom transport/resolver) to close the window. Not yet built. The verdict core is untouched by
+  any of the scope-lock work.
+
 ---
 
 ## Suggested priority order for the next agent
@@ -839,8 +871,10 @@
    *enabled* on a real target (Node 3), which is why the capability ships default OFF.
 5. **Benchmark vs agent-style PoC validation** — on a public vulnerable target, quantify
    this engine's false-positive / reproducibility rate. The "can it be sold" evidence.
-6. **Scope-lock hardening** before any non-localhost target; **D5** — keep
-   `preview_dashboard.html`, retire `frontend/`.
+6. **Scope-lock hardening — ✅ DONE (see D25).** One audited `ScopePolicy` governs active +
+   passive host decisions (fail-closed + per-hop redirect + resolved-IP guard; the proxy shares the
+   matcher); unified `scope`+`model` declaration; SecretStr key privacy. Residual: IP-pinning
+   follow-up (small DNS TOCTOU window). **D5** — keep `preview_dashboard.html`, retire `frontend/`.
 
 ### Deferred — NOT in the active line (unlock condition: the benchmark above proves commercialization is worth it)
 - **D2 (auth)**, multi-tenancy, **D1 (Alembic migrations)**, hosted/enterprise deployment.

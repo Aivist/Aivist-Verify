@@ -57,8 +57,9 @@ the earlier single-target record (140 SAFE / 70 VULN, one target), kept as histo
 
 | Suite | Command (from repo root) | Result |
 |---|---|---|
-| Backend | `python -m pytest backend/tests -q` | **293 passed** |
-| Ground-truth target | `python -m pytest vulnerable_target -q` | **31 passed** |
+| Backend | `python -m pytest backend/tests -q` | **466 passed** |
+| Ground-truth target (`vulnerable_target`, integer-id) | `python -m pytest vulnerable_target -q` | **31 passed** |
+| Ground-truth target (`depot_target`, UUID-id) | `python -m pytest depot_target -q` | **23 passed** |
 
 ## The main line (three nodes)
 
@@ -70,7 +71,7 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
 |---|---|---|
 | **1. Judge correctly (= M1)** | Never a false verdict; confirm the hard case across *shapes* | **✅ COMPLETE — 5 shapes confirmed, 0 FP.** See the M1 breakdown below. |
 | **2. Act** (`D19`) | Promote the AI verdict from observe-only/log to **authoritative** | **✅ IMPLEMENTED, default OFF, acceptance-passed.** Promotion writes `suspicious→verified` only under a deterministic authorizer (four channels or the D24 owner-view corroboration); clean 430/430 vs the golden record, 0 SAFE promoted. Not on by default — shadow stays shipped; enabling on real targets still gated on Node 3. |
-| **3. Be safe on real targets** | Consolidate scope-lock checks + adversarial tests before any non-localhost use | **Not started.** HARD prerequisite before any real / non-lab target. |
+| **3. Be safe on real targets** | Consolidate scope-lock checks + adversarial tests before any non-localhost use | **✅ SCOPE-LOCK HARDENING COMPLETE.** One audited `ScopePolicy` governs ALL host decisions — active (`_send_request`: fail-closed + per-hop redirect + resolved-IP rebinding guard) AND passive (proxy/pruner share the SAME matcher). Unified `scope`+`model` declaration; SecretStr key privacy; adversarial + one-decision-tree tests. **Residuals (recorded, not closed):** IP-pinning is a follow-up (small DNS TOCTOU window remains — TECH_DEBT D25); the 0.95 read-gate threshold is still unvalidated against real-target volatility. Enabling promotion on a real target still also waits on model/target diversity. |
 
 ### M1 — Verifiable benchmark & reference engine (generalize across shapes, zero FP)
 
@@ -321,5 +322,9 @@ deployment — parked until a benchmark justifies them.
      **never caller-identity**, which `confirms` for BOTH VULN and SAFE (a dropped cross-user write
      still leaves the object owned by the victim). Only the causality / state-jump anchor separates a
      real leak from a securely-dropped write.
-4. **Scope-lock hardening** (HARD prerequisite before any real / non-lab target);
-   retire the legacy `frontend/` (D5).
+4. **Scope-lock hardening — ✅ DONE.** One audited `ScopePolicy` now governs active
+   (`_send_request`: fail-closed + per-hop redirect + resolved-IP DNS-rebinding guard) AND
+   passive (proxy/pruner) host decisions; unified `scope`+`model` declaration; over-broad-wildcard
+   rejection (vendored PSL); SecretStr key privacy; adversarial + one-decision-tree tests.
+   Residual: IP-pinning follow-up (small DNS TOCTOU window) — see TECH_DEBT D25. Still before a
+   real target: model/target diversity; retire the legacy `frontend/` (D5).

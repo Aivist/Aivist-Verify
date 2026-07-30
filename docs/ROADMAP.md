@@ -198,13 +198,18 @@ forced it to be narrowed** — a real false positive found and closed, not a hyp
    band to `verified` under a deterministic authorizer (choke point + single writer +
    `owner_view_corroborated`), acceptance-passed clean 430/430. Off by default; enabling it in a real
    flow is Node 3. *(TECH_DEBT.md D19.)*
-3. **Be safe on real targets.** **Scope-lock hardening** (hard prerequisite before pointing at
-   anything beyond localhost / self-built labs): consolidate the duplicated host-scope checks —
-   the fuzzer's `_send_request` / `ScopeViolationError` enforcement (`fuzzer.py`) **and** the deep
-   verifier's own follow-up pre-check (`deep_verifier.py`), plus the proxy's separate capture-side
-   `in_scope` — into one audited implementation; add an adversarial test suite
-   (substring / protocol-relative / userinfo tricks); and add runtime out-of-scope probes (don't
-   trust config alone). *(Relates to TECH_DEBT.md D2 — no-auth.)*
+3. **Be safe on real targets. ✅ SCOPE-LOCK HARDENING COMPLETE.** The duplicated host-scope checks
+   are converged onto ONE audited `ScopePolicy` (`scope.py`): active enforcement at the
+   `_send_request` chokepoint (fail-closed, per-hop redirect validation, resolved-IP
+   DNS-rebinding/SSRF guard) AND the passive proxy (`pruner`/`radar_addon`) now share the SAME
+   matcher — one decision tree, proven by test (passive == active for the same host). Delivered
+   with it: a unified run-time `scope`+`model` declaration (`approved_host` a legacy alias);
+   over-broad-wildcard rejection via a vendored Public Suffix List; port rules; the adversarial
+   suite (substring / protocol-relative / userinfo / IDN / IP-encoding tricks); and SecretStr key
+   privacy so no secret leaks via repr/log/serialization. **Honest residuals (recorded, not
+   closed):** IP-pinning is a follow-up — a small DNS TOCTOU window remains (TECH_DEBT.md D25); the
+   0.95 read-gate threshold stays unvalidated against real-target volatility. *(Relates to
+   TECH_DEBT.md D2 — no-auth; the scope-lock is a traffic-EGRESS guardrail, NOT authentication.)*
 
 > **Prove the shadow path (✅ done, D22, `37769b3`):** the verifier's integration is now a
 > regression asset, not a manual harness — `test_d18_b1_shadow_integration.py` runs the real
@@ -287,8 +292,11 @@ shape, the decisive-evidence standard in the prompt must learn it too, or the tw
 - **`run_in_executor` for the similarity computation** (minor; it is CPU-bound on the event loop).
 
 ### Phase — before any real / non-lab target
-- **Scope-lock hardening** (also §4 node 3): consolidate the duplicated host-scope checks into one
-  audited implementation + an adversarial test suite + runtime out-of-scope probes.
+- **Scope-lock hardening — ✅ DONE (§4 node 3):** the duplicated host-scope checks are converged
+  onto one audited `ScopePolicy` (active `_send_request` chokepoint: fail-closed + per-hop redirect
+  + resolved-IP DNS-rebinding guard; the passive proxy shares the same matcher), with the
+  adversarial suite + a one-decision-tree test + SecretStr key privacy. Residual: IP-pinning
+  follow-up to close a small DNS TOCTOU window (TECH_DEBT.md D25).
 - **The UUID wall** — object ids in real APIs are frequently UUIDs, which cannot be enumerated by
   incrementing. Let the **user supply the victim's alternative IDs** rather than guessing them.
 - **WAF circuit-breaker** — detect that a WAF/rate-limiter has started blocking and stop, instead of
@@ -320,6 +328,22 @@ shape, the decisive-evidence standard in the prompt must learn it too, or the tw
   proxy / HAR), so every module can query which paths relate instead of guessing. **Still gated on**
   M1 proving generalization across shapes. M1.2(B)'s object-state resolver is the minimal slice and
   is already built — do **not** expand it into the full graph now.
+
+### Phase — strategic direction (RECORDED post-scope-lock; do NOT act now)
+> Direction-setting for a future node, written down so it is not rediscovered or silently
+> re-litigated. Nothing here is approved work — do NOT start any of it.
+- **(a) Depth ≠ more shapes.** The five decisive-evidence anchors (write-record, read-semantics,
+  object-state, delete negative-assertion, mass-assignment state-jump) are **sufficient**; adding
+  more M1.x shape-anchors is NOT the next depth move. Real depth goes toward **business-context
+  complexity** (multi-actor, multi-step, stateful workflows), not raising the shape count.
+- **(b) M2's first step is multi-step request-sequence orchestration**, NOT a full dependency graph
+  up front — the engine autonomously composing a sequence like "user A creates → user B reads" to
+  set up and confirm a cross-actor access-control bug. Build that capability before (and as the
+  concrete driver of) any broader resource/dependency graph.
+- **(c) A crAPI-vs-Autorize comparison report** (this engine's zero-FP verification vs a detection
+  -side tool on a public vulnerable target) is a **go-to-market / exposure asset** — produced ONLY
+  **after real-target capability exists** (post-scope-lock, once the pre-real-target register is
+  cleared), never now. It is evidence for "can it be sold", not a milestone gate.
 
 ---
 

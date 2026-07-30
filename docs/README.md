@@ -30,5 +30,5 @@ only a thin [`README.md`](../README.md) pointer).
 > `backend/app/services/fuzzer.py`). When code and docs disagree, the code wins —
 > please update the docs.
 >
-> **Test counts:** `backend/tests` → **293** passed; `vulnerable_target` → **31**
-> (separate suite). See [`STATUS.md`](./STATUS.md).
+> **Test counts:** `backend/tests` → **466** passed; `vulnerable_target` → **31**;
+> `depot_target` → **23** (separate suites). See [`STATUS.md`](./STATUS.md).
