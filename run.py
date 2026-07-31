@@ -3,6 +3,7 @@
 # Anti-Gravity CLI — the human-walkable front door to the BOLA/IDOR confirmer.
 #
 #   python run.py confirm --caseset <path> --case <id>    # confirm ONE finding
+#   python run.py confirm --caseset <path>                # confirm ALL cases + a one-line tally
 #
 # PURE ORCHESTRATION + PRESENTATION over the EXISTING confirmation path. It boots/connects
 # the target and calls `execute_deep_verification` with the SAME arguments the measurement
@@ -20,6 +21,7 @@ import json
 import asyncio
 import argparse
 import tempfile
+from collections import Counter
 
 _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _REPO_ROOT)
@@ -48,7 +50,7 @@ def _enrich(record: dict, case: dict) -> dict:
 
 
 def confirm(caseset_path: str, case_id, model) -> int:
-    """Confirm one finding (case_id required in this spine). Returns the process exit code."""
+    """Confirm one finding (--case) or ALL cases in the set. Returns the process exit code."""
     if not _has_llm_key():
         print("[NOT DATA] No LLM API key configured (GEMINI_API_KEY / LLM_API_KEY). The confirmer "
               "needs it to run the engine; nothing was sent.", file=sys.stderr)
@@ -56,11 +58,8 @@ def confirm(caseset_path: str, case_id, model) -> int:
 
     with open(caseset_path, encoding="utf-8") as fh:
         cs = json.load(fh)
-    if case_id is None:
-        print("[NOT DATA] --case <id> is required (single-finding mode). Full-caseset mode is separate.",
-              file=sys.stderr)
-        return _EXIT_NOTDATA
-    selected = [c for c in cs["cases"] if c["id"] == case_id]
+    selected = ([c for c in cs["cases"] if c["id"] == case_id]
+                if case_id is not None else list(cs["cases"]))
     if not selected:
         print(f"[NOT DATA] no case matching --case {case_id!r} in {caseset_path}", file=sys.stderr)
         return _EXIT_NOTDATA
@@ -94,7 +93,12 @@ def confirm(caseset_path: str, case_id, model) -> int:
     finally:
         vm._stop_target(proc)
 
-    return exit_code_for(records)
+    code = exit_code_for(records)
+    if len(records) > 1:
+        t = Counter(case_outcome(r) for r in records)
+        print(f"--- tally: {len(records)} case(s) | confirmed={t['confirmed']} "
+              f"refuted={t['refuted']} not-data={t['notdata']} | exit {code} ---")
+    return code
 
 
 def main():
@@ -102,7 +106,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("confirm", help="Confirm a BOLA/IDOR finding via the deep verifier.")
     c.add_argument("--caseset", required=True, help="path to a caseset JSON")
-    c.add_argument("--case", default=None, help="the case id to confirm (required in this spine)")
+    c.add_argument("--case", default=None, help="a case id to confirm; omit to confirm ALL cases in the set")
     c.add_argument("--model", default=None, help="optional model override")
     args = ap.parse_args()
     if args.cmd == "confirm":
