@@ -155,9 +155,10 @@ class Settings(BaseSettings):
     # later claim imply that it does.
     #
     # Default None => the second identity is simply absent and behavior is byte-identical
-    # to before. Nothing consumes this yet: it is a credential CHANNEL only, with no
-    # verdict logic attached. Fail-safe direction is BLOCK — a missing or failed owner
-    # view may only ever REDUCE downstream confidence, never increase it.
+    # to before. When set (and owner-auth enabled), the D24 read-semantic owner-view gate
+    # consumes it to issue owner-scoped reads; it is NEVER used for attack requests.
+    # Fail-safe direction is BLOCK — a missing or failed owner view may only ever REDUCE
+    # downstream confidence, never increase it.
     AI_DEEP_VERIFY_OWNER_AUTH: Optional[SecretStr] = Field(
         default=None,
         description="Owner/victim credential for owner-scoped reads by the deep verifier (two-account baseline). 'Header: value' or a bare bearer token. Empty => absent, byte-identical behavior. One credential per deployment, NOT per finding. Never used for attack requests. SecretStr — never serialized/logged."

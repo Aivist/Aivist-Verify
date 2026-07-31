@@ -1380,14 +1380,16 @@ async def execute_deep_verification(
         model_name: override the model; defaults to the selected provider's default
             model (for gemini: LLM_MODEL or GEMINI_PRO_MODEL).
         owner_credential: OPTIONAL owner/victim credential (two-account baseline).
-            **RESERVED AND INTENTIONALLY INERT IN THIS MILESTONE.** It is accepted so the
-            second identity genuinely reaches the real Phase-7 pipeline rather than only a
-            harness, but NOTHING here consumes it: `fetch_owner_view` is never called from
-            this function, no extra HTTP request is issued, and no verdict logic reads it.
-            Whether it is set or None, this function's behavior — and every request it
-            sends — is byte-identical. The consumer is the D24 read-semantic gate, which is
-            a separate signed-off milestone. It is NEVER merged into any attack request:
-            attacks always go out as the attacker (see the channel notes above).
+            Consumed by the D24 read-semantic owner-view gate. When present AND
+            owner-auth is enabled, the gate issues ONE owner-scoped read via
+            `fetch_owner_view` (a GET as the owner, never the attacker) to corroborate
+            read-semantic cases. That read is DOWNGRADE-ONLY: it may weaken a verdict
+            (verified -> inconclusive) but can NEVER manufacture `verified`. When None
+            or absent — the default posture — no owner read is issued and this
+            function's verdict is unaffected. It is NEVER merged into any attack
+            request: attacks always go out as the attacker (see the channel notes
+            above), and `fetch_owner_view` takes no method/body, so it structurally
+            cannot carry one.
 
     Returns:
         DeepVerificationResult — the AI verdict alongside the full evidence trail.
