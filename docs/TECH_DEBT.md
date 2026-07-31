@@ -85,7 +85,7 @@
   been removed entirely.)
 - **Where:** `backend/tests/test_api_endpoints.py` (API smoke); `test_step9_proxy.py`
   (proxy radar, Step 9); plus pruner, custody, Step D extraction in other files.
-  Total backend suite: **349 tests**. See [`STATUS.md`](./STATUS.md).
+  Total backend suite: **466 tests**. See [`STATUS.md`](./STATUS.md).
 - **Covered:** FastAPI `TestClient` over isolated per-test SQLite with Gemini and
   background fuzzing mocked — analyze (200 + 422), findings persist (201 + 422),
   verify/batch 404s, health check. **Step 9:** WriterService serialization, SSEHub
