@@ -58,3 +58,9 @@ Thumbs.db
 # rule does not untrack an already-tracked file, so `shadow_p0_run.py` is unaffected.
 scripts/audit/*.out.txt
 scripts/audit/shadow_*.py
+
+# --- Node-to-node handoff notes (kept local, not pushed) ---
+# Candid node-to-node handoff / strategic-continuity notes live here and stay off the
+# public remote. A .gitignore rule does not untrack an already-tracked file, so files
+# moved in here are also `git rm --cached`-ed in the same commit (they remain on disk).
+docs/handoffs/
