@@ -1,0 +1,35 @@
+# ==============================================================================
+# Packaging — registers the console command so a stranger can `pip install -e .`
+# and then run `<brand> verify ...` / `<brand> config` instead of `cd`+`python run.py`.
+#
+# TODO(naming): the brand tokens below (`project.name`, the `project.scripts` KEY)
+# are PROVISIONAL and MUST match backend/app/cli/branding.py::BRAND_NAME. A pyproject
+# `[project.scripts]` key is a STATIC build-time manifest string — it is the one
+# packaging touch-point that cannot derive from the runtime constant. Finalizing the
+# brand = edit BRAND_NAME plus these two tokens. A test asserts the scripts key equals
+# BRAND_NAME so the two cannot silently drift.
+# ==============================================================================
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lanivist-verify"
+version = "0.1.0"
+description = "A local, single-tenant BOLA/IDOR access-control verification engine (CLI front door)."
+requires-python = ">=3.11"
+dynamic = ["dependencies"]
+
+[project.scripts]
+# key = the console command the user types; value = <module>:<callable> entry.
+lanivist = "run:main"
+
+[tool.setuptools]
+# The flat top-level run.py is the entry module. The `backend` package is NOT
+# packaged (kept in place); run.py bootstraps sys.path to it, so an EDITABLE
+# install (`pip install -e .`) resolves it from the repo root as today.
+py-modules = ["run"]
+
+[tool.setuptools.dynamic]
+# Reuse the existing dependency list — no duplication, no drift.
+dependencies = { file = ["backend/requirements.txt"] }

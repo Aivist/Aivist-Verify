@@ -1,11 +1,16 @@
 #!/usr/bin/env python
 # ==============================================================================
-# Anti-Gravity CLI — the human-walkable front door to the BOLA/IDOR confirmer.
+# The CLI front door — installed as the `<brand> verify` command (see
+# backend/app/cli/branding.py; the brand token is provisional, the `verify` suffix
+# is locked). Also runnable directly as `python run.py ...` (unchanged).
 #
-#   python run.py confirm --caseset <path> --case <id>    # confirm ONE finding
-#   python run.py confirm --caseset <path>                # confirm ALL cases + a one-line tally
+#   <brand> verify --caseset <path> --case <id>    # confirm ONE finding
+#   <brand> verify --caseset <path>                # confirm ALL cases + a one-line tally
+#   <brand> config                                 # interactive first-run setup
+#   python run.py verify ... | python run.py confirm ...   # both still work (confirm = alias)
 #
-# PURE ORCHESTRATION + PRESENTATION over the EXISTING confirmation path. It boots/connects
+# The `verify` path is PURE ORCHESTRATION + PRESENTATION over the EXISTING confirmation
+# path. It boots/connects
 # the target and calls `execute_deep_verification` with the SAME arguments the measurement
 # harness (`scripts/measure/verdict_measure.py`) already uses — via that harness's own
 # helpers (`_run_one` / `_boot_target` / `_attack_path` / ...), reused, not duplicated. The
@@ -28,6 +33,8 @@ sys.path.insert(0, os.path.join(_REPO_ROOT, "scripts", "measure"))
 
 from backend.app.core.config import settings, reveal_secret  # noqa: E402
 from backend.app.cli.confirm_render import render_tree, exit_code_for, render_tally  # noqa: E402
+from backend.app.cli.branding import command_name, product_name  # noqa: E402
+from backend.app.cli.config_flow import run_config_flow  # noqa: E402
 import verdict_measure as vm  # noqa: E402  (reuse: _run_one/_boot_target/_stop_target/_rm_db/_attack_path)
 
 _EXIT_NOTDATA = 2
@@ -98,16 +105,38 @@ def confirm(caseset_path: str, case_id, model) -> int:
     return code
 
 
-def main():
-    ap = argparse.ArgumentParser(prog="run.py", description="Anti-Gravity CLI.")
+def build_parser() -> argparse.ArgumentParser:
+    """The CLI parser. `prog` and the description derive from the brand constant so
+    the finalized name flows here with no edit. `verify` is the primary subcommand;
+    `confirm` is kept as a back-compat alias so the historical `python run.py confirm`
+    path keeps working."""
+    ap = argparse.ArgumentParser(
+        prog=command_name(),
+        description=f"{product_name()} - confirm BOLA/IDOR access-control findings with the deep verifier.",
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
-    c = sub.add_parser("confirm", help="Confirm a BOLA/IDOR finding via the deep verifier.")
-    c.add_argument("--caseset", required=True, help="path to a caseset JSON")
-    c.add_argument("--case", default=None, help="a case id to confirm; omit to confirm ALL cases in the set")
-    c.add_argument("--model", default=None, help="optional model override")
-    args = ap.parse_args()
-    if args.cmd == "confirm":
+
+    v = sub.add_parser(
+        "verify", aliases=["confirm"],
+        help="Confirm a BOLA/IDOR finding via the deep verifier.",
+    )
+    v.add_argument("--caseset", required=True, help="path to a caseset JSON")
+    v.add_argument("--case", default=None, help="a case id to confirm; omit to confirm ALL cases in the set")
+    v.add_argument("--model", default=None, help="optional model override")
+
+    sub.add_parser(
+        "config",
+        help="Interactive setup: choose a provider, enter your API key (hidden), set a model.",
+    )
+    return ap
+
+
+def main():
+    args = build_parser().parse_args()
+    if args.cmd in ("verify", "confirm"):
         sys.exit(confirm(args.caseset, args.case, args.model))
+    if args.cmd == "config":
+        sys.exit(run_config_flow())
 
 
 if __name__ == "__main__":

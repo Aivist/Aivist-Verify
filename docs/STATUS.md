@@ -53,6 +53,18 @@ the earlier single-target record (140 SAFE / 70 VULN, one target), kept as histo
 > not address; owner credentials are **per-deployment, not per-finding**; and the real-model
 > confirmation is **N=1, not at scale**.
 
+## Open decisions
+
+- **Umbrella brand name — NOT finalized (pending director).** The CLI ships under a
+  **provisional** brand token defined once, as `BRAND_NAME` in
+  [`backend/app/cli/branding.py`](../backend/app/cli/branding.py) (currently `"lanivist"`).
+  Every user-facing brand string — the console command, `--help`/banner, and the per-user
+  config dir `~/.<brand>/` — **derives from that one constant**, so finalizing the name is a
+  one-line change, never a repo-wide find-replace (a test asserts the derivation; the only
+  static copies are the `pyproject.toml` `[project.scripts]` key + `project.name`, tagged
+  `TODO(naming)`). The **`verify` suffix is LOCKED** — the product is "`<Brand> Verify`",
+  invoked as `<brand> verify` (`confirm` kept as a back-compat alias).
+
 ## Test suite
 
 | Suite | Command (from repo root) | Result |
