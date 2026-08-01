@@ -5,9 +5,10 @@
 
 import os
 import sys
-from typing import Optional
+import tomllib
+from typing import Any, Dict, Optional, Tuple, Type
 from pydantic import Field, field_validator, SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 
 def reveal_secret(value) -> Optional[str]:
@@ -21,6 +22,62 @@ def reveal_secret(value) -> Optional[str]:
     if isinstance(value, SecretStr):
         return value.get_secret_value()
     return str(value)
+
+
+# ==============================================================================
+# User config-file source ("configurable by a stranger"). Adds a per-user TOML
+# file (~/.<brand>/config.toml, written by the `<brand> config` flow) to the
+# settings resolution. It sits BELOW env and .env in precedence (see
+# Settings.settings_customise_sources), so explicit env / backend/.env values
+# ALWAYS win and this file only FILLS gaps; built-in field defaults remain last.
+# A missing / unreadable / malformed file contributes NOTHING (fail-safe), so with
+# no file present the behavior is byte-identical to before this source existed.
+# It carries only the LLM_* provider/key/model fields the config flow writes;
+# any other key is dropped by the model's extra="ignore". No default and no flag
+# semantic is changed — this is purely an additional, lowest-but-one source.
+# ==============================================================================
+def _user_config_path() -> Optional[str]:
+    """The per-user config file path, derived from the single brand constant so the
+    config dir (~/.<brand>/) never drifts from the CLI. Best-effort: any failure
+    yields None (=> the file source is empty), preserving byte-identical behavior."""
+    try:
+        from backend.app.cli.branding import config_file_path
+        return config_file_path()
+    except Exception:
+        return None
+
+
+class _UserConfigTomlSource(PydanticBaseSettingsSource):
+    """Reads ~/.<brand>/config.toml via stdlib tomllib. Fail-safe by construction: a
+    missing/unreadable/malformed file yields an empty mapping, so this source can only
+    ever FILL a field env/.env left unset — it never overrides one (it is ordered below
+    them). Values are plain scalars (provider/key/url/model); a string bound to the
+    SecretStr LLM_API_KEY field is coerced to SecretStr by the model, so the key never
+    gains a plaintext repr — it is unwrapped only at point of use via reveal_secret()."""
+
+    def __init__(self, settings_cls: Type[BaseSettings]) -> None:
+        super().__init__(settings_cls)
+        self._data: Dict[str, Any] = self._load()
+
+    @staticmethod
+    def _load() -> Dict[str, Any]:
+        try:
+            path = _user_config_path()
+            if path and os.path.isfile(path):
+                with open(path, "rb") as fh:
+                    data = tomllib.load(fh)
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            pass
+        return {}
+
+    def get_field_value(self, field: Any, field_name: str) -> Tuple[Any, str, bool]:
+        return self._data.get(field_name), field_name, False
+
+    def __call__(self) -> Dict[str, Any]:
+        return dict(self._data)
+
 
 class Settings(BaseSettings):
     """
@@ -280,6 +337,28 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore"  # Gracefully drop unrelated system environment variables
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: Type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> Tuple[PydanticBaseSettingsSource, ...]:
+        """Precedence (highest -> lowest): init args, env vars, .env (dotenv), THEN the
+        per-user config file, THEN file secrets, THEN field defaults. Inserting the user
+        config file BELOW dotenv is what guarantees explicit env / backend/.env always win
+        and the file only fills gaps. This is the SOLE change to settings resolution — no
+        default value and no flag semantic is altered."""
+        return (
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            _UserConfigTomlSource(settings_cls),
+            file_secret_settings,
+        )
 
     # ==========================================================================
     # Strict Property Validators (Security & Integrity Checks)

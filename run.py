@@ -58,8 +58,12 @@ def _enrich(record: dict, case: dict) -> dict:
 def confirm(caseset_path: str, case_id, model) -> int:
     """Confirm one finding (--case) or ALL cases in the set. Returns the process exit code."""
     if not _has_llm_key():
-        print("[NOT DATA] No LLM API key configured (GEMINI_API_KEY / LLM_API_KEY). The confirmer "
-              "needs it to run the engine; nothing was sent.", file=sys.stderr)
+        # First-run detection: guide, don't crash. No stack trace, one clear line.
+        print(
+            f"No API key configured. Run  {command_name()} config  to set one up interactively "
+            f"(provider, key, model) - or set GEMINI_API_KEY / LLM_API_KEY. Nothing was sent.",
+            file=sys.stderr,
+        )
         return _EXIT_NOTDATA
 
     with open(caseset_path, encoding="utf-8") as fh:
