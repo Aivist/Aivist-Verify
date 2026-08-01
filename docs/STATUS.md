@@ -57,9 +57,29 @@ the earlier single-target record (140 SAFE / 70 VULN, one target), kept as histo
 
 | Suite | Command (from repo root) | Result |
 |---|---|---|
-| Backend | `python -m pytest backend/tests -q` | **466 passed** |
+| Backend | `python -m pytest backend/tests -q` | **473 passed** |
 | Ground-truth target (`vulnerable_target`, integer-id) | `python -m pytest vulnerable_target -q` | **31 passed** |
 | Ground-truth target (`depot_target`, UUID-id) | `python -m pytest depot_target -q` | **23 passed** |
+
+## CLI confirmer front door (`run.py confirm`)
+
+A human-walkable front door over the EXISTING confirmation path — pure orchestration +
+presentation, **zero core edits** (`deep_verifier` / `fuzzer` / `scope` / `config` and the
+channels / guard / D24 / D19 all untouched). See [`QUICKSTART.md`](./QUICKSTART.md) (how to run)
+and [`CLI_ORIENTATION.md`](./CLI_ORIENTATION.md) (technical map).
+
+- **Commands:** `python run.py confirm --caseset <path> --case <id>` (one finding) and
+  `python run.py confirm --caseset <path>` (all cases + a one-line tally).
+- **Pure orchestration over `verdict_measure._run_one`:** the CLI calls the same
+  `execute_deep_verification` path the measurement harness uses and renders the returned
+  `DeepVerificationResult`. The verdict is read ONLY from `final_verdict`/`ai_verdict` — the
+  renderer **structurally cannot manufacture `verified`**. `ground_truth` feeds only a separate,
+  clearly-labeled `[lab oracle]` line, never the verdict.
+- **Offline-testable renderer:** `backend/app/cli/confirm_render.py` is pure; its test
+  (`backend/tests/test_confirm_render.py`) drives from the committed golden rows at **zero API cost**.
+- **Exit codes:** `0` nothing confirmed · `1` ≥1 confirmed · `2` run/degraded error (NOT DATA).
+- **Commits:** `94d1fd5` (spine), `8727b12` (offline test + full-caseset mode). Backend suite
+  **466 → 473** (+7 renderer tests).
 
 ## The main line (three nodes)
 
