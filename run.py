@@ -21,14 +21,13 @@ import json
 import asyncio
 import argparse
 import tempfile
-from collections import Counter
 
 _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _REPO_ROOT)
 sys.path.insert(0, os.path.join(_REPO_ROOT, "scripts", "measure"))
 
 from backend.app.core.config import settings, reveal_secret  # noqa: E402
-from backend.app.cli.confirm_render import render_tree, case_outcome, exit_code_for  # noqa: E402
+from backend.app.cli.confirm_render import render_tree, exit_code_for, render_tally  # noqa: E402
 import verdict_measure as vm  # noqa: E402  (reuse: _run_one/_boot_target/_stop_target/_rm_db/_attack_path)
 
 _EXIT_NOTDATA = 2
@@ -95,9 +94,7 @@ def confirm(caseset_path: str, case_id, model) -> int:
 
     code = exit_code_for(records)
     if len(records) > 1:
-        t = Counter(case_outcome(r) for r in records)
-        print(f"--- tally: {len(records)} case(s) | confirmed={t['confirmed']} "
-              f"refuted={t['refuted']} not-data={t['notdata']} | exit {code} ---")
+        print(render_tally(records))
     return code
 
 
