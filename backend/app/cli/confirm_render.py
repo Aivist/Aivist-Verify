@@ -3,16 +3,22 @@
 #
 # Takes a RESULT-RECORD - the flat dict shape of a `sweep_highN.jsonl` row, optionally
 # enriched by the live `confirm` command with method/baseline_path/attack_path/body - and
-# returns a human-readable evidence tree.
+# returns a human-readable evidence tree that explains, in plain language, WHAT THE ENGINE
+# PHYSICALLY DID (wrote as the attacker, read back as another identity, refused to confirm
+# when no cross-user effect occurred) instead of dumping internal field tokens.
 #
 # PURE + OFFLINE: no engine import, no network, no settings. That is deliberate - it makes
 # the renderer testable against committed golden rows at zero API cost, and a future
-# `--json` trivial (dump the record).
+# `--json` trivial (dump the record). The ONLY environment sensing is an OPTIONAL default
+# TTY probe for color (sys.stdout.isatty / NO_COLOR / FORCE_COLOR); every caller can pin it
+# explicitly with `color=`, and the offline tests always do, so rendering stays deterministic.
 #
 # INVARIANTS (structural):
 #   * The verdict is READ from the record's engine fields ONLY (`final_verdict`, else
 #     `ai_verdict`). This renderer CANNOT manufacture `verified` - it only renders what the
-#     engine produced.
+#     engine produced. The plain-language layer TRANSLATES field names; it never invents,
+#     embellishes, or softens a verdict, and every sentence keeps its raw engine token
+#     visible (dim, in parentheses) so a technical reader loses nothing.
 #   * `ground_truth` is used ONLY for the separate, clearly-labeled "[lab oracle]" line
 #     BELOW the tree - NEVER as an input to the verdict (that would be self-grading).
 #   * ALL output passes through a credential redactor (belt-and-suspenders: records never
@@ -21,9 +27,49 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import sys
+import textwrap
+from typing import Optional
 
 _REDACT = "***REDACTED***"
+
+
+# ------------------------------------------------------------------------------
+# Color (ANSI). No third-party dependency: the renderer is pure stdlib on purpose,
+# so a confirmed vuln looks alarming and a refuted candidate looks calm WITHOUT
+# pulling `rich` into the offline test path. Auto-off when not a TTY (piping / CI /
+# pytest capture stay clean), overridable with NO_COLOR / FORCE_COLOR, and every
+# render_* function takes an explicit `color=` for deterministic tests.
+# ------------------------------------------------------------------------------
+_ANSI = {
+    "reset": "\033[0m", "bold": "\033[1m", "dim": "\033[2m",
+    "red": "\033[31m", "green": "\033[32m", "yellow": "\033[33m", "cyan": "\033[36m",
+}
+
+
+def _supports_color() -> bool:
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    try:
+        return bool(sys.stdout.isatty())
+    except Exception:
+        return False
+
+
+def _painter(color: Optional[bool]):
+    """Return a paint(text, *styles) function. color=None => auto-detect once."""
+    on = _supports_color() if color is None else bool(color)
+
+    def paint(text: str, *styles: str) -> str:
+        if not on or not styles:
+            return text
+        return "".join(_ANSI[s] for s in styles) + text + _ANSI["reset"]
+
+    return paint
 
 
 def _redact(text: str) -> str:
@@ -36,6 +82,125 @@ def _redact(text: str) -> str:
     return text
 
 
+# ==============================================================================
+# TRANSLATION LAYER - engine token -> ONE honest human sentence.
+#
+# Every string here is faithful to what the channel/anchor means IN CODE
+# (deep_verifier.py). The raw token is always shown alongside (see `_tok`); this
+# table only makes the token readable, it never replaces the evidence.
+# ==============================================================================
+_SHAPE_PLAIN = {
+    "write_record": "cross-user write (BOLA)",
+    "silent_write": "silent cross-user write (BOLA)",
+    "read_semantic": "cross-user read (BOLA)",
+    "delete": "cross-user delete (BOLA)",
+    "mass_assignment": "mass-assignment / privilege escalation",
+}
+
+# guard_override -> short channel name shown on the verdict line.
+_CHANNEL_NAME = {
+    "write_record_readback_decisive": "write-record read-back",
+    "state_readback_causally_decisive": "object-state read-back",
+    "delete_readback_negative_assertion_decisive": "delete negative-assertion",
+    "state_jump_causally_decisive": "mass-assignment state-jump",
+}
+_READ_SEMANTIC_CHANNEL_NAME = "read-semantic owner-view gate"
+
+# guard_override -> the "what the engine proved" paragraph for a CONFIRMED verdict.
+_CHANNEL_PROOF = {
+    "write_record_readback_decisive": (
+        "Wrote as the attacker, then read the object back through a different endpoint as "
+        "another identity. A record carrying the victim's object id and the exact value this "
+        "attack wrote was found on that read-back, so the unauthorized write provably persisted. "
+        "That persisted read-back is the proof."
+    ),
+    "state_readback_causally_decisive": (
+        "Wrote as the attacker, then re-read the victim's object's own state as another "
+        "identity. It now carries the exact value this attack injected, so the cross-user "
+        "write provably persisted."
+    ),
+    "delete_readback_negative_assertion_decisive": (
+        "The victim's object existed and was active immediately before the attack, and was "
+        "gone (or marked deleted) immediately after. An unauthorized delete that provably "
+        "persisted."
+    ),
+    "state_jump_causally_decisive": (
+        "Every field the attacker sent moved from the victim object's known prior value to "
+        "the attacker's injected value. A mass-assignment write that provably persisted."
+    ),
+}
+_READ_SEMANTIC_PROOF = (
+    "Re-fetched the victim's object as the victim, and the attacker's response matched that "
+    "authentic view. The attacker really did read the victim's data across the "
+    "access-control boundary."
+)
+_SAME_RESOURCE_PROOF = (
+    "The engine verified a cross-user effect on the same resource that was attacked "
+    "(no cross-resource read-back was required)."
+)
+
+# guard_override -> the "why it did not confirm" paragraph for a REFUTED verdict.
+_REFUTE_CHANNEL = {
+    "cross_resource_readback_not_decisive": (
+        "The only confirming read-back landed on a DIFFERENT resource than the one attacked, "
+        "so it cannot prove a cross-user effect. The verdict was downgraded to inconclusive."
+    ),
+    "owner_view_not_corroborated": (
+        "Re-fetched the victim's object as the victim; the attacker's response did NOT return "
+        "the victim's data, so no cross-user read actually occurred."
+    ),
+}
+_READ_SEMANTIC_REFUTE = (
+    "The owner-view check did not corroborate the attacker's response as the victim's data, "
+    "so no cross-user read was confirmed."
+)
+
+# Per-anchor value translations. Keys are the exact engine field values.
+_CALLER_IDENTITY = {
+    "confirmed": "the read-back object belongs to the victim, not the attacker (a genuine cross-user target)",
+    "same_as_caller": "the write was attributed to the attacker's own identity",
+    "owner_not_found": "no owner identity on the read-back (e.g. the object returned 404 / was gone)",
+}
+_PAYLOAD_CAUSALITY = {
+    "confirmed_at_path": "this attack's unique value was present in the object's state read-back - the write landed",
+    "confirmed_in_body": "this attack's unique value was present in the read-back body - the write landed",
+    "absent": "this attack's unique value was NOT present in the read-back - the write did not land",
+    "no_payload": "no injected value to trace for this shape",
+}
+_STATE_JUMP = {
+    "confirmed_jump": "every field the attack sent moved from a known prior value to the attacker's value",
+    "no_jump": "no field moved from a known prior state to the attacker's value",
+    "preflight_unknown": "could not read the object's prior state, so a state-jump cannot be proven",
+    "postread_unknown": "could not read the object's state after the attack, so a state-jump cannot be proven",
+    "no_sent_fields": "the attack sent no fields to check for a state-jump",
+    "indeterminate": "state-jump evidence inconclusive",
+}
+_NEGATIVE_ASSERTION = {
+    "confirmed_physical": "present before the attack, gone (404/403/410) after - a persisted delete",
+    "confirmed_logical": "present before the attack, marked deleted (a lifecycle field flipped) after - a persisted soft-delete",
+    "still_present": "the object was still present after the attack - nothing was deleted",
+    "no_preflight": "could not confirm the object existed before the attack, so a delete cannot be proven",
+    "preflight_absent": "the object did not exist before the attack, so its later absence proves nothing",
+    "preflight_already_deleted": "the object was already deleted before the attack",
+    "indeterminate": "delete evidence inconclusive",
+}
+_ANCHORING = {
+    "confirmed": "a code-side anchor in the response matched the victim (corroborating, observe-only)",
+    "value_mismatch": "the code-side anchor did not match the victim (observe-only)",
+    "no_path": "no evidence path to anchor on (observe-only)",
+    "failed_path_not_found": "the anchoring read-back path was not found (observe-only)",
+}
+
+
+def _translate(table: dict, value) -> str:
+    """Plain sentence for an engine value, or the raw value if we have no translation
+    (degrade gracefully; never hide an unknown token)."""
+    return table.get(value, str(value))
+
+
+# ------------------------------------------------------------------------------
+# Verdict plumbing (unchanged semantics; the verdict still comes ONLY from the engine).
+# ------------------------------------------------------------------------------
 def _verdict(record: dict):
     """The engine's verdict for this record. `final_verdict` (== res.ai_verdict) is
     authoritative; fall back to `ai_verdict` only when the key is absent."""
@@ -72,58 +237,78 @@ def exit_code_for(records) -> int:
 
 
 # ------------------------------------------------------------------------------
-# Tree sections - real engine fields only; nothing invented; no competitor claims.
+# Tree sections - real engine fields only; translated; nothing invented; no
+# competitor claims. Each detail bullet carries its raw token (dim) via `_tok`.
 # ------------------------------------------------------------------------------
-def _evidence_lines(record: dict):
+def _tok(paint, field: str, value) -> str:
+    return paint(f"({field}={value})", "dim")
+
+
+def _evidence_lines(record: dict, paint):
+    """The CONFIRMED evidence chain: only anchors the engine actually produced."""
     out = []
-    if record.get("pre_flight_status") is not None:
-        out.append(f"pre-flight read: HTTP {record['pre_flight_status']} "
-                   f"(the object existed & was the victim's BEFORE the attack)")
-    if record.get("caller_identity"):
-        out.append(f"caller identity anchor: {record['caller_identity']}")
-    if record.get("payload_causality"):
-        out.append(f"payload causality anchor: {record['payload_causality']}")
-    if record.get("state_jump"):
-        out.append(f"state-jump anchor: {record['state_jump']}")
-    if record.get("negative_assertion"):
-        out.append(f"negative-assertion anchor: {record['negative_assertion']}")
-    if record.get("anchoring_result"):
-        out.append(f"evidence anchoring: {record['anchoring_result']}")
-    if record.get("owner_view_corroborated") is not None:
-        out.append(f"owner-view corroborated: {record['owner_view_corroborated']}")
-    ch = record.get("guard_override")
-    if ch:
-        out.append(f"guard: cross-resource downgrade EXEMPTED via '{ch}'")
-    elif record.get("owner_view_corroborated") is True:
-        out.append("guard: read-semantic owner-view gate CORROBORATED (attack response is the victim's data)")
+    ci = record.get("caller_identity")
+    if ci:
+        out.append(_translate(_CALLER_IDENTITY, ci) + "  " + _tok(paint, "caller_identity", ci))
+    pc = record.get("payload_causality")
+    if pc and pc != "no_payload":
+        out.append(_translate(_PAYLOAD_CAUSALITY, pc) + "  " + _tok(paint, "payload_causality", pc))
+    sj = record.get("state_jump")
+    if sj:
+        out.append(_translate(_STATE_JUMP, sj) + "  " + _tok(paint, "state_jump", sj))
+    na = record.get("negative_assertion")
+    if na:
+        out.append(_translate(_NEGATIVE_ASSERTION, na) + "  " + _tok(paint, "negative_assertion", na))
+    pf = record.get("pre_flight_status")
+    if pf is not None:
+        out.append(f"pre-flight read HTTP {pf} - the object existed and was the victim's before the attack")
+    ar = record.get("anchoring_result")
+    if ar:
+        out.append(_translate(_ANCHORING, ar) + "  " + _tok(paint, "anchoring_result", ar))
+    if record.get("owner_view_corroborated") is True:
+        out.append("re-fetched the victim's object as the victim; the attacker's response matched it  "
+                   + _tok(paint, "owner_view_corroborated", True))
     return out
 
 
-def _why_not_lines(record: dict):
+def _why_not_lines(record: dict, paint):
+    """The REFUTED reasoning: why no cross-user effect was confirmed."""
     out = []
+    ch = record.get("guard_override")
     if record.get("shape") == "read_semantic":
-        ov = record.get("owner_view_corroborated")
-        if ov is False:
-            out.append("owner-view NOT corroborated: the attack response did not return the owner's data.")
-        elif ov is None:
-            out.append("owner-view gate did not corroborate the attack response as the owner's data.")
+        out.append(_READ_SEMANTIC_REFUTE
+                   + ("  " + _tok(paint, "guard_override", ch) if ch else ""))
         sim = record.get("owner_view_similarity")
         if sim is not None:
-            out.append(f"owner-view similarity: {sim} (below the corroboration threshold).")
+            out.append(f"owner-view similarity {sim} (below the corroboration threshold)")
     else:
-        if record.get("payload_causality") == "absent":
-            out.append("payload causality absent: this attack's injected value did not land in the read-back.")
-        if record.get("state_jump") in ("no_jump", "preflight_unknown", "postread_unknown"):
-            out.append(f"state jump: {record['state_jump']} (no proven move from a known pre-flight state).")
-        if record.get("negative_assertion") in (
-            "still_present", "no_preflight", "preflight_absent", "preflight_already_deleted"
-        ):
-            out.append(f"negative assertion: {record['negative_assertion']} (from-exists-to-absent not proven).")
-        if not record.get("guard_override"):
-            out.append("cross-resource guard: no deterministic exemption channel fired (verdict downgraded).")
+        if ch in _REFUTE_CHANNEL:
+            out.append(_translate(_REFUTE_CHANNEL, ch) + "  " + _tok(paint, "guard_override", ch))
+        # Supporting anchor detail (only what the engine actually recorded).
+        pc = record.get("payload_causality")
+        if pc == "absent":
+            out.append(_translate(_PAYLOAD_CAUSALITY, pc) + "  " + _tok(paint, "payload_causality", pc))
+        sj = record.get("state_jump")
+        if sj in ("no_jump", "preflight_unknown", "postread_unknown"):
+            out.append(_translate(_STATE_JUMP, sj) + "  " + _tok(paint, "state_jump", sj))
+        na = record.get("negative_assertion")
+        if na in ("still_present", "no_preflight", "preflight_absent", "preflight_already_deleted"):
+            out.append(_translate(_NEGATIVE_ASSERTION, na) + "  " + _tok(paint, "negative_assertion", na))
+        if not ch and not out:
+            out.append("no deterministic exemption channel fired - the model's opinion alone does not confirm")
     if not out:
-        out.append(f"engine verdict '{_verdict(record)}': no deterministic channel confirmed a cross-user effect.")
+        out.append(f"engine verdict {_verdict(record)!r}: no deterministic channel confirmed a cross-user effect")
     return out
+
+
+def _confirm_proof(record: dict):
+    """(short channel name, proof paragraph) for a CONFIRMED verdict."""
+    ch = record.get("guard_override")
+    if ch in _CHANNEL_PROOF:
+        return _CHANNEL_NAME.get(ch, ch), _CHANNEL_PROOF[ch]
+    if record.get("shape") == "read_semantic":
+        return _READ_SEMANTIC_CHANNEL_NAME, _READ_SEMANTIC_PROOF
+    return "same-resource verdict", _SAME_RESOURCE_PROOF
 
 
 def _reproduce_line(record: dict):
@@ -150,9 +335,15 @@ def _lab_oracle_line(record: dict, notdata: bool, verdict) -> str:
             f"(informational only; NEVER an input to the verdict)")
 
 
-def render_tree(record: dict) -> str:
-    """Render one result-record as an evidence tree. Verdict from engine fields only."""
+def render_tree(record: dict, *, color: Optional[bool] = None) -> str:
+    """Render one result-record as a plain-language evidence tree. Verdict from engine
+    fields only; the renderer structurally cannot manufacture `verified`.
+
+    color: None => auto-detect (TTY / NO_COLOR / FORCE_COLOR); True/False to pin it.
+    """
+    paint = _painter(color)
     shape = record.get("shape", "?")
+    shape_plain = _SHAPE_PLAIN.get(shape, shape)
     method = record.get("method") or "-"
     path = record.get("baseline_path") or "-"
     notdata = _is_notdata(record)
@@ -160,26 +351,52 @@ def render_tree(record: dict) -> str:
     lines = []
 
     if notdata:
-        lines.append(f"[NOT DATA] {shape} - {method} {path}")
+        lines.append(paint(f"[NOT DATA]  {shape_plain} - {method} {path}", "bold", "yellow"))
         reason = record.get("degraded_reason") or record.get("error") or "engine returned no usable verdict"
         lines.append(f"  Status: {record.get('status', 'degraded')} - {reason}")
-        lines.append("  No verdict produced (NOT DATA - excluded from any confirm/clean claim).")
+        lines.append("  No verdict produced - excluded from any confirm/clean claim.")
     elif verdict == "verified":
-        lines.append(f"[CONFIRMED] {shape} - {method} {path}")
-        lines.append(f"  Verdict: verified (channel: {record.get('guard_override') or '(read-semantic owner-view gate)'})")
-        lines.append("  Evidence chain (engine's own run):")
-        for ln in _evidence_lines(record):
+        channel_name, proof = _confirm_proof(record)
+        ch_tok = record.get("guard_override")
+        lines.append(paint(f"[CONFIRMED]  {shape_plain} - {method} {path}", "bold", "red"))
+        lines.append("  Verdict: " + paint("verified", "bold", "red")
+                     + f"  (confirming channel: {channel_name})  "
+                     + _tok(paint, "guard_override", ch_tok if ch_tok else "read_semantic_owner_view_gate"))
+        lines.append(paint("  What the engine proved:", "bold"))
+        lines.append(textwrap.fill(proof, width=80, initial_indent="    ", subsequent_indent="    "))
+        lines.append(paint("  Evidence chain (the engine's own run):", "bold"))
+        for ln in _evidence_lines(record, paint):
             lines.append("    - " + ln)
         rep = _reproduce_line(record)
         if rep:
-            lines.append("  Reproduce: " + rep)
+            lines.append(paint("  Reproduce:", "bold"))
+            lines.append("    " + rep)
     else:
-        lines.append(f"[REFUTED] {shape} - {method} {path}")
-        lines.append(f"  Verdict: {verdict}")
-        lines.append("  Why not confirmed:")
-        for ln in _why_not_lines(record):
+        lines.append(paint(f"[REFUTED]  {shape_plain} - {method} {path}", "green"))
+        lines.append("  Verdict: " + paint(str(verdict), "green") + "  (checked - no cross-user effect)")
+        lines.append(paint("  Why it did not confirm:", "bold"))
+        for ln in _why_not_lines(record, paint):
             lines.append("    - " + ln)
-        lines.append("  no cross-user effect confirmed.")
+        lines.append(paint("  Conclusion: the code gate held the line - no cross-user effect confirmed.", "green"))
 
-    lines.append(_lab_oracle_line(record, notdata, verdict))
+    lines.append(paint(_lab_oracle_line(record, notdata, verdict), "dim"))
     return _redact("\n".join(lines))
+
+
+def render_tally(records, *, color: Optional[bool] = None) -> str:
+    """One honest line for full-caseset mode: how many candidates the code gate CONFIRMED
+    vs. REFUTED over the batch. Counts strictly from the engine verdict (`verified` =>
+    confirmed; anything else => not). No claims about other scanners; just the tally."""
+    paint = _painter(color)
+    outcomes = [case_outcome(r) for r in records]
+    total = len(outcomes)
+    confirmed = outcomes.count("confirmed")
+    refuted = outcomes.count("refuted")
+    notdata = outcomes.count("notdata")
+
+    conf_seg = paint(f"{confirmed} confirmed exploitable", *(("bold", "red") if confirmed else ("dim",)))
+    ref_seg = paint(f"{refuted} refuted", "green")
+    parts = [f"{total} candidate(s) checked", conf_seg, ref_seg]
+    if notdata:
+        parts.append(paint(f"{notdata} not-data", "yellow"))
+    return _redact("  " + " | ".join(parts))
