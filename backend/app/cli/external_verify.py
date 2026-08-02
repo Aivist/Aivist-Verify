@@ -43,8 +43,10 @@ from pydantic import SecretStr
 
 from backend.app.core.config import settings, reveal_secret
 from backend.app.cli import branding
+from backend.app.cli import relogin
 from backend.app.cli.confirm_render import render_tree, exit_code_for
 from backend.app.services.endpoint_catalog import catalog_from_openapi
+from backend.app.services.scope import ScopePolicy
 from backend.app.services.deep_verifier import OwnerCredential, execute_deep_verification
 
 # A challenged / auth-failed / rate-limited response is NOT a security signal -> NOT DATA.
@@ -257,6 +259,42 @@ async def _verify_external(
     )
 
 
+def _auth_degraded(result: Any) -> bool:
+    """True iff the engine result shows a 401 on the baseline or attack request — the
+    token-expiry / auth-failure signal a re-login may fix. (403/429 are challenge/rate-limit,
+    NOT token expiry, so they are not retried here; they stay NOT DATA via classify_degradation.)"""
+    for name in ("baseline", "attack"):
+        trail = getattr(result, name, None) or {}
+        if (trail.get("response") or {}).get("status_code") == 401:
+            return True
+    return False
+
+
+async def _verify_external_relogin(
+    target: str, spec: Dict[str, Any], op: Dict[str, Any],
+    login_spec: relogin.LoginSpec, attacker_cred: relogin.Credential,
+    owner_cred: relogin.Credential, model: Optional[str], engine: Callable,
+    *, http_post=None,
+) -> Any:
+    """Obtain both tokens by INDEPENDENT logins (separate providers / clients / credentials —
+    red line 1), feed them into the SAME `_verify_external` engine call the static path uses, and
+    — if a request 401s (token expired) — re-log-in both accounts and retry the engine ONCE. The
+    owner token only ever becomes an `OwnerCredential`; it can never enter an attack request."""
+    scope = ScopePolicy.from_declaration([_approved_host(target)])
+    attacker = relogin.TokenProvider(attacker_cred, login_spec, target, scope, http_post=http_post)
+    owner = relogin.TokenProvider(owner_cred, login_spec, target, scope, http_post=http_post)
+
+    attacker_tok = SecretStr(await attacker.token())      # fresh login (proactive, near-expiry aware)
+    owner_tok = SecretStr(await owner.token())
+    result = await _verify_external(target, spec, op, attacker_tok, owner_tok, model, engine)
+
+    if _auth_degraded(result):                            # 401 -> re-login BOTH + retry ONCE
+        attacker_tok = SecretStr(await attacker.refresh())
+        owner_tok = SecretStr(await owner.refresh())
+        result = await _verify_external(target, spec, op, attacker_tok, owner_tok, model, engine)
+    return result
+
+
 def run_external_verify(
     *,
     target: str,
@@ -264,14 +302,21 @@ def run_external_verify(
     op_path: str,
     model: Optional[str] = None,
     prompt_secret: Callable[[str], str] = getpass.getpass,
+    prompt: Callable[[str], str] = input,
     config_path: Optional[str] = None,
     engine: Callable = execute_deep_verification,
     echo: Callable[..., None] = print,
     err: Optional[Callable[..., None]] = None,
+    auth_spec_path: Optional[str] = None,
+    http_post=None,
 ) -> int:
     """Run `verify` against a locally-run external real target. Returns a process exit code
     (0 nothing confirmed · 1 confirmed · 2 NOT DATA / input error). I/O is injectable for
-    offline tests (prompt_secret / engine / echo / err / config_path)."""
+    offline tests (prompt / prompt_secret / engine / echo / err / config_path / http_post).
+
+    Tokens come EITHER from static tokens (default) OR, when `auth_spec_path` (`--auth`) is
+    given, from an auto re-login flow (see relogin.py) — either/or; the static path is unchanged.
+    Whichever the source, the same `_verify_external` engine call is built (byte-identical)."""
     if err is None:
         def err(*a):  # default: stderr
             print(*a, file=sys.stderr)
@@ -291,24 +336,43 @@ def run_external_verify(
         err("[NOT DATA] the --op JSON must include 'method' and 'baseline_path'.")
         return 2
 
-    try:
-        attacker_tok, owner_tok = _resolve_tokens(
-            config_path or branding.config_file_path(), prompt_secret
-        )
-    except Exception as e:
-        err(f"[NOT DATA] no usable attacker token: {e}")
-        return 2
+    cfg = config_path or branding.config_file_path()
 
-    # Runtime-only enablement (committed config defaults stay False), mirroring the lab path.
-    settings.AI_DEEP_VERIFY_ENABLED = True
-
-    try:
-        result = asyncio.run(
-            _verify_external(target, spec, op, attacker_tok, owner_tok, model, engine)
-        )
-    except Exception as e:
-        err(f"[NOT DATA] run error against {target}: {type(e).__name__}: {e}")
-        return 2
+    if auth_spec_path:
+        # RE-LOGIN mode (--auth): obtain both tokens by INDEPENDENT logins (either/or vs static).
+        try:
+            login_spec = relogin.LoginSpec.from_file(auth_spec_path)
+            attacker_cred, owner_cred = relogin.resolve_login_credentials(cfg, prompt, prompt_secret)
+        except Exception as e:
+            err(f"[NOT DATA] could not set up --auth re-login: {type(e).__name__}: {e}")
+            return 2
+        # Runtime-only enablement (committed config defaults stay False), mirroring the lab path.
+        settings.AI_DEEP_VERIFY_ENABLED = True
+        try:
+            result = asyncio.run(_verify_external_relogin(
+                target, spec, op, login_spec, attacker_cred, owner_cred, model, engine,
+                http_post=http_post,
+            ))
+        except Exception as e:
+            # login failure / token-refresh failure / scope violation -> NOT DATA, never "safe".
+            err(f"[NOT DATA] run error against {target}: {type(e).__name__}: {e}")
+            return 2
+    else:
+        # STATIC-token mode (unchanged).
+        try:
+            attacker_tok, owner_tok = _resolve_tokens(cfg, prompt_secret)
+        except Exception as e:
+            err(f"[NOT DATA] no usable attacker token: {e}")
+            return 2
+        # Runtime-only enablement (committed config defaults stay False), mirroring the lab path.
+        settings.AI_DEEP_VERIFY_ENABLED = True
+        try:
+            result = asyncio.run(
+                _verify_external(target, spec, op, attacker_tok, owner_tok, model, engine)
+            )
+        except Exception as e:
+            err(f"[NOT DATA] run error against {target}: {type(e).__name__}: {e}")
+            return 2
 
     deg = classify_degradation(result)
     record = _record_from_result(result, op, deg)

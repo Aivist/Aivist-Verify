@@ -132,6 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--target", default=None, help="EXTERNAL mode: base URL of a locally-run real target, e.g. http://localhost:8888")
     v.add_argument("--spec", default=None, help="EXTERNAL mode: path to the target's OpenAPI JSON")
     v.add_argument("--op", default=None, help="EXTERNAL mode: path to an operation JSON {method, baseline_path, body, payload, shape}")
+    v.add_argument("--auth", default=None, help="EXTERNAL mode (optional): path to a login JSON {method, path, username_field, password_field, token_field} for auto re-login instead of static tokens (credentials come from per-user config / masked prompt)")
     v.add_argument("--model", default=None, help="optional model override")
 
     sub.add_parser(
@@ -144,6 +145,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main():
     args = build_parser().parse_args()
     if args.cmd in ("verify", "confirm"):
+        if args.auth and not args.target:
+            print("--auth is for EXTERNAL mode; it needs --target (and --spec / --op).", file=sys.stderr)
+            sys.exit(_EXIT_NOTDATA)
         if args.target:
             # EXTERNAL mode: exactly one mode, and --target needs --spec + --op.
             if args.caseset:
@@ -155,6 +159,7 @@ def main():
                 sys.exit(_EXIT_NOTDATA)
             sys.exit(run_external_verify(
                 target=args.target, spec_path=args.spec, op_path=args.op, model=args.model,
+                auth_spec_path=args.auth,
             ))
         if not args.caseset:
             print("Give --caseset <path> (lab mode) or --target <url> --spec <path> --op <path> "
