@@ -9,6 +9,96 @@
 > → component docs ([`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md), [`DEEP_VERIFY.md`](./DEEP_VERIFY.md), …)
 > → [`TECH_DEBT.md`](./TECH_DEBT.md) (known gaps & priorities).
 
+## 0. Status board — authoritative done / next / planned / deferred / rejected
+
+> **This board is the single authoritative answer** to "what's done, what's next, what's deferred,
+> what's rejected." It owns **status, ordering, and decisions**; **code facts** (test counts, shipped
+> modules, commit hashes) live in [`STATUS.md`](./STATUS.md). Every `DONE` below was **re-verified
+> against the repo on 2026-08-02** (backend suite = **507 passed**; the external-path commit
+> **`c0956d0`** confirmed against its touched files). Sections §1–§8 below are the detailed rationale
+> the board summarizes; the tags here win for status.
+
+### ✅ DONE (re-verified against code)
+Engine-side (detail in §3/§4 and [`STATUS.md`](./STATUS.md)): **M1 complete** — five vuln shapes,
+0 FP on the GOLDEN two-target record; **D21** (declared spec field); **D24** (read-semantic owner-view
+gate); **D19** promotion (default OFF, acceptance-passed); **scope-lock hardening** (one audited
+`ScopePolicy`); **provider abstraction** (Gemini / OpenAI-compatible / Anthropic).
+
+Operator front door (this node's line — all re-verified 2026-08-02):
+- **CLI confirmer spine** (`run.py`) — reuses the existing `execute_deep_verification` path; verdict
+  read only from `final_verdict`/`ai_verdict`.
+- **Presentation pass** — plain-language channel/anchor translation + ANSI color + confirmed/refuted
+  tally (`confirm_render.py`; no `rich` dependency).
+- **Console entry point** — `pip install -e .` → `lanivist verify` / `lanivist config`
+  (`pyproject.toml` → `run:main`); `python run.py` still works.
+- **Config flow + relay/中转站 support** — `lanivist config` writes `~/.<brand>/config.toml` (0600),
+  masked key entry; relays ride the existing `openai` provider via `base_url`.
+- **`config.py` user-config source** — per-user TOML source **below env/.env**, above defaults;
+  fail-safe, `SecretStr` key, no default/flag change.
+- **External real-target verify path** — `--target/--spec/--op` assembling into the same engine call;
+  **three red lines** (scope fail-closed from `--target`; attacker/owner identity isolation; `SecretStr`
+  tokens redacted); commit **`c0956d0`**. A real BOLA was **live-confirmed on VAmPI** (unfamiliar
+  third-party target) as an **engineering signal, NOT a zero-FP claim** (real targets have no ground truth).
+
+### ▶️ NEXT (one item)
+- **YAML spec support** — `external_verify._load_json` should also accept `.yml`/`.yaml` so targets that
+  ship **only** a YAML OpenAPI are usable. VAmPI exposed this: feeding its `openapi_specs/openapi3.yml`
+  produced `[NOT DATA] could not read --spec / --op: JSONDecodeError: Expecting value: line 1 column 1`.
+  (Workaround today: fetch a served JSON spec, e.g. connexion's `/openapi.json`.)
+
+### 📋 PLANNED (ordered)
+1. **Multi-step auth / auto-login token acquisition** — VAmPI's 60-second token TTL exposed the
+   static-token ceiling (a token can expire mid-run → NOT DATA). Acquire/refresh tokens via a login flow.
+2. **Remote arbitrary targets + full SSRF / DNS-rebinding / rate-limit hardening** — beyond localhost.
+3. **Passive endpoint discovery (proxy radar)** — feed observed flows into the catalog
+   (`catalog_from_har` is a stub today).
+4. **Live crAPI acceptance run** — the Docker-based target, pending a machine that can run it.
+5. **Frontend** — the product UI.
+6. **README (dual positioning) + comparison report** — this engine's verification vs a detection-side tool.
+7. **GitHub publication + promotion.**
+8. **Umbrella brand name finalization** — `lanivist` is a provisional placeholder (single constant
+   `BRAND_NAME`); the `verify` suffix is locked.
+
+### ⏸️ DEFERRED (with trigger)
+- **Internal Python module rename** (`backend.app…` imports) — high churn, low user value. *Trigger:*
+  before real users / formal packaging.
+- **`run.py` vs `backend/run.py` top-level module-name collision** — both are importable as top-level
+  `run`; the installed entry point resolves correctly today (verified), but pytest needed a
+  path-import workaround. *Trigger:* must-fix before formal packaging. *(Cross-check: this is NOT yet
+  recorded in [`TECH_DEBT.md`](./TECH_DEBT.md) — flagged here for the director to file.)*
+- **flash→pro default correction** — `GEMINI_PRO_MODEL` defaults to `"gemini-2.5-flash"`
+  (`backend/app/core/config.py`), a name/value mismatch. *Trigger:* before it misleads a user/model choice.
+- **`Reproduce`-line auth placeholder + filled `$UNIQUE` value** — the CLI's Reproduce line prints the
+  `$UNIQUE` template and no redacted auth placeholder (CLI_ORIENTATION "open observations").
+- **Two UI tails** — the dead nuclei button and the `.agents` skills. *Trigger:* frontend cleanup.
+- **Chinese → English pass** — mixed-language docs/comments (and the Chinese hunter prompt, which is a
+  functional change requiring re-validation, kept separate).
+
+### ❌ REJECTED (reason — do NOT re-litigate without new evidence)
+- **Multi-tenant / Postgres / SaaS** — conflicts with the single-tenant, local verification
+  differentiation; scaling before the moat is proven is the wrong order.
+- **Code-patch generator** — black-box, no source; a patch cannot be sent-and-proven, so it imports
+  exactly the hallucination risk the whole verification discipline exists to avoid. Remediation stays
+  non-code guidance.
+- **WAF-bypass / offensive scanner** — red-ocean, and there is no ground truth on real targets to make
+  such output trustworthy.
+- **Chasing zero-FP via probability / a stronger model / multi-round reflection** — only a
+  **deterministic code gate** reaches zero. Measured: the model chose the decisive evidence **0/20**
+  unaided; more model or more rounds adds cost and hallucination surface, not zero-FP.
+- **"Zero-credential full auto"** — logically impossible (the engine needs **two real identities** to
+  prove a cross-user effect) and against the authorized-target ethic.
+
+### 🧭 STRATEGIC NOTE (informs where to deepen — NOT a to-do)
+The **target-agnostic owner-view differential gate** (D24) is the **portable moat**: on VAmPI (an
+unfamiliar schema whose object identity is a username **string**, not a numeric id) it **carried the
+confirmation** (`owner_view_corroborated=True`). The **id-shaped anchors** (M1.1/M1.2 caller-identity /
+evidence-anchoring) proved **less portable** there — they read `owner_not_found` / `value_mismatch` and
+were observe-only, doing no work. Implication: deepen toward the **owner-view differential and
+business-context** confirmation, not more id-shaped anchors; and the README positioning should
+**emphasize the portable owner-view confirmation**, not the id-anchors. (See also §7 strategic (a)/(b).)
+
+---
+
 ## 1. What this is (the thesis)
 
 An **access-control vulnerability verification engine** for web apps / APIs. It does not
