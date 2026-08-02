@@ -1,5 +1,20 @@
 # ROADMAP (HUMAN-OWNED)
 
+## Where we are (quick anchor)
+
+- **Main axis:** make the engine usable against progressively more real targets, up to publication.
+- **Done along the axis (verified against code 2026-08-02):** engine core (5 vuln shapes, dual-lab
+  GOLDEN 430/430, 0 FP); CLI confirmer (spine + plain-language/color presentation pass); operator
+  front door (`pip install -e .` → `lanivist`, `lanivist config` + relay/中转站 support, per-user
+  config source); external real-target path (`lanivist verify --target/--spec/--op`, three red lines)
+  — **live-confirmed a real BOLA against VAmPI** (unfamiliar third-party target; an engineering signal,
+  **not** a zero-FP claim); YAML `--spec` support.
+- **Current station:** real-target coverage — just added YAML spec support.
+- **Next station:** multi-step auth (auto-relogin / token refresh, narrow scope) — VAmPI's 60-second
+  token TTL exposed the static-token ceiling. **Slow-lane: plan-first, signed-off** (it touches auth +
+  attacker/owner identity isolation), NOT an auto batch.
+- Full **DONE / NEXT / PLANNED / DEFERRED / REJECTED** detail is in the **§0 status board** just below.
+
 > The single source of truth for what this project is, what it is not, and where it's going.
 > Anchored on code reality, not aspiration. If a claim here drifts from code, the code wins —
 > update this file. Future nodes (human or AI): read this before proposing direction.
