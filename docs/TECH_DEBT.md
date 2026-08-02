@@ -846,6 +846,23 @@
 - **Blast radius:** default-only; the engine, scope enforcement, verdict logic, and every other
   default/flag are untouched. Full backend suite green (**507**); no test depended on `0.0.0.0`.
 
+### D27 — `run.py` (repo root) and `backend/run.py` share the top-level module name `run` — OPEN
+- **Status: OPEN (must-fix before formal packaging).** Two files are importable as the top-level module
+  `run`: the **CLI entry** `run.py` at the repo root (the `lanivist` console script points at `run:main`
+  via `pyproject.toml`) and the **uvicorn server launcher** `backend/run.py`. Whichever directory sits
+  earlier on `sys.path` wins the bare `import run`.
+- **Current impact: contained, not breaking.** The installed console script resolves to the **repo-root**
+  `run.py` (verified from a non-repo cwd: `import run` → the repo-root file; `lanivist --help` shows the
+  CLI, not the server launcher), because `backend/` is not on the top-level path in normal use. The
+  collision only bites under **pytest**, which puts `backend/` on `sys.path`; the CLI-parser test loads
+  the repo-root `run.py` by explicit file path to sidestep it
+  (`backend/tests/test_cli_branding_and_config.py`).
+- **Direction:** before formal packaging, disambiguate — e.g. rename the server launcher
+  `backend/run.py` → `backend/server.py` (updating its references), or move the CLI entry out of a bare
+  `run` module. A rename is the low-risk fix but is a code change out of scope for docs-alignment work,
+  and must not be done casually — cross-check every reference to `backend/run.py` first. Cross-linked
+  from [`ROADMAP.md`](./ROADMAP.md) §0 DEFERRED.
+
 ---
 
 ## Suggested priority order for the next agent

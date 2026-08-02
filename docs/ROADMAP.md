@@ -39,6 +39,9 @@ Operator front door (this node's line — all re-verified 2026-08-02):
   **three red lines** (scope fail-closed from `--target`; attacker/owner identity isolation; `SecretStr`
   tokens redacted); commit **`c0956d0`**. A real BOLA was **live-confirmed on VAmPI** (unfamiliar
   third-party target) as an **engineering signal, NOT a zero-FP claim** (real targets have no ground truth).
+- **`API_HOST` default → `127.0.0.1` (loopback)** — safe-by-default bind; set `API_HOST=0.0.0.0` to
+  expose (env/.env still override). Commit **`da05351`** ([`TECH_DEBT.md`](./TECH_DEBT.md) D26). Was
+  the pre-release "API_HOST → 127.0.0.1" item.
 
 ### ▶️ NEXT (one item)
 - **YAML spec support** — `external_verify._load_json` should also accept `.yml`/`.yaml` so targets that
@@ -48,24 +51,40 @@ Operator front door (this node's line — all re-verified 2026-08-02):
 
 ### 📋 PLANNED (ordered)
 1. **Multi-step auth / auto-login token acquisition** — VAmPI's 60-second token TTL exposed the
-   static-token ceiling (a token can expire mid-run → NOT DATA). Acquire/refresh tokens via a login flow.
+   static-token ceiling (a token can expire mid-run → NOT DATA). Acquire/refresh tokens via a login
+   flow. *(DISTINCT from item 9 — that is request-sequence orchestration, not login; different work.)*
 2. **Remote arbitrary targets + full SSRF / DNS-rebinding / rate-limit hardening** — beyond localhost.
-3. **Passive endpoint discovery (proxy radar)** — feed observed flows into the catalog
-   (`catalog_from_har` is a stub today).
+   *(Subsumes the "WAF circuit-breaker": detect a WAF/rate-limiter has started blocking and stop rather
+   than hammering the target and poisoning verdicts — same rate-limit-hardening work, one item.)*
+3. **Passive endpoint discovery (proxy radar)** — feed observed flows into the catalog. *(This is the
+   open half of **D18** "automated attack-surface discovery" ≡ the `catalog_from_har` stub,
+   `backend/app/services/endpoint_catalog.py:154` — one item, not three.)*
 4. **Live crAPI acceptance run** — the Docker-based target, pending a machine that can run it.
-5. **Frontend** — the product UI.
+5. **Frontend — the product UI.** *(Subsumes **D5**: retire the divergent Vite `frontend/`
+   (`docs/TECH_DEBT.md:67`) — likely the same work as building the product UI; director ruling: PLANNED.)*
 6. **README (dual positioning) + comparison report** — this engine's verification vs a detection-side tool.
 7. **GitHub publication + promotion.**
 8. **Umbrella brand name finalization** — `lanivist` is a provisional placeholder (single constant
    `BRAND_NAME`); the `verify` suffix is locked.
+9. **Multi-step request-sequence orchestration (M2)** — the engine composing a sequence like "user A
+   creates → user B reads" to set up and confirm a cross-actor access-control bug. *(DISTINCT from
+   item 1 — this is request orchestration, not authentication. M2 phase; see §7 strategic (b).)*
+10. **A second *measured* model** — the zero-FP evidence is measured on **gemini-2.5-pro only**;
+    non-Gemini SAFE-case (false-positive) behavior is **unvalidated** (the provider seam gives
+    connectivity, not a correctness/zero-FP guarantee). See §4 / [`LLM_PROVIDERS.md`](./LLM_PROVIDERS.md).
 
 ### ⏸️ DEFERRED (with trigger)
+- **D2 — no authentication/authorization on any API route** (`docs/TECH_DEBT.md:38`) — acceptable for
+  **local, single-tenant** use. **Distinct from the REJECTED multi-tenant/SaaS item** (that is a
+  scaling model; this is a local-security gap). **Interaction:** it mattered more while the host default
+  was `0.0.0.0`; it is now **mitigated (not closed) by the loopback `API_HOST` default** (commit
+  `da05351`, D26) — still no auth. *Trigger:* before any shared / hosted / non-localhost deployment.
 - **Internal Python module rename** (`backend.app…` imports) — high churn, low user value. *Trigger:*
   before real users / formal packaging.
 - **`run.py` vs `backend/run.py` top-level module-name collision** — both are importable as top-level
-  `run`; the installed entry point resolves correctly today (verified), but pytest needed a
-  path-import workaround. *Trigger:* must-fix before formal packaging. *(Cross-check: this is NOT yet
-  recorded in [`TECH_DEBT.md`](./TECH_DEBT.md) — flagged here for the director to file.)*
+  `run` (CLI entry vs uvicorn launcher); the installed entry point resolves correctly today (verified),
+  but it is a latent footgun (pytest needs a path-import workaround). **Now filed as
+  [`TECH_DEBT.md`](./TECH_DEBT.md) D27.** *Trigger:* must-fix before formal packaging.
 - **flash→pro default correction** — `GEMINI_PRO_MODEL` defaults to `"gemini-2.5-flash"`
   (`backend/app/core/config.py`), a name/value mismatch. *Trigger:* before it misleads a user/model choice.
 - **`Reproduce`-line auth placeholder + filled `$UNIQUE` value** — the CLI's Reproduce line prints the
@@ -73,6 +92,23 @@ Operator front door (this node's line — all re-verified 2026-08-02):
 - **Two UI tails** — the dead nuclei button and the `.agents` skills. *Trigger:* frontend cleanup.
 - **Chinese → English pass** — mixed-language docs/comments (and the Chinese hunter prompt, which is a
   functional change requiring re-validation, kept separate).
+- **D1 — no Alembic migrations** (`docs/TECH_DEBT.md:28`) — a startup schema-guard exists; a schema
+  change means recreating / repointing the DB by hand. *Trigger:* if schemas start churning.
+- **D25 — DNS-TOCTOU IP-pinning follow-up** (`docs/TECH_DEBT.md:829`) — a known scope-lock **residual**:
+  the resolved-IP guard resolves+validates before the request, but httpx re-resolves at connect time
+  (a small time-of-check-to-time-of-use window); httpx has no clean resolver hook. *Trigger:* hardening
+  before untrusted remote rebinding scenarios.
+- **D24 — three open read-gate boundaries** (`docs/TECH_DEBT.md:426`), listed explicitly so they are not
+  lost: (a) **public / shared resources** legitimately return the same content to both identities, so the
+  downgrade-only owner-view gate permits them (no upstream exclusion); (b) **owner credentials are
+  per-DEPLOYMENT, not per-finding** (≡ the roadmap's "per-finding ownership baseline" — one item; a real
+  target whose findings belong to different owners would need per-finding creds, which do not exist); (c)
+  the **`0.95` read-gate threshold** is calibrated on deterministic lab data / raw bodies and is
+  **unvalidated against real-target volatility**. *Trigger:* real-target read-semantic use.
+- **D10–D17 cluster** (`docs/TECH_DEBT.md:114-168`) — single-table inheritance (D10), single-host batch
+  (D11), global `verify=False` TLS (D13), proxy Tier-1 scope drop (D14), mitmproxy CA trust (D15),
+  mitmproxy-forced dep pins (D16), internal-ingest loopback guard (D17). **Intentional / low-priority
+  per TECH_DEBT** — parked, no action now.
 
 ### ❌ REJECTED (reason — do NOT re-litigate without new evidence)
 - **Multi-tenant / Postgres / SaaS** — conflicts with the single-tenant, local verification
@@ -96,6 +132,12 @@ evidence-anchoring) proved **less portable** there — they read `owner_not_foun
 were observe-only, doing no work. Implication: deepen toward the **owner-view differential and
 business-context** confirmation, not more id-shaped anchors; and the README positioning should
 **emphasize the portable owner-view confirmation**, not the id-anchors. (See also §7 strategic (a)/(b).)
+
+> **Not yet board-tagged (recorded in §7, pending a director ruling — no status assigned):** the
+> 2-minute "magic demo" + recorded HAR sample; `run_in_executor` for the similarity compute; the
+> **UUID wall** (let the user supply the victim's alternative IDs); M2's full resource/dependency
+> graph; and strategic (a) "depth ≠ more shapes, go toward business-context complexity". These stay in
+> §7 as written; they are listed here only so they are not lost.
 
 ---
 
