@@ -95,16 +95,15 @@ class Settings(BaseSettings):
     )
 
     # SECURITY NOTE (N5 + D2): the server binds to this interface. Default
-    # "0.0.0.0" listens on ALL network interfaces, so anyone on the same
-    # LAN/Wi-Fi (or the public internet if the host is port-forwarded) can
-    # reach the API. Because there is currently NO authentication (see D2),
-    # an exposed instance can be abused to launch scans/fuzzing against
-    # arbitrary targets from your machine. Keep this on a trusted network and
-    # shut the server down when not in use. Set API_HOST=127.0.0.1 to restrict
-    # access to this machine only.
+    # "127.0.0.1" (loopback) restricts the API to THIS machine only — the safe
+    # default, because there is currently NO authentication (see D2), so an
+    # exposed instance could be abused to launch scans/fuzzing against arbitrary
+    # targets from your machine. Set API_HOST=0.0.0.0 ONLY to expose it on all
+    # interfaces for authorized remote testing, and only on a trusted network
+    # with the server shut down when not in use. (env / .env still override.)
     API_HOST: str = Field(
-        default="0.0.0.0",
-        description="Network interface the FastAPI server binds to. Use 127.0.0.1 to restrict to localhost."
+        default="127.0.0.1",
+        description="Network interface the FastAPI server binds to. Default 127.0.0.1 (localhost only); set 0.0.0.0 to expose on all interfaces."
     )
 
     LOG_LEVEL: str = Field(

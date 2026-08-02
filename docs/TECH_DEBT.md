@@ -835,6 +835,17 @@
   (a custom transport/resolver) to close the window. Not yet built. The verdict core is untouched by
   any of the scope-lock work.
 
+### D26 — API_HOST default bound to ALL interfaces (N5) — ✅ RESOLVED (hardened to loopback)
+- **Status: ✅ RESOLVED.** `API_HOST` now defaults to **`127.0.0.1`** (loopback) in
+  `backend/app/core/config.py`; it was `"0.0.0.0"`. The server binds to THIS machine only unless the
+  operator explicitly opts into exposure with `API_HOST=0.0.0.0` (env / `.env` still override — that
+  ability is unchanged). This was the pre-release "API_HOST → 127.0.0.1" register item (ROADMAP §7).
+- **Why:** with no authentication (D2), a `0.0.0.0` default exposed the API to anyone on the LAN/Wi-Fi
+  who could reach the port. The loopback default is the safe posture. It does **not** close D2 (still
+  no auth) — it removes the accidental-exposure footgun and makes "keep bound to localhost" the default.
+- **Blast radius:** default-only; the engine, scope enforcement, verdict logic, and every other
+  default/flag are untouched. Full backend suite green (**507**); no test depended on `0.0.0.0`.
+
 ---
 
 ## Suggested priority order for the next agent
