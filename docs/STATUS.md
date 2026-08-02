@@ -69,29 +69,66 @@ the earlier single-target record (140 SAFE / 70 VULN, one target), kept as histo
 
 | Suite | Command (from repo root) | Result |
 |---|---|---|
-| Backend | `python -m pytest backend/tests -q` | **473 passed** |
+| Backend | `python -m pytest backend/tests -q` | **507 passed** |
 | Ground-truth target (`vulnerable_target`, integer-id) | `python -m pytest vulnerable_target -q` | **31 passed** |
 | Ground-truth target (`depot_target`, UUID-id) | `python -m pytest depot_target -q` | **23 passed** |
 
-## CLI confirmer front door (`run.py confirm`)
+> Re-verified against the repo 2026-08-02 (all three suites run). The backend count was **473** while
+> only the confirmer spine had landed; it is now **507** after the presentation pass, entry point,
+> config flow, `config.py` user-config source, and the external real-target path (see the next section).
 
-A human-walkable front door over the EXISTING confirmation path — pure orchestration +
-presentation, **zero core edits** (`deep_verifier` / `fuzzer` / `scope` / `config` and the
-channels / guard / D24 / D19 all untouched). See [`QUICKSTART.md`](./QUICKSTART.md) (how to run)
-and [`CLI_ORIENTATION.md`](./CLI_ORIENTATION.md) (technical map).
+## Operator front door — CLI, packaging, config, external targets (code facts, re-verified 2026-08-02)
 
-- **Commands:** `python run.py confirm --caseset <path> --case <id>` (one finding) and
-  `python run.py confirm --caseset <path>` (all cases + a one-line tally).
-- **Pure orchestration over `verdict_measure._run_one`:** the CLI calls the same
-  `execute_deep_verification` path the measurement harness uses and renders the returned
+A human-walkable front door over the EXISTING confirmation path. The engine's judgment is
+untouched throughout — `deep_verifier` (four channels / cross-resource guard / D24 / D19),
+`fuzzer._differential_verdict`, and `scope.py`'s enforcement are reused verbatim. The one core
+file touched is `config.py`, and only to ADD a settings source (below). What ships now:
+
+- **CLI confirmer spine** (`run.py`, commits `94d1fd5` + `8727b12`). Reuses
+  `verdict_measure._run_one`'s `execute_deep_verification` path and renders the returned
   `DeepVerificationResult`. The verdict is read ONLY from `final_verdict`/`ai_verdict` — the
-  renderer **structurally cannot manufacture `verified`**. `ground_truth` feeds only a separate,
-  clearly-labeled `[lab oracle]` line, never the verdict.
-- **Offline-testable renderer:** `backend/app/cli/confirm_render.py` is pure; its test
-  (`backend/tests/test_confirm_render.py`) drives from the committed golden rows at **zero API cost**.
-- **Exit codes:** `0` nothing confirmed · `1` ≥1 confirmed · `2` run/degraded error (NOT DATA).
-- **Commits:** `94d1fd5` (spine), `8727b12` (offline test + full-caseset mode). Backend suite
-  **466 → 473** (+7 renderer tests).
+  renderer **structurally cannot manufacture `verified`**; `ground_truth` feeds only the separate
+  `[lab oracle]` line. Exit codes: `0` nothing confirmed · `1` ≥1 confirmed · `2` NOT DATA.
+- **Presentation pass** (`backend/app/cli/confirm_render.py`, commits `ef8fe3b` + `2e3f736`).
+  Plain-language translation of every channel/anchor token (raw token kept alongside), ANSI color
+  (CONFIRMED red / REFUTED green, TTY-autodetected, **no `rich` dependency**, `NO_COLOR`/`FORCE_COLOR`
+  honored), and a one-line confirmed/refuted `render_tally` for full-caseset mode. Pure + offline;
+  tested against committed golden rows at zero API cost.
+- **Console entry point** (`pyproject.toml` → `[project.scripts] lanivist = "run:main"`, commit
+  `4bb643b`). After `pip install -e .` the command is **`lanivist verify …`** / **`lanivist config`**;
+  `python run.py …` still works. `verify` is primary, `confirm` a back-compat alias. The brand token
+  is provisional and derived from ONE constant `BRAND_NAME` in `backend/app/cli/branding.py`
+  (currently `"lanivist"`); the `verify` suffix is locked (see Open decisions).
+- **Interactive config flow + relay/中转站 support** (`backend/app/cli/config_flow.py`, commit
+  `4bb643b`). `lanivist config` prompts for provider / API key (masked via `getpass`) / base_url /
+  model and writes `~/.<brand>/config.toml` at `0600` (where the OS honors it); the key is never
+  echoed/printed/logged. Relay/中转站/DeepSeek/Kimi/GLM/Qwen/Grok/Ollama all ride the existing
+  `openai` (OpenAI-compatible) provider via `base_url` — the capability already existed at the
+  provider layer; the flow surfaces it.
+- **`config.py` user-config source** (`_UserConfigTomlSource` + `settings_customise_sources`, commit
+  `e9a8e10`). A per-user TOML source inserted **below** env and `.env`, **above** field defaults, so
+  explicit env / `backend/.env` always win and the file only fills gaps; a missing/malformed file
+  contributes nothing (byte-identical). No existing default or flag semantic changed; a file
+  `LLM_API_KEY` is coerced to `SecretStr`. First-run detection guides to `lanivist config` instead of
+  a stack trace.
+- **External real-target verify path** (`backend/app/cli/external_verify.py` + `run.py`, commit
+  **`c0956d0`** — verified: touches `external_verify.py`, `test_external_verify.py`, `run.py`, +524/−3).
+  `lanivist verify --target <base_url> --spec <openapi.json> --op <op.json>` assembles a locally-run
+  real target into the **same** `execute_deep_verification` call the lab path uses (lab `--caseset`
+  path unchanged). Three red lines hold structurally, with tests: (1) **scope fail-closed** —
+  `approved_host` is derived from `--target` and the engine `.check()`s every request, no exemption;
+  (2) **attacker/owner identity isolation** — the attacker token is the attack `auth_context` only,
+  the owner token is an `OwnerCredential` consumed only by the GET-only custody-free `fetch_owner_view`,
+  never merged; (3) **both tokens are `SecretStr`, redacted, never logged**. A real target has **no
+  ground truth**, so there is **NO zero-FP claim**; timeout / 429 / 401 / 403 / transport → **NOT DATA**
+  (a challenge is not a security signal).
+- **VAmPI live confirm (engineering signal, NOT a zero-FP claim).** A real BOLA
+  (`GET /books/v1/{book_title}`) was live-confirmed against **VAmPI** — an unfamiliar third-party
+  OWASP target run locally in a sandbox — via the read-semantic **owner-view gate**
+  (`owner_view_corroborated=True`), reproducibly (2 of 3 runs CONFIRMED; the third a transient Gemini
+  timeout → correctly NOT DATA). This is recorded as evidence the external path **runs end-to-end on an
+  unfamiliar API**, explicitly **not** a zero-false-positive claim (real targets have no ground truth
+  to measure against). The exploratory run was throwaway — not committed.
 
 ## The main line (three nodes)
 
