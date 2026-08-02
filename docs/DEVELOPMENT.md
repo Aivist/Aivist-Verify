@@ -46,7 +46,7 @@ Loaded by `backend/app/core/config.py`. Required/important keys:
 | `GEMINI_BATCH_COOLDOWN_SECONDS` | no | default 3 |
 | `GEMINI_REQUEST_TIMEOUT_SECONDS` | no | default 60; hard budget per Gemini call before a degraded fallback (D3). |
 | `DATABASE_URL` | no | default `sqlite+aiosqlite:///./security_platform.db` (relative to CWD). |
-| `API_HOST` | no | default `0.0.0.0` (binds ALL interfaces). Set `127.0.0.1` to restrict to localhost. **No auth yet (D2)** — see security note. |
+| `API_HOST` | no | default `127.0.0.1` (localhost only). Set `0.0.0.0` to bind ALL interfaces (expose). **No auth yet (D2)** — see security note. |
 | `API_PORT` | no | default 8000 |
 | `LOG_LEVEL` | no | default `INFO`; exposed in `GET /` diagnostics. |
 | `CORS_ALLOWED_ORIGINS` | no | comma list; `'null'` is auto-appended for `file://` previews |
@@ -71,12 +71,12 @@ Loaded by `backend/app/core/config.py`. Required/important keys:
 **Always run from the repository root** so the `backend.app...` package imports
 resolve.
 
-Standard (hot-reload, listens on all interfaces):
+Standard (hot-reload, binds `API_HOST`, default `127.0.0.1`):
 ```powershell
 python backend/run.py
 ```
 `run.py` sets the Windows Proactor event-loop policy (needed for subprocess) and
-runs uvicorn with `reload=True` on `0.0.0.0:API_PORT`.
+runs uvicorn with `reload=True` on `API_HOST:API_PORT` (default `127.0.0.1`; set `API_HOST=0.0.0.0` to expose).
 
 Single process, no reload (recommended for debugging / scripted E2E — avoids the
 reloader spawning a child process that holds the DB/port):
@@ -101,7 +101,7 @@ importable):
 ```powershell
 python -m pytest backend/tests -q
 ```
-Current suite: **466 tests** (backend). See [`STATUS.md`](./STATUS.md).
+Current suite: **507 tests** (backend). See [`STATUS.md`](./STATUS.md).
 - `test_pruner.py` — exposure scoring + determinism regression tests
 - `test_step8_custody.py` — auth custody / parallel engine
 - `test_step_d_hunter_link.py` — Step D extraction (column-first + legacy fallback)
