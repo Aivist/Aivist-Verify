@@ -69,13 +69,14 @@ the earlier single-target record (140 SAFE / 70 VULN, one target), kept as histo
 
 | Suite | Command (from repo root) | Result |
 |---|---|---|
-| Backend | `python -m pytest backend/tests -q` | **507 passed** |
+| Backend | `python -m pytest backend/tests -q` | **523 passed** |
 | Ground-truth target (`vulnerable_target`, integer-id) | `python -m pytest vulnerable_target -q` | **31 passed** |
 | Ground-truth target (`depot_target`, UUID-id) | `python -m pytest depot_target -q` | **23 passed** |
 
 > Re-verified against the repo 2026-08-02 (all three suites run). The backend count was **473** while
-> only the confirmer spine had landed; it is now **507** after the presentation pass, entry point,
-> config flow, `config.py` user-config source, and the external real-target path (see the next section).
+> only the confirmer spine had landed; it is now **523** after the presentation pass, entry point,
+> config flow, `config.py` user-config source, the external real-target path, YAML `--spec` support,
+> and the `--auth` auto-relogin path (see the next section).
 
 ## Operator front door — CLI, packaging, config, external targets (code facts, re-verified 2026-08-02)
 
@@ -129,6 +130,20 @@ file touched is `config.py`, and only to ADD a settings source (below). What shi
   timeout → correctly NOT DATA). This is recorded as evidence the external path **runs end-to-end on an
   unfamiliar API**, explicitly **not** a zero-false-positive claim (real targets have no ground truth
   to measure against). The exploratory run was throwaway — not committed.
+- **YAML `--spec` support** (`external_verify._load_spec_file`, commit `5a6cf52`). `--spec` accepts
+  `.yml`/`.yaml` (parsed with `yaml.safe_load` ONLY — never the unsafe loader) as well as `.json`; JSON
+  stays byte-identical and feeds the same `catalog_from_openapi`. Suite 507→510.
+- **Multi-step auth slice 1 — auto re-login / token refresh** (`backend/app/cli/relogin.py` + the `--auth`
+  branch in `external_verify.py`, commit **`675835ff`**). OPTIONAL: instead of static tokens, each account
+  logs in independently (its own client + credential) to obtain its own JWT and re-logs-in near/at expiry —
+  a fresh login per run plus a reactive retry once on a baseline/attack `401`. The three red lines hold
+  (identity isolation incl. after refresh — the owner token never appears in an attack header; credentials
+  AND tokens `SecretStr`, redacted; the login endpoint is scope-checked, fail-closed). Login failure → NOT
+  DATA. The **static-token path is unchanged and the engine is untouched** — only the token *source*
+  changes; `_verify_external`'s `execute_deep_verification` call is byte-identical. Live-proven against
+  **VAmPI at a 60-second token TTL**: `--auth` auto-re-logged-in and CONFIRMED a real BOLA without the run
+  breaking on token expiry. Known limitation (safe-direction, non-blocking): owner-view mid-run 401 —
+  TECH_DEBT **D28**. Suite 510→**523**.
 
 ## The main line (three nodes)
 

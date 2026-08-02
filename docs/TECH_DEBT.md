@@ -863,6 +863,23 @@
   and must not be done casually — cross-check every reference to `backend/run.py` first. Cross-linked
   from [`ROADMAP.md`](./ROADMAP.md) §0 DEFERRED.
 
+### D28 — `--auth` relogin does not refresh a mid-run owner-view 401 — LOW (safe-direction, non-blocking)
+- **Status: OPEN (safe-direction).** The `--auth` auto-relogin (multi-step auth slice 1, commit
+  `675835ff`) refreshes tokens PROACTIVELY (a fresh login per run, near-expiry aware in
+  `relogin.TokenProvider.token()`) and REACTIVELY retries the engine ONCE when the **baseline or attack**
+  request returns 401 (`external_verify._auth_degraded` — attacker-token expiry). It does NOT cover the
+  **D24 owner-view read-back** 401ing mid-engine: if the owner token expires AFTER baseline/attack
+  succeeded (200) but BEFORE the owner-view read late in the run, that read fails and is not retried.
+- **Why this is SAFE (never a false verdict).** `fetch_owner_view` is fail-safe BLOCK — a non-2xx owner
+  view yields `available=False`, so the D24 gate cannot corroborate and a `verified` is downgraded. The
+  worst case is a **missed confirmation / NOT DATA**, NEVER a false positive. The proactive
+  fresh-login-per-run keeps the window small (a read-semantic run is well under a 60s TTL), so this rarely
+  fires — the live VAmPI-at-60s run confirmed without hitting it.
+- **Proper fix (deferred to a later multi-step-auth slice).** Per-request token refresh inside the engine
+  needs an **engine-level token hook** (a callable the engine consults before each request) — a core
+  change out of slice 1's scope, deliberately not built. Until then the safe-direction behavior above
+  stands. Cross-linked from [`ROADMAP.md`](./ROADMAP.md) §0 NEXT.
+
 ---
 
 ## Suggested priority order for the next agent

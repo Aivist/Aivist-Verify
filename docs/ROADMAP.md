@@ -9,10 +9,13 @@
   config source); external real-target path (`lanivist verify --target/--spec/--op`, three red lines)
   — **live-confirmed a real BOLA against VAmPI** (unfamiliar third-party target; an engineering signal,
   **not** a zero-FP claim); YAML `--spec` support.
-- **Current station:** real-target coverage — just added YAML spec support.
-- **Next station:** multi-step auth (auto-relogin / token refresh, narrow scope) — VAmPI's 60-second
-  token TTL exposed the static-token ceiling. **Slow-lane: plan-first, signed-off** (it touches auth +
-  attacker/owner identity isolation), NOT an auto batch.
+- **Current station:** **multi-step auth slice 1 (auto-relogin) — DONE** (commit `675835ff`; also YAML
+  `--spec` support). `--auth` logs each account in for its own token and refreshes near/at expiry, so a
+  short-TTL target (VAmPI's 60s) no longer breaks a run.
+- **Next station:** the remaining multi-step-auth work — owner-token **mid-run** refresh (needs the
+  deferred engine-level token hook, TECH_DEBT D28) and token extraction from **headers/cookies** (beyond
+  slice 1's single-JSON-field limit). **Slow-lane: plan-first, signed-off** (touches auth + identity
+  isolation), NOT an auto batch.
 - Full **DONE / NEXT / PLANNED / DEFERRED / REJECTED** detail is in the **§0 status board** just below.
 
 > The single source of truth for what this project is, what it is not, and where it's going.
@@ -29,8 +32,8 @@
 > **This board is the single authoritative answer** to "what's done, what's next, what's deferred,
 > what's rejected." It owns **status, ordering, and decisions**; **code facts** (test counts, shipped
 > modules, commit hashes) live in [`STATUS.md`](./STATUS.md). Every `DONE` below was **re-verified
-> against the repo on 2026-08-02** (backend suite = **507 passed**; the external-path commit
-> **`c0956d0`** confirmed against its touched files). Sections §1–§8 below are the detailed rationale
+> against the repo on 2026-08-02** (backend suite = **523 passed**; the multi-step-auth commit
+> **`675835ff`** confirmed against its touched files). Sections §1–§8 below are the detailed rationale
 > the board summarizes; the tags here win for status.
 
 ### ✅ DONE (re-verified against code)
@@ -57,36 +60,43 @@ Operator front door (this node's line — all re-verified 2026-08-02):
 - **`API_HOST` default → `127.0.0.1` (loopback)** — safe-by-default bind; set `API_HOST=0.0.0.0` to
   expose (env/.env still override). Commit **`da05351`** ([`TECH_DEBT.md`](./TECH_DEBT.md) D26). Was
   the pre-release "API_HOST → 127.0.0.1" item.
+- **YAML `--spec` support** — `external_verify._load_spec_file` accepts `.yml`/`.yaml` (VAmPI's
+  `openapi3.yml`) as well as `.json`, via `yaml.safe_load` only; JSON byte-identical. Commit **`5a6cf52`**.
+- **Multi-step auth slice 1 — auto re-login / token refresh** — `--auth` gives each account its own login
+  (separate client + credential), a fresh token per run + near-expiry refresh + a reactive retry on a
+  baseline/attack 401. Three red lines hold (identity isolation incl. after refresh; credentials + tokens
+  `SecretStr`; login endpoint scope-checked); the static-token path and the engine are untouched
+  (`relogin.py` + `external_verify.py`, commit **`675835ff`**). Live-proven on **VAmPI at 60s TTL**. Known
+  safe-direction limit: owner-view mid-run 401 (TECH_DEBT **D28**).
 
 ### ▶️ NEXT (one item)
-- **YAML spec support** — `external_verify._load_json` should also accept `.yml`/`.yaml` so targets that
-  ship **only** a YAML OpenAPI are usable. VAmPI exposed this: feeding its `openapi_specs/openapi3.yml`
-  produced `[NOT DATA] could not read --spec / --op: JSONDecodeError: Expecting value: line 1 column 1`.
-  (Workaround today: fetch a served JSON spec, e.g. connexion's `/openapi.json`.)
+- **Multi-step auth slice 2 — the remainder.** (a) Owner-token **mid-run** refresh, which needs an
+  **engine-level token hook** the engine consults per request (a deferred core change — TECH_DEBT **D28**;
+  today's fail-safe is safe-direction: a missed confirmation / NOT DATA, never a false positive); and
+  (b) token extraction from **headers / cookies**, beyond slice 1's single-JSON-response-field limit.
+  Slow-lane: plan-first, signed-off. *(YAML `--spec` support — the prior NEXT — is now DONE, see above.)*
 
 ### 📋 PLANNED (ordered)
-1. **Multi-step auth / auto-login token acquisition** — VAmPI's 60-second token TTL exposed the
-   static-token ceiling (a token can expire mid-run → NOT DATA). Acquire/refresh tokens via a login
-   flow. *(DISTINCT from item 9 — that is request-sequence orchestration, not login; different work.)*
-2. **Remote arbitrary targets + full SSRF / DNS-rebinding / rate-limit hardening** — beyond localhost.
+1. **Remote arbitrary targets + full SSRF / DNS-rebinding / rate-limit hardening** — beyond localhost.
    *(Subsumes the "WAF circuit-breaker": detect a WAF/rate-limiter has started blocking and stop rather
    than hammering the target and poisoning verdicts — same rate-limit-hardening work, one item.)*
-3. **Passive endpoint discovery (proxy radar)** — feed observed flows into the catalog. *(This is the
+2. **Passive endpoint discovery (proxy radar)** — feed observed flows into the catalog. *(This is the
    open half of **D18** "automated attack-surface discovery" ≡ the `catalog_from_har` stub,
    `backend/app/services/endpoint_catalog.py:154` — one item, not three.)*
-4. **Live crAPI acceptance run** — the Docker-based target, pending a machine that can run it.
-5. **Frontend — the product UI.** *(Subsumes **D5**: retire the divergent Vite `frontend/`
+3. **Live crAPI acceptance run** — the Docker-based target, pending a machine that can run it.
+4. **Frontend — the product UI.** *(Subsumes **D5**: retire the divergent Vite `frontend/`
    (`docs/TECH_DEBT.md:67`) — likely the same work as building the product UI; director ruling: PLANNED.)*
-6. **README (dual positioning) + comparison report** — this engine's verification vs a detection-side tool.
-7. **GitHub publication + promotion.**
-8. **Umbrella brand name finalization** — `lanivist` is a provisional placeholder (single constant
+5. **README (dual positioning) + comparison report** — this engine's verification vs a detection-side tool.
+6. **GitHub publication + promotion.**
+7. **Umbrella brand name finalization** — `lanivist` is a provisional placeholder (single constant
    `BRAND_NAME`); the `verify` suffix is locked.
-9. **Multi-step request-sequence orchestration (M2)** — the engine composing a sequence like "user A
-   creates → user B reads" to set up and confirm a cross-actor access-control bug. *(DISTINCT from
-   item 1 — this is request orchestration, not authentication. M2 phase; see §7 strategic (b).)*
-10. **A second *measured* model** — the zero-FP evidence is measured on **gemini-2.5-pro only**;
-    non-Gemini SAFE-case (false-positive) behavior is **unvalidated** (the provider seam gives
-    connectivity, not a correctness/zero-FP guarantee). See §4 / [`LLM_PROVIDERS.md`](./LLM_PROVIDERS.md).
+8. **Multi-step request-sequence orchestration (M2)** — the engine composing a sequence like "user A
+   creates → user B reads" to set up and confirm a cross-actor access-control bug. *(DISTINCT from the
+   multi-step AUTH work — DONE slice 1 / NEXT slice 2 — this is request orchestration, not login. M2
+   phase; see §7 strategic (b).)*
+9. **A second *measured* model** — the zero-FP evidence is measured on **gemini-2.5-pro only**;
+   non-Gemini SAFE-case (false-positive) behavior is **unvalidated** (the provider seam gives
+   connectivity, not a correctness/zero-FP guarantee). See §4 / [`LLM_PROVIDERS.md`](./LLM_PROVIDERS.md).
 
 ### ⏸️ DEFERRED (with trigger)
 - **D2 — no authentication/authorization on any API route** (`docs/TECH_DEBT.md:38`) — acceptable for
