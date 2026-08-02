@@ -9,6 +9,8 @@ import sys
 import json
 import types
 
+import pytest
+import yaml
 from pydantic import SecretStr
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -17,8 +19,9 @@ sys.path.insert(0, _REPO_ROOT)
 from backend.app.cli import external_verify as ev
 from backend.app.cli.external_verify import (
     run_external_verify, classify_degradation, _resolve_tokens,
-    _approved_host, _build_parsed_request, _attack_path_from_op, _auth_header,
+    _approved_host, _build_parsed_request, _attack_path_from_op, _auth_header, _load_spec_file,
 )
+from backend.app.services.endpoint_catalog import catalog_from_openapi
 from backend.app.services.deep_verifier import OwnerCredential
 from backend.app.services.scope import ScopePolicy
 from backend.app.core.config import settings
@@ -202,3 +205,62 @@ def test_real_target_makes_no_zero_fp_claim(tmp_path, monkeypatch):
     assert "not a zero-fp claim" in out.lower()                   # output disclaims zero-FP
     assert "no ground_truth" in out                               # lab-oracle line: nothing to compare
     assert "zero false positive" not in out.lower()               # never asserts the lab claim
+
+
+# ------------------------------------------------------------------ YAML --spec support
+_SPEC_DICT = {
+    "openapi": "3.0.0",
+    "paths": {
+        "/api/users/{id}/gizmo": {"post": {"operationId": "g", "tags": ["writes"]}},
+        "/api/gizmos/{gizmo_id}": {"get": {"operationId": "getGizmo"}},
+    },
+}
+
+
+def test_spec_yaml_and_json_produce_same_catalog(tmp_path):
+    # The reader is a swap, not a semantic change: a YAML spec and the equivalent JSON spec
+    # must yield the SAME catalog. JSON stays byte-identical to the source dict.
+    json_path = tmp_path / "spec.json"
+    yaml_path = tmp_path / "spec.yaml"
+    json_path.write_text(json.dumps(_SPEC_DICT), encoding="utf-8")
+    yaml_path.write_text(yaml.safe_dump(_SPEC_DICT), encoding="utf-8")
+
+    from_json = _load_spec_file(str(json_path))
+    from_yaml = _load_spec_file(str(yaml_path))
+    assert from_json == _SPEC_DICT                       # .json path byte-identical
+    assert from_yaml == _SPEC_DICT                       # .yaml parses to the same dict
+    assert catalog_from_openapi(from_yaml) == catalog_from_openapi(from_json)
+    assert catalog_from_openapi(from_yaml) != []         # sanity: it actually produced a catalog
+
+
+def test_yaml_spec_uses_safe_load_not_the_unsafe_loader(tmp_path):
+    # A hostile spec carrying a python-object tag: safe_load REFUSES it (raises); the unsafe
+    # loader would try to construct/execute it. If _load_spec_file raises, it did NOT execute.
+    malicious = tmp_path / "evil.yaml"
+    malicious.write_text('!!python/object/apply:os.system ["echo pwned"]\n', encoding="utf-8")
+    with pytest.raises(yaml.YAMLError):
+        _load_spec_file(str(malicious))
+    # regression guard: the module must use safe_load and must never call the unsafe loader
+    src = open(ev.__file__, encoding="utf-8").read()
+    assert "safe_load" in src
+    assert "yaml.load(" not in src
+
+
+def test_malformed_yaml_spec_degrades_to_notdata(tmp_path, monkeypatch):
+    # A malformed spec must hit the graceful NOT-DATA path, never a traceback.
+    monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", False)
+    bad_spec = tmp_path / "spec.yaml"
+    bad_spec.write_text("openapi: '3.0.0'\npaths: [1, 2, 3\n", encoding="utf-8")  # unclosed flow seq
+    op_path = _write(tmp_path, "op.json", _OP)
+    lines = []
+    code = run_external_verify(
+        target="http://localhost:8888", spec_path=str(bad_spec), op_path=op_path,
+        prompt_secret=_prompts("atk", ""), config_path=str(tmp_path / "no-config.toml"),
+        engine=_FakeEngine(_result()),
+        echo=lambda *a: lines.append(" ".join(str(x) for x in a)),
+        err=lambda *a: lines.append(" ".join(str(x) for x in a)),
+    )
+    out = "\n".join(lines)
+    assert code == 2
+    assert "[NOT DATA]" in out and "could not read --spec" in out

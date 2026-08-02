@@ -43,6 +43,11 @@ httpx>=0.27.0,<0.29.0
 # Multipart form data parsing (required by FastAPI UploadFile / Form)
 python-multipart>=0.0.9,<0.1.0
 
+# YAML OpenAPI/Swagger spec parsing for the external-target `--spec` (external_verify.py).
+# Parsed with yaml.safe_load ONLY (never the unsafe loader). Present transitively today;
+# declared here so `pip install -e .` guarantees it.
+PyYAML>=6.0,<7.0
+
 # ------------------------------------------------------------------------------
 # Step 9 · Passive Traffic Ingestion Proxy Radar
 # ------------------------------------------------------------------------------

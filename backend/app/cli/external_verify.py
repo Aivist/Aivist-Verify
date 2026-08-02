@@ -66,6 +66,28 @@ def _load_json(path: str) -> Dict[str, Any]:
         return json.load(fh)
 
 
+def _load_spec_file(path: str) -> Dict[str, Any]:
+    """Read an OpenAPI/Swagger spec file into a dict for `--spec`. A `.json` spec is parsed
+    exactly as before (byte-identical); a `.yml`/`.yaml` spec (e.g. VAmPI's openapi3.yml) is
+    parsed with yaml.safe_load. The parsed dict feeds the SAME `catalog_from_openapi` — only the
+    read changes, nothing downstream.
+
+    SECURITY: YAML is parsed with yaml.safe_load ONLY, never the unsafe loader — safe_load cannot
+    deserialize arbitrary Python objects, so a hostile spec file cannot execute code. A malformed
+    file raises (json.JSONDecodeError / yaml.YAMLError), which the caller turns into the graceful
+    '[NOT DATA] could not read --spec' path — never a crash."""
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    if path.lower().endswith((".yml", ".yaml")):
+        import yaml  # lazy: pure-JSON specs never need PyYAML imported
+        return yaml.safe_load(text)
+    try:
+        return json.loads(text)               # .json / no-ext: JSON first (byte-identical)
+    except json.JSONDecodeError:
+        import yaml                            # courtesy: a YAML spec under a non-yaml name still loads
+        return yaml.safe_load(text)
+
+
 def _approved_host(base_url: str) -> str:
     """host[:port] of the external target — the scope DECLARATION handed to the engine.
     Mirrors the lab's `approved = '127.0.0.1:<port>'`. Including the port locks scope to
@@ -260,7 +282,7 @@ def run_external_verify(
         return 2
 
     try:
-        spec = _load_json(spec_path)
+        spec = _load_spec_file(spec_path)     # JSON or YAML (--spec); op stays JSON below
         op = _load_json(op_path)
     except Exception as e:
         err(f"[NOT DATA] could not read --spec / --op: {type(e).__name__}: {e}")
