@@ -27,12 +27,12 @@ if __name__ == "__main__":
     # Run uvicorn programmatically.
     # Both host and port are read dynamically from Pydantic Settings (no hardcoding).
     #
-    # SECURITY NOTE (N5 + D2 — deferred): API_HOST defaults to "0.0.0.0", which
-    # listens on ALL interfaces so a teammate on the same network can reach the
-    # dashboard URL while the server runs. There is NO authentication yet (D2),
-    # so only expose this on a trusted network, never via public port-forwarding,
-    # and stop the server when you are done. Set API_HOST=127.0.0.1 to lock it to
-    # this machine only.
+    # SECURITY NOTE (N5 + D2 — deferred): API_HOST defaults to "127.0.0.1"
+    # (loopback), so the server is reachable only from this machine — the safe
+    # default, because there is NO authentication yet (D2). Set API_HOST=0.0.0.0
+    # to expose it on ALL interfaces for authorized remote testing, and only on a
+    # trusted network, never via public port-forwarding, and stop the server when
+    # you are done.
     uvicorn.run(
         "backend.app.main:app",
         host=settings.API_HOST,

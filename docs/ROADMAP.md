@@ -183,8 +183,9 @@ reported and highest-impact API bug class). Adjacent: BFLA / vertical access con
 The verifier is **built and wired into the pipeline (Phase 7), but dormant**: gated off by
 default (`AI_DEEP_VERIFY_ENABLED` / `AI_DEEP_VERIFY_SHADOW` both default `False`), observe-only
 (judges and logs, never changes the persisted verdict), and the real endpoint catalog/spec is
-**not auto-wired** into the flow (read from `AI_DEEP_VERIFY_OPENAPI_SPEC` via `getattr`; set
-manually by throwaway harnesses during measurement).
+**not auto-discovered** (read from the **declared** `AI_DEEP_VERIFY_OPENAPI_SPEC` config field (D21) —
+settable from `.env`/env, unset ⇒ byte-identical placeholder; an in-process spec dict is still accepted
+by measurement harnesses).
 
 **Verified so far:** same-path cases resolve correctly — AI **8/8** on the same-path set it
 judged (case A is confirmed by the rule oracle, not AI-run), **0 false-pos / 0 false-neg**.
