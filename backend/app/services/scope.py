@@ -1,16 +1,23 @@
 # ==============================================================================
 # Scope policy — THE single audited host-scope decision for the whole engine.
 #
-# This module is the "one audited implementation" the scope-lock hardening
-# milestone (ROADMAP node 3) converges on. Today the engine has multiple
-# hand-rolled host checks (the fuzzer's custody-gated `_host_of()==approved`, the
-# deep verifier's four inline pre-checks, and the proxy's separate suffix-match
-# `pruner.host_in_scope`). They will all be replaced by ONE ScopePolicy so passive
-# capture and active fuzzing share a single decision tree that cannot drift.
+# This module IS the "one audited implementation" the scope-lock hardening
+# milestone (ROADMAP node 3) converged on: every host-scope decision in the engine
+# now flows through this ONE ScopePolicy, so passive capture and active fuzzing share
+# a single decision tree that cannot drift. The former hand-rolled per-caller checks
+# are gone — callers consult this policy, they do not re-implement host math.
 #
-# THIS COMMIT (1) adds only the PURE core + its adversarial test suite. Nothing
-# imports it yet, so it has zero blast radius; the enforcement wiring into
-# `_send_request` (active) and the proxy (passive) lands in later commits.
+# ACTIVE side (a real outbound request): the `_send_request` chokepoint (`fuzzer.py`)
+# enforces the policy fail-closed and UNCONDITIONALLY — a LOCKED scope raises
+# `ScopeViolationError` before the socket opens and validates every redirect hop
+# against the same policy. The pre-send host checks (batch authorization in `fuzzer`
+# and `api/v1/hunter.py`, custody re-auth / dry-run, and the deep verifier's GET-only
+# `fetch_owner_view`) all consult this same policy via `netloc_allowed` / `check`.
+# PASSIVE side (a flow the browser already originated): `pruner.host_in_scope` and the
+# mitmproxy `radar_addon` call `netloc_allowed` on this same policy, so the passive
+# host decision is IDENTICAL to the active one (proven by `test_scope_enforcement.py`);
+# passive is host/port/wildcard only — the resolved-IP rebinding guard is an
+# active-connection concern.
 #
 # GUIDING PRINCIPLE — resolve ambiguity toward USER FREEDOM, not maximal lockdown.
 # The common case ("I want to test this domain") is ONE simple declaration; the
