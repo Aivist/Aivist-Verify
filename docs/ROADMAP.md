@@ -84,17 +84,21 @@ Operator front door (this node's line — all re-verified 2026-08-02):
    open half of **D18** "automated attack-surface discovery" ≡ the `catalog_from_har` stub,
    `backend/app/services/endpoint_catalog.py:154` — one item, not three.)*
 3. **Live crAPI acceptance run** — the Docker-based target, pending a machine that can run it.
-4. **Frontend — the product UI.** *(Subsumes **D5**: retire the divergent Vite `frontend/`
+4. **Interactive onboarding UX for the CLI** — an opening screen that prompts the user for
+   target / spec / tokens / endpoint, then runs. **Sequenced AFTER the crAPI run-through**, because
+   its design depends on what real targets actually require the user to provide (spec shape, path-param
+   forms, auth/token forms) — build the input surface to fit observed reality, not guessed reality.
+5. **Frontend — the product UI.** *(Subsumes **D5**: retire the divergent Vite `frontend/`
    (`docs/TECH_DEBT.md:67`) — likely the same work as building the product UI; director ruling: PLANNED.)*
-5. **README (dual positioning) + comparison report** — this engine's verification vs a detection-side tool.
-6. **GitHub publication + promotion.**
-7. **Umbrella brand name finalization** — `lanivist` is a provisional placeholder (single constant
+6. **README (dual positioning) + comparison report** — this engine's verification vs a detection-side tool.
+7. **GitHub publication + promotion.**
+8. **Umbrella brand name finalization** — `lanivist` is a provisional placeholder (single constant
    `BRAND_NAME`); the `verify` suffix is locked.
-8. **Multi-step request-sequence orchestration (M2)** — the engine composing a sequence like "user A
+9. **Multi-step request-sequence orchestration (M2)** — the engine composing a sequence like "user A
    creates → user B reads" to set up and confirm a cross-actor access-control bug. *(DISTINCT from the
    multi-step AUTH work — DONE slice 1 / NEXT slice 2 — this is request orchestration, not login. M2
    phase; see §7 strategic (b).)*
-9. **A second *measured* model** — the zero-FP evidence is measured on **gemini-2.5-pro only**;
+10. **A second *measured* model** — the zero-FP evidence is measured on **gemini-2.5-pro only**;
    non-Gemini SAFE-case (false-positive) behavior is **unvalidated** (the provider seam gives
    connectivity, not a correctness/zero-FP guarantee). See §4 / [`LLM_PROVIDERS.md`](./LLM_PROVIDERS.md).
 
