@@ -22,9 +22,13 @@
 #      ScopePolicy.check()-ed BEFORE any bytes go out. An out-of-scope login endpoint is
 #      refused (LoginError), never silently reached.
 #
-# SCOPE OF THIS SLICE (do not widen): single-JSON-field token extraction from the login
-# response (covers VAmPI and most JWT logins). Tokens in headers/cookies, OAuth redirects,
-# multi-step challenges, CSRF and captcha are LATER slices — report, do not build.
+# SCOPE (slice 2b): token extraction from the login response by LOCATION — a JSON body
+# field (default; covers VAmPI and most JWT logins), a response HEADER (e.g. Authorization
+# or a custom header), or a Set-Cookie COOKIE. This is READ-ONLY: wherever the token is read
+# from, it flows downstream IDENTICALLY (attacker -> auth_context, owner -> OwnerCredential),
+# and refresh / scope-check / identity-isolation wrap the extractor unchanged. Still OUT
+# (later slices — report, do not build): OAuth redirect flows, multi-step / MFA challenges,
+# CSRF-token round-trips and captcha.
 # ==============================================================================
 from __future__ import annotations
 
@@ -43,8 +47,31 @@ from pydantic import SecretStr
 from backend.app.core.config import reveal_secret
 from backend.app.services.scope import ScopePolicy
 
-# Injectable HTTP for tests: (method, url, json_body) -> (status_code, parsed_json_dict).
-HttpPost = Callable[[str, str, Dict[str, Any]], Awaitable[Tuple[int, Dict[str, Any]]]]
+# Injectable HTTP for tests: (method, url, json_body) -> LoginResponse. A bare
+# (status_code, json_body_dict) 2-tuple is ALSO accepted (back-compat, body-only) and
+# normalized by _as_login_response — so a body-field login stays byte-identical to slice 1.
+HttpPost = Callable[[str, str, Dict[str, Any]], Awaitable["LoginResponse"]]
+
+
+@dataclass(frozen=True)
+class LoginResponse:
+    """The parts of a login response the token may be read from. `headers` are looked up
+    case-insensitively by the extractor; `cookies` is name -> value parsed from Set-Cookie."""
+    status: int
+    body: Dict[str, Any]
+    headers: Dict[str, str]
+    cookies: Dict[str, str]
+
+
+def _as_login_response(raw: Any) -> "LoginResponse":
+    """Normalize an http_post return into a LoginResponse. Accepts a LoginResponse as-is, or a
+    legacy (status, json_body) 2-tuple (body-only; headers/cookies empty) — the latter keeps
+    every body-field caller/test byte-identical to slice 1."""
+    if isinstance(raw, LoginResponse):
+        return raw
+    status, body = raw
+    return LoginResponse(status=status, body=(body if isinstance(body, dict) else {}),
+                         headers={}, cookies={})
 
 # Per-user config keys for the two accounts' login credentials (sensitive; same privacy
 # discipline as the static tokens — file/prompt only, never the command line).
@@ -59,14 +86,25 @@ class LoginError(Exception):
     field name) so it is safe to surface. The caller turns it into the NOT-DATA path."""
 
 
+# Where in the login response the token lives. "body" (default) reads a JSON field;
+# "header" reads a response header value as-is (e.g. "Bearer <jwt>"); "cookie" reads a
+# Set-Cookie cookie value. In EVERY mode `token_field` names the source in that location.
+_TOKEN_LOCATIONS = frozenset({"body", "header", "cookie"})
+
+
 @dataclass(frozen=True)
 class LoginSpec:
-    """The `--auth login.json` declaration: how to log in and where the token is."""
+    """The `--auth login.json` declaration: how to log in and where the token is.
+
+    `token_location` selects WHERE the token is read from — "body" (default; a JSON field),
+    "header" (a response header) or "cookie" (a Set-Cookie cookie) — and `token_field` names
+    the source in that location (the JSON field / header name / cookie name)."""
     method: str
     path: str
     username_field: str
     password_field: str
     token_field: str
+    token_location: str = "body"
 
     @staticmethod
     def from_file(path: str) -> "LoginSpec":
@@ -75,12 +113,18 @@ class LoginSpec:
         if not isinstance(d, dict):
             raise ValueError("--auth login spec must be a JSON object")
         try:
+            location = str(d.get("token_location", "body")).lower()
+            if location not in _TOKEN_LOCATIONS:
+                raise ValueError(
+                    f"--auth token_location must be one of {sorted(_TOKEN_LOCATIONS)}, "
+                    f"got {location!r}")
             return LoginSpec(
                 method=str(d.get("method", "POST")).upper(),
                 path=str(d["path"]),
                 username_field=str(d["username_field"]),
                 password_field=str(d["password_field"]),
                 token_field=str(d["token_field"]),
+                token_location=location,
             )
         except KeyError as e:
             raise ValueError(f"--auth login spec missing required field: {e}") from e
@@ -152,16 +196,60 @@ def _reconstruct_login_url(base_url: str, path: str) -> str:
     return base_url.rstrip("/") + ("" if p.startswith("/") else "/") + p
 
 
-async def _default_http_post(method: str, url: str, json_body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+async def _default_http_post(method: str, url: str, json_body: Dict[str, Any]) -> "LoginResponse":
     """Real login request: a FRESH client per call (no shared cookie/auth state — red line 1).
-    verify=False matches the engine's self-signed-target posture (TECH_DEBT D13)."""
+    verify=False matches the engine's self-signed-target posture (TECH_DEBT D13). Surfaces the
+    body, response headers, and Set-Cookie cookies so the token can be read from any of them."""
     async with httpx.AsyncClient(timeout=20.0, verify=False) as client:
         resp = await client.request(method, url, json=json_body)
     try:
         data = resp.json()
     except Exception:
         data = {}
-    return resp.status_code, (data if isinstance(data, dict) else {})
+    return LoginResponse(
+        status=resp.status_code,
+        body=(data if isinstance(data, dict) else {}),
+        headers={k: v for k, v in resp.headers.items()},
+        cookies={k: v for k, v in resp.cookies.items()},
+    )
+
+
+def _header_lookup(headers: Dict[str, str], name: str) -> Optional[str]:
+    """Case-insensitive header value lookup (HTTP header names are case-insensitive)."""
+    want = name.lower()
+    for k, v in headers.items():
+        if k.lower() == want:
+            return v
+    return None
+
+
+def _extract_token(spec: "LoginSpec", resp: "LoginResponse") -> str:
+    """Read the token out of the login response at the declared location. Returns the token
+    string, or raises LoginError (the NOT-DATA path) when it is absent/empty — the SAME failure
+    shape as slice 1's missing body field, for every mode. The value itself is NEVER placed in
+    the error message (secrecy): only the location + source NAME are named.
+
+    body:   unchanged from slice 1 — the JSON field value, returned as-is (byte-identical).
+    header: the value as-is (e.g. "Bearer <jwt>", which the downstream auth builders accept),
+            whitespace-stripped.
+    cookie: the Set-Cookie cookie value, whitespace-stripped."""
+    loc = spec.token_location
+    if loc == "body":
+        val = resp.body.get(spec.token_field)
+        if not val or not isinstance(val, str):
+            raise LoginError(f"login response had no token in field {spec.token_field!r}")
+        return val
+    if loc == "header":
+        val = _header_lookup(resp.headers, spec.token_field)
+        where = f"header {spec.token_field!r}"
+    elif loc == "cookie":
+        val = resp.cookies.get(spec.token_field)
+        where = f"cookie {spec.token_field!r}"
+    else:  # defensive: from_file validates token_location; direct construction could bypass it
+        raise LoginError(f"unknown token_location {loc!r}")
+    if not val or not isinstance(val, str):
+        raise LoginError(f"login response had no token in {where}")
+    return val.strip()
 
 
 class TokenProvider:
@@ -205,10 +293,7 @@ class TokenProvider:
             self._spec.username_field: self._cred.username,
             self._spec.password_field: reveal_secret(self._cred.password),   # revealed only here
         }
-        status, data = await self._http_post(self._spec.method, url, body)
-        if not (200 <= status < 300):
-            raise LoginError(f"login failed: HTTP {status}")
-        tok = data.get(self._spec.token_field)
-        if not tok or not isinstance(tok, str):
-            raise LoginError(f"login response had no token in field {self._spec.token_field!r}")
-        return tok
+        resp = _as_login_response(await self._http_post(self._spec.method, url, body))
+        if not (200 <= resp.status < 300):
+            raise LoginError(f"login failed: HTTP {resp.status}")
+        return _extract_token(self._spec, resp)   # body / header / cookie — value never logged

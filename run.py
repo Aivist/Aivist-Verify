@@ -132,7 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--target", default=None, help="EXTERNAL mode: base URL of a locally-run real target, e.g. http://localhost:8888")
     v.add_argument("--spec", default=None, help="EXTERNAL mode: path to the target's OpenAPI JSON")
     v.add_argument("--op", default=None, help="EXTERNAL mode: path to an operation JSON {method, baseline_path, body, payload, shape}")
-    v.add_argument("--auth", default=None, help="EXTERNAL mode (optional): path to a login JSON {method, path, username_field, password_field, token_field} for auto re-login instead of static tokens (credentials come from per-user config / masked prompt)")
+    v.add_argument("--auth", default=None, help="EXTERNAL mode (optional): path to a login JSON {method, path, username_field, password_field, token_field, token_location?} for auto re-login instead of static tokens; token_location is body (default) | header | cookie and token_field names the source there (JSON field / header name / cookie name). Credentials come from per-user config / masked prompt.")
     v.add_argument("--model", default=None, help="optional model override")
 
     sub.add_parser(

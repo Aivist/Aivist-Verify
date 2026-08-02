@@ -23,6 +23,7 @@ from backend.app.cli.external_verify import (
 )
 from backend.app.cli.relogin import (
     LoginSpec, Credential, TokenProvider, resolve_login_credentials, LoginError, _jwt_exp,
+    LoginResponse, _extract_token, _as_login_response,
 )
 from backend.app.services.deep_verifier import OwnerCredential
 from backend.app.services.scope import ScopePolicy
@@ -42,6 +43,12 @@ def _jwt(exp=None, tag="x"):
 
 _LOGIN_SPEC = LoginSpec(method="POST", path="/users/v1/login",
                         username_field="username", password_field="password", token_field="auth_token")
+_LOGIN_SPEC_HEADER = LoginSpec(method="POST", path="/users/v1/login",
+                               username_field="username", password_field="password",
+                               token_field="Authorization", token_location="header")
+_LOGIN_SPEC_COOKIE = LoginSpec(method="POST", path="/users/v1/login",
+                               username_field="username", password_field="password",
+                               token_field="session", token_location="cookie")
 _TARGET = "http://127.0.0.1:5000"
 _SCOPE = ScopePolicy.from_declaration(["127.0.0.1:5000"])
 _SPEC = {"openapi": "3.0.0", "paths": {"/books/v1/{t}": {"get": {"operationId": "g"}}}}
@@ -50,9 +57,16 @@ _OP = {"method": "GET", "baseline_path": "/books/v1/alicebook", "body": None,
                    "payload_string": "bobbook", "type": "BOLA"}, "shape": "read_semantic"}
 
 
-def _fake_post_factory(*, status=200, token_field="auth_token", make_token=None):
+def _fake_post_factory(*, status=200, token_field="auth_token", make_token=None,
+                       location="body", name=None):
     """An async http_post that records calls and returns a token identifying the account.
-    Default token `TOK.<username>.<call#>` is identifiable AND distinct per login."""
+    Default token `TOK.<username>.<call#>` is identifiable AND distinct per login.
+
+    `location` places that token where the extractor must read it from: "body" (default; a
+    legacy (status, json) 2-tuple — proving the byte-identical back-compat path), "header"
+    (a LoginResponse header named `name`/Authorization) or "cookie" (a LoginResponse cookie
+    named `name`/session — WITH a Set-Cookie header carrying it too, to prove even that
+    echo never leaks)."""
     calls = []
 
     async def fake(method, url, body):
@@ -62,6 +76,11 @@ def _fake_post_factory(*, status=200, token_field="auth_token", make_token=None)
         user = body.get("username", "?")
         n = len(calls)
         tok = make_token(user, n) if make_token else f"TOK.{user}.{n}"
+        if location == "header":
+            return LoginResponse(200, {}, {name or "Authorization": tok}, {})
+        if location == "cookie":
+            cname = name or "session"
+            return LoginResponse(200, {}, {"set-cookie": f"{cname}={tok}; Path=/"}, {cname: tok})
         return 200, {token_field: tok}
 
     fake.calls = calls
@@ -271,3 +290,175 @@ def test_login_failure_degrades_to_notdata(tmp_path, monkeypatch):
     out = "\n".join(lines)
     assert code == 2 and "[NOT DATA]" in out       # graceful, never "target safe"
     assert "HTTP 401" in out                        # the honest reason surfaces (no password)
+
+
+# ==============================================================================
+# Slice 2b — token extraction by LOCATION (header / cookie), beyond the body field.
+# The four invariants (isolation, secrecy, scope fail-closed, degradation honesty) must
+# hold for the NEW modes too; the body-field path must stay byte-identical (regression).
+# ==============================================================================
+def _write_login(tmp_path, extra):
+    """Write a login.json declaring `extra` (e.g. a token_location/token_field), plus the
+    reusable spec/op, and return (login, spec, op) paths. Mirrors _write_files."""
+    login = tmp_path / "login.json"
+    d = {"method": "POST", "path": "/users/v1/login",
+         "username_field": "username", "password_field": "password"}
+    d.update(extra)
+    login.write_text(json.dumps(d), encoding="utf-8")
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps(_SPEC), encoding="utf-8")
+    op = tmp_path / "op.json"
+    op.write_text(json.dumps(_OP), encoding="utf-8")
+    return str(login), str(spec), str(op)
+
+
+# --------------------------------------------- declaration surface + pure extraction
+def test_login_spec_token_location_parsing(tmp_path):
+    base = {"path": "/login", "username_field": "u", "password_field": "p", "token_field": "t"}
+
+    def _w(d):
+        p = tmp_path / "l.json"
+        p.write_text(json.dumps(d), encoding="utf-8")
+        return str(p)
+
+    assert LoginSpec.from_file(_w(base)).token_location == "body"               # default
+    assert LoginSpec.from_file(_w({**base, "token_location": "header"})).token_location == "header"
+    assert LoginSpec.from_file(_w({**base, "token_location": "COOKIE"})).token_location == "cookie"  # case-folded
+    with pytest.raises(ValueError):                                             # unknown location rejected
+        LoginSpec.from_file(_w({**base, "token_location": "querystring"}))
+
+
+def test_extract_token_from_header():
+    # header value taken as-is (Bearer prefix preserved for the downstream builders)
+    assert _extract_token(_LOGIN_SPEC_HEADER,
+                          LoginResponse(200, {}, {"Authorization": "Bearer HDR"}, {})) == "Bearer HDR"
+    # header NAME lookup is case-insensitive
+    assert _extract_token(_LOGIN_SPEC_HEADER,
+                          LoginResponse(200, {}, {"authorization": "Bearer HDR"}, {})) == "Bearer HDR"
+
+
+def test_extract_token_from_cookie():
+    resp = LoginResponse(200, {}, {"set-cookie": "session=CKTOK; Path=/"}, {"session": "CKTOK"})
+    assert _extract_token(_LOGIN_SPEC_COOKIE, resp) == "CKTOK"
+
+
+def test_body_extraction_regression_byte_identical():
+    # a body-field spec, whether fed a LoginResponse or the legacy 2-tuple, yields the exact
+    # JSON field value unchanged from slice 1 (the same downstream feed).
+    assert _extract_token(_LOGIN_SPEC, LoginResponse(200, {"auth_token": "BODYTOK"}, {}, {})) == "BODYTOK"
+    assert _extract_token(_LOGIN_SPEC, _as_login_response((200, {"auth_token": "BODYTOK"}))) == "BODYTOK"
+
+
+# --------------------------------------------- INVARIANT 1: identity isolation (new modes)
+def _assert_isolation(login_spec, fake):
+    """Run the relogin flow (which forces one 401 -> refresh) and assert the owner token —
+    however extracted — never appears in an attack header, only in owner_credential."""
+    import asyncio
+    eng = _FakeEngine([
+        _result(ai_verdict=None, attack={"response": {"status_code": 401}}),   # forces a relogin
+        _result(ai_verdict="verified"),
+    ])
+    atk = Credential("attackeruser", SecretStr("apw"))
+    own = Credential("victimowner", SecretStr("opw"))
+    asyncio.run(_verify_external_relogin(
+        _TARGET, _SPEC, _OP, login_spec, atk, own, None, eng, http_post=fake))
+    assert len(eng.calls) == 2                      # retried once after the 401
+    for kw in eng.calls:                            # holds on the initial AND the refreshed token
+        auth = str(kw["auth_context"])
+        assert "attackeruser" in auth               # attacker token IS in the attack headers
+        assert "victimowner" not in auth            # owner token is NEVER in the attack headers
+        oc = kw["owner_credential"]
+        assert isinstance(oc, OwnerCredential)
+        assert "victimowner" in oc.header_value     # owner token flows ONLY via owner_credential
+        assert "attackeruser" not in oc.header_value
+
+
+def test_owner_token_never_in_attack_headers_header_mode():
+    _assert_isolation(_LOGIN_SPEC_HEADER, _fake_post_factory(location="header"))
+
+
+def test_owner_token_never_in_attack_headers_cookie_mode():
+    _assert_isolation(_LOGIN_SPEC_COOKIE, _fake_post_factory(location="cookie"))
+
+
+# --------------------------------------------- INVARIANT 2: secrecy (canaries, new modes)
+def test_header_token_never_in_output(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", False)
+    cfg = _write_cfg(tmp_path)
+    login, spec, op = _write_login(tmp_path, {"token_field": "Authorization", "token_location": "header"})
+    fake = _fake_post_factory(location="header", name="Authorization")   # tokens TOK.<user>.<n>
+    eng = _FakeEngine([_result(ai_verdict="failed")])
+    lines = []
+    run_external_verify(
+        target=_TARGET, spec_path=spec, op_path=op, config_path=cfg, auth_spec_path=login,
+        http_post=fake, engine=eng,
+        echo=lambda *a: lines.append(" ".join(str(x) for x in a)),
+        err=lambda *a: lines.append(" ".join(str(x) for x in a)))
+    out = "\n".join(lines)
+    assert "TOK.atkuser" not in out and "TOK.ownuser" not in out   # header-sourced tokens never printed
+
+
+def test_cookie_token_never_in_output_incl_setcookie(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", False)
+    cfg = _write_cfg(tmp_path)
+    login, spec, op = _write_login(tmp_path, {"token_field": "session", "token_location": "cookie"})
+    fake = _fake_post_factory(location="cookie", name="session")     # Set-Cookie carries TOK.<user>.<n>
+    eng = _FakeEngine([_result(ai_verdict="failed")])
+    lines = []
+    run_external_verify(
+        target=_TARGET, spec_path=spec, op_path=op, config_path=cfg, auth_spec_path=login,
+        http_post=fake, engine=eng,
+        echo=lambda *a: lines.append(" ".join(str(x) for x in a)),
+        err=lambda *a: lines.append(" ".join(str(x) for x in a)))
+    out = "\n".join(lines)
+    assert "TOK.atkuser" not in out and "TOK.ownuser" not in out   # cookie-sourced tokens never printed
+    assert "set-cookie" not in out.lower()                          # nor is the raw Set-Cookie echoed
+
+
+# --------------------------------------------- INVARIANT 4: degradation honesty (new modes)
+def test_login_header_missing_degrades_to_notdata(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", False)
+    cfg = _write_cfg(tmp_path)
+    login, spec, op = _write_login(tmp_path, {"token_field": "Authorization", "token_location": "header"})
+
+    async def no_header(m, u, b):
+        return LoginResponse(200, {}, {}, {})       # 200, but the declared header is absent
+
+    async def _no_engine(**kw):
+        raise AssertionError("engine must not run when the token is missing")
+
+    lines = []
+    code = run_external_verify(
+        target=_TARGET, spec_path=spec, op_path=op, config_path=cfg, auth_spec_path=login,
+        http_post=no_header, engine=_no_engine,
+        echo=lambda *a: lines.append(" ".join(str(x) for x in a)),
+        err=lambda *a: lines.append(" ".join(str(x) for x in a)))
+    out = "\n".join(lines)
+    assert code == 2 and "[NOT DATA]" in out        # graceful, never "target safe"
+    assert "Authorization" in out                   # honest reason names the missing header (no secret)
+
+
+def test_login_cookie_missing_degrades_to_notdata(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", False)
+    cfg = _write_cfg(tmp_path)
+    login, spec, op = _write_login(tmp_path, {"token_field": "session", "token_location": "cookie"})
+
+    async def no_cookie(m, u, b):
+        return LoginResponse(200, {}, {}, {})       # 200, but the declared cookie is absent
+
+    async def _no_engine(**kw):
+        raise AssertionError("engine must not run when the token is missing")
+
+    lines = []
+    code = run_external_verify(
+        target=_TARGET, spec_path=spec, op_path=op, config_path=cfg, auth_spec_path=login,
+        http_post=no_cookie, engine=_no_engine,
+        echo=lambda *a: lines.append(" ".join(str(x) for x in a)),
+        err=lambda *a: lines.append(" ".join(str(x) for x in a)))
+    out = "\n".join(lines)
+    assert code == 2 and "[NOT DATA]" in out        # graceful, never "target safe"
+    assert "session" in out                         # honest reason names the missing cookie (no secret)
