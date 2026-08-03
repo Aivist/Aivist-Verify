@@ -83,7 +83,11 @@ Operator front door (this node's line — all re-verified 2026-08-02):
 2. **Passive endpoint discovery (proxy radar)** — feed observed flows into the catalog. *(This is the
    open half of **D18** "automated attack-surface discovery" ≡ the `catalog_from_har` stub,
    `backend/app/services/endpoint_catalog.py:154` — one item, not three.)*
-3. **Live crAPI acceptance run** — the Docker-based target, pending a machine that can run it.
+3. **Live crAPI acceptance run** — an **agent-run exploratory validation is DONE** (crAPI stood up via
+   Docker on the director's Windows machine; three hand-verified endpoints; surfaced **D29** + **D30** —
+   see [`STATUS.md`](./STATUS.md) / [`TECH_DEBT.md`](./TECH_DEBT.md)). An engineering signal, NOT a zero-FP
+   claim. **Still pending:** the post-D30 live re-check (order-endpoint bystander probe) and a
+   purely-manual director acceptance run.
 4. **Interactive onboarding UX for the CLI** — an opening screen that prompts the user for
    target / spec / tokens / endpoint, then runs. **Sequenced AFTER the crAPI run-through**, because
    its design depends on what real targets actually require the user to provide (spec shape, path-param

@@ -130,6 +130,30 @@ file touched is `config.py`, and only to ADD a settings source (below). What shi
   timeout → correctly NOT DATA). This is recorded as evidence the external path **runs end-to-end on an
   unfamiliar API**, explicitly **not** a zero-false-positive claim (real targets have no ground truth
   to measure against). The exploratory run was throwaway — not committed.
+- **crAPI real-target validation (engineering signal, NOT a zero-FP claim — a DISTINCT run from the
+  VAmPI one above; do not conflate the two).** OWASP **crAPI** was stood up locally via Docker on the
+  director's Windows machine (an earlier probe had failed only because Docker Desktop's engine was not
+  running — briefly misdiagnosed as "no Docker", then corrected: it was installed in a per-user path),
+  and an **execution agent** (not a manual director run) drove `lanivist verify` (real gemini-2.5-pro)
+  against three hand-verified endpoints — each verdict judged against hand-verification done FIRST, since
+  a real target carries no ground-truth label:
+  - `GET /workshop/api/shop/orders/{order_id}` (declared path id) — hand-verified **REAL BOLA** →
+    **CONFIRMED**, matched (a true positive), carried by the **owner-view gate**
+    (`owner_view_corroborated=True`) with the id-shaped anchors observe-only.
+  - `GET /community/api/v2/community/posts/{postId}` (inline id, a **public** community feed) —
+    hand-verified **TRUE-NEGATIVE** → **CONFIRMED = a real FALSE POSITIVE**: the first real-target
+    trigger of the D24 public/shared-resource gap, which **motivated D30** (now ✅ RESOLVED, commit
+    `ea65372`, default OFF — an opt-in bystander probe flips the public post CONFIRMED→not-confirmed
+    while a private BOLA still confirms, proven on faithful crAPI-shaped fixtures driving the real
+    engine; **live crAPI re-confirmation is pending the director's machine**). See TECH_DEBT **D30** / [`AUDIT.md`](./AUDIT.md).
+  - `GET /workshop/api/mechanic/mechanic_report?report_id=` (query-string id) — hand-verified **REAL
+    IDOR** → first **REFUTED** (a false negative from an assembly-layer gap), then **CONFIRMED** and
+    matched after the **D29** fix (query-string ids now carried on the baseline + owner-view; commit
+    `227b9c6`). See TECH_DEBT **D29**.
+  The **owner-view gate carried every crAPI confirmation; the id-shaped anchors stayed observe-only** —
+  the same portable-moat pattern seen on VAmPI. **Still pending:** a purely-manual director acceptance
+  run, and the post-D30 live order-endpoint re-check (does that endpoint deny an unrelated third account,
+  or is it broken for everyone? — the D30 residual, `AUDIT.md`).
 - **YAML `--spec` support** (`external_verify._load_spec_file`, commit `5a6cf52`). `--spec` accepts
   `.yml`/`.yaml` (parsed with `yaml.safe_load` ONLY — never the unsafe loader) as well as `.json`; JSON
   stays byte-identical and feeds the same `catalog_from_openapi`. Suite 507→510.
