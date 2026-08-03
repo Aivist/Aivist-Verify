@@ -25,6 +25,7 @@ only a thin [`README.md`](../README.md) pointer).
 | [`DEVELOPMENT.md`](./DEVELOPMENT.md) | Configure, run, test; Windows/PowerShell notes; DB reset recipe; manual E2E; **mitmproxy install + the two dependency pins** + proxy radar quickstart (Step 9). |
 | [`LLM_PROVIDERS.md`](./LLM_PROVIDERS.md) | **Bring your own model/gateway** — provider config (Gemini default · OpenAI-compatible · Anthropic), `base_url`/model/key, and the connectivity-not-zero-FP boundary. |
 | [`TECH_DEBT.md`](./TECH_DEBT.md) | Known issues / risks / what's already resolved (incl. Step 9 R4, the §5 integrity fix R6), with a suggested priority order. |
+| [`AUDIT.md`](./AUDIT.md) | **Full read-only audit register** — 11-area findings tiered by DIRECTION (DANGEROUS = false-positive / gates the zero-FP claim · SAFE = coverage · boundary), each anchored to `file:line`. **The authoritative "what's left before publication" map.** |
 
 > All docs are grounded in the source tree and include file references (e.g.
 > `backend/app/services/fuzzer.py`). When code and docs disagree, the code wins —
