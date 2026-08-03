@@ -880,6 +880,72 @@
   change out of slice 1's scope, deliberately not built. Until then the safe-direction behavior above
   stands. Cross-linked from [`ROADMAP.md`](./ROADMAP.md) §0 NEXT.
 
+### D29 — query-string / non-path IDOR is not expressible or confirmable — MEDIUM (capability, SAFE-direction)
+- **Where:** the external assembly layer — `external_verify._build_parsed_request` +
+  `fuzzer._reconstruct_url` + the owner-view read call in `deep_verifier.execute_deep_verification`.
+- **Observed on a REAL target (crAPI acceptance run-through).** `GET /workshop/api/mechanic/mechanic_report?report_id=`
+  is a **hand-verified REAL IDOR** (attacker account read the owner's report by changing `report_id` in the
+  query string — HTTP 200 returning the owner's `problem_details`). The tool returned **REFUTED
+  (`inconclusive`, exit 0) — a FALSE NEGATIVE.** There is **no ground-truth label** on a real target; the
+  verdict was judged against hand-verification done first.
+- **Root cause — the query id is dropped at TWO sites (the attack side works; baseline + owner-view do not):**
+  1. **Baseline can't carry a query id.** `_build_parsed_request` hardcodes `"query_params": {}` and the
+     external `op.json` has no field for a baseline query parameter, so the baseline (attacker reading their
+     OWN resource) is sent with **no `report_id`**. Observed: baseline request
+     `GET .../mechanic_report` → **HTTP 500**. (The attack side is fine: `payload.location="query_param"`
+     correctly injected `?report_id=6`, attack → HTTP 200.)
+  2. **Owner-view read is path-only.** The D24 gate calls
+     `fetch_owner_view(client, attack_req.get("path", ""), …)` (`deep_verifier.py` ~line 1792), passing the
+     **path only** — `attack_req["query_params"]` (the `report_id`) is not included, so the owner re-read
+     also hits `.../mechanic_report` with no id → `available=False` → `owner_view_corroborated=False` →
+     downgrade. Observed: `guard_override=owner_view_not_corroborated`, `ai_verdict_raw=verified` →
+     `final=inconclusive`.
+- **No workaround in the current op format.** Embedding the id in `baseline_path`
+  (`/…/mechanic_report?report_id=7`) makes the *attack* URL malformed —
+  `.../mechanic_report?report_id=7?report_id=6` (**double `?`**) → **HTTP 400** — because
+  `_reconstruct_url` appends `?<query>` even when the path already contains a `?`. Observed as a second run.
+- **Direction: SAFE.** Because the gate is downgrade-only, the consequence is a **MISSED detection (false
+  negative), never a false positive.** The id-shaped anchors were observe-only (`caller_identity=owner_not_found`,
+  `anchoring_result=confirmed` but not load-bearing); the **owner-view gate carried the (downgrade) judgment**
+  — consistent with the VAmPI portable-moat finding.
+- **Severity:** capability gap, safe-direction. **Next-slice input** (assembly/input layer: add a baseline
+  query-param field + carry `query_params` through URL reconstruction). ⚠️ **Engine-adjacent:** site (2), the
+  owner-view path-only read, is inside `deep_verifier` — the one spot the fix must touch the core, so it needs
+  care (minimal blast radius, full regression), not a casual assembly-layer edit.
+
+### D30 — public / shared resources produce a FALSE POSITIVE — HIGH (DANGEROUS-direction; gates real-target readiness)
+- **This is the more serious of the two crAPI findings, and the one that matters most.** It is the
+  first **empirical, real-target** trigger of **D24 residual gap #1 (public / shared resources)** —
+  see [D24 "STILL OPEN — boundaries" #1](#d24--read-semantic-verdicts-had-no-deterministic-gate-sev-1--resolved)
+  and D24 (e) blind spot (1). That gap was recorded as a known limitation; crAPI now demonstrates it in the wild.
+- **Where:** the D24 read-semantic owner-view gate (`_apply_owner_view_gate` / `fetch_owner_view` /
+  `_owner_view_corroborates` in `deep_verifier.py`).
+- **Observed on a REAL target (crAPI acceptance run-through).** `GET /community/api/v2/community/posts/{postId}`
+  is a **hand-verified TRUE-NEGATIVE**: the community feed is public by design — `GET /community/api/v2/community/posts/recent`
+  returns the same post to any authenticated user, so reading another user's post by id is **intended**, not a
+  BOLA. The tool returned **CONFIRMED (`verified`, exit 1) — a real FALSE POSITIVE.** Evidence:
+  `owner_view_corroborated=True`, `ai_verdict=verified`, no follow-up (read-semantic shape).
+- **Cause.** The owner-view gate re-fetches the resource **as the owner**, the attacker's response **matches**
+  it — *because the resource is public, both identities legitimately receive the same bytes* — so the gate
+  corroborates. The gate **cannot distinguish "leaked private data" from "intentionally public data"**
+  (denial vocabulary is deliberately never consulted; matching content is the only signal, and here it matches
+  for a benign reason). The id-shaped anchors were observe-only; the **owner-view gate carried the
+  confirmation** — same portable-moat pattern as VAmPI, but here that portability *confirms a non-vulnerability*.
+- **Direction: DANGEROUS.** This is a **false positive** — the exact failure mode the project's entire zero-FP
+  discipline exists to prevent. On the same crAPI run the gate was *correct* on a private resource
+  (`GET /workshop/api/shop/orders/{order_id}`, a hand-verified REAL BOLA → correctly `verified`), so the
+  distinction is precisely public-vs-private, not the mechanism.
+- **This defines the real boundary of the zero-FP guarantee (record explicitly):** the zero-FP property holds
+  for **private / authorization-gated resources**, and does **NOT** currently hold when the target contains
+  **public / shared resources** — the owner-view gate will confirm them as cross-user "leaks." The two labs
+  and VAmPI happened to contain no public-read endpoint of this shape, so this surfaced only against a complex
+  real target.
+- **No fix proposed here — deliberately.** Whether to *fix* (e.g. detect public reachability without the
+  victim credential) or to *document the boundary and scope real-target use to private resources* is a
+  **sequencing / positioning call for the director**, not decided in this register.
+- **Severity:** HIGH, dangerous-direction. **Gates real-target readiness** — it must be weighed before any
+  zero-FP claim is made against a target that includes public/shared resources.
+
 ---
 
 ## Suggested priority order for the next agent
