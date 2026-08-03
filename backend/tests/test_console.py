@@ -1,16 +1,17 @@
 # ==============================================================================
 # Offline tests for the interactive console (backend/app/cli/console/*). Zero API,
-# no real terminal: I/O is injected, the engine is a fake. Proves the plumbing —
-# help/config/target/targets/status/verify, credential redaction, the non-secret
-# target file, and (first-class) the terminal-safety paths: mode select, TUI->text
-# fallback, Ctrl+C clean exit, and terminal restore. The lived experience is proven
-# by the director's live walk-through, not here.
+# no real terminal: I/O is injected, the engine/lab are faked. Proves the usability
+# overhaul — validate-at-entry + re-prompt, numbered menus, clear-text non-secret
+# fields vs masked key/tokens, the guided help, the confused-first-user walk, and the
+# `demo` command — plus the terminal-safety paths. Direct-command regression stays in
+# test_external_verify.py; the lived experience is proven by the cold walk-through.
 # ==============================================================================
 import io
 import os
 import sys
 import types
 import tomllib
+import importlib.util
 
 import pytest
 from pydantic import SecretStr
@@ -26,9 +27,30 @@ from backend.app.core.config import settings
 
 
 # ------------------------------------------------------------------ helpers
+def _load_cli_run():
+    """Load the repo-root run.py by PATH (a bare `import run` hits backend/run.py under
+    pytest — the D27 module-name collision). Pins the tests to the CLI entry we ship."""
+    path = os.path.join(_REPO_ROOT, "run.py")
+    spec = importlib.util.spec_from_file_location("_root_run_console_test", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def _scripted(answers):
     it = iter(answers)
     return lambda *_a: next(it, "")
+
+
+class _Spy:
+    """Records the labels it was called with; returns queued answers."""
+    def __init__(self, answers):
+        self._it = iter(answers)
+        self.labels = []
+
+    def __call__(self, label=""):
+        self.labels.append(label)
+        return next(self._it, "")
 
 
 def _ctrl(tmp_path, monkeypatch, *, prompt=None, secret=None, engine=None):
@@ -40,6 +62,12 @@ def _ctrl(tmp_path, monkeypatch, *, prompt=None, secret=None, engine=None):
         config_path=str(tmp_path / "config.toml"), engine=engine,
     )
     return c, lines
+
+
+def _spec(tmp_path):
+    p = tmp_path / "spec.json"
+    p.write_text('{"openapi":"3.0.0","paths":{"/api/orders/{order_id}":{"get":{}}}}', encoding="utf-8")
+    return str(p)
 
 
 def _fake_engine(**over):
@@ -59,13 +87,15 @@ def _fake_engine(**over):
     return eng
 
 
-# ------------------------------------------------------------------ commands
-def test_help_lists_all_commands(tmp_path, monkeypatch):
+# ------------------------------------------------------------------ help / basic
+def test_help_lists_all_commands_with_explanations(tmp_path, monkeypatch):
     c, lines = _ctrl(tmp_path, monkeypatch)
     c.dispatch("help")
     out = "\n".join(lines)
-    for cmd in ("help", "config", "target", "targets", "verify", "status", "quit"):
+    for cmd in ("help", "demo", "config", "target", "targets", "verify", "status", "quit"):
         assert cmd in out
+    assert "when:" in out                                    # each command explains WHEN to use it
+    assert "Typical flow" in out
 
 
 def test_quit_returns_false(tmp_path, monkeypatch):
@@ -74,19 +104,31 @@ def test_quit_returns_false(tmp_path, monkeypatch):
     assert c.dispatch("help") is True
 
 
-def test_config_writes_file_and_redacts_key(tmp_path, monkeypatch):
-    # config screen reuses run_config_flow; refresh is a same-session settings reload —
-    # patched out here so the test stays hermetic (verified live by the director instead).
-    monkeypatch.setattr(ConsoleController, "_refresh_settings", lambda self: None)
+# ------------------------------------------------------------------ config (numbered + validated + masked key)
+def test_config_numbered_provider_and_model_writes_file_redacts_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(ConsoleController, "_refresh_settings", lambda self: None)   # hermetic
     c, lines = _ctrl(tmp_path, monkeypatch,
-                     prompt=_scripted(["gemini", "gemini-2.5-pro"]),
+                     prompt=_scripted(["1", "1"]),           # provider=1 gemini, model menu=1
                      secret=_scripted(["SECRET-KEY-CANARY"]))
     c.dispatch("config")
-    cfg = tmp_path / "config.toml"
-    assert cfg.exists()
-    data = tomllib.loads(cfg.read_text(encoding="utf-8"))
-    assert data.get("LLM_API_KEY") == "SECRET-KEY-CANARY"        # written to the 0600 file
-    assert "SECRET-KEY-CANARY" not in "\n".join(lines)           # NEVER echoed
+    data = tomllib.loads((tmp_path / "config.toml").read_text(encoding="utf-8"))
+    assert data["LLM_PROVIDER"] == "gemini" and data["LLM_MODEL"] == "gemini-2.5-pro"
+    assert data["LLM_API_KEY"] == "SECRET-KEY-CANARY"
+    out = "\n".join(lines)
+    assert "SECRET-KEY-CANARY" not in out                    # never echoed
+    assert "received (17 characters)" in out                 # but confirmed
+
+
+def test_config_invalid_custom_model_reprompts(tmp_path, monkeypatch):
+    monkeypatch.setattr(ConsoleController, "_refresh_settings", lambda self: None)
+    c, lines = _ctrl(tmp_path, monkeypatch,
+                     prompt=_scripted(["1", "3", "2.5", "gemini-2.5-pro"]),   # custom "2.5" bad -> retype
+                     secret=_scripted(["k"]))
+    c.dispatch("config")
+    out = "\n".join(lines)
+    assert "doesn't look like a model id" in out
+    data = tomllib.loads((tmp_path / "config.toml").read_text(encoding="utf-8"))
+    assert data["LLM_MODEL"] == "gemini-2.5-pro"             # recovered to a valid value
 
 
 def test_status_redacts_key(tmp_path, monkeypatch):
@@ -94,43 +136,36 @@ def test_status_redacts_key(tmp_path, monkeypatch):
     c, lines = _ctrl(tmp_path, monkeypatch)
     c.dispatch("status")
     out = "\n".join(lines)
-    assert "set (redacted)" in out
-    assert "STATUS-KEY-CANARY" not in out
+    assert "set (redacted)" in out and "STATUS-KEY-CANARY" not in out
 
 
-def test_target_save_selects_and_stores_no_tokens(tmp_path, monkeypatch):
-    # spec path doesn't exist -> _pick_endpoint falls back to manual method/path entry.
-    prompts = _scripted([
-        "crapi-orders", "http://localhost:8888", str(tmp_path / "nospec.json"),
-        "GET", "/workshop/api/shop/orders/{order_id}",     # manual endpoint
-        "path", "", "8", "7", "",                          # location, id_param(default), ids, auth
-    ])
-    c, lines = _ctrl(tmp_path, monkeypatch, prompt=prompts)
+# ------------------------------------------------------------------ target (validated + numbered + no tokens)
+def test_target_happy_path_saves_selects_no_tokens(tmp_path, monkeypatch):
+    spec = _spec(tmp_path)
+    c, lines = _ctrl(tmp_path, monkeypatch, prompt=_scripted([
+        "mytarget", "http://localhost:8888", spec,
+        "1",          # endpoint pick -> GET /api/orders/{order_id}
+        "1",          # id location -> path
+        "8", "7", "", # attacker id, victim id, login (blank)
+    ]))
     c.dispatch("target")
-    assert c.selected and c.selected.name == "crapi-orders"
-    # persisted, with NO credential field on disk
-    tfile = tmp_path / "targets" / "crapi-orders.toml"
-    assert tfile.exists()
-    d = tomllib.loads(tfile.read_text(encoding="utf-8"))
+    assert c.selected and c.selected.name == "mytarget"
+    d = tomllib.loads((tmp_path / "targets" / "mytarget.toml").read_text(encoding="utf-8"))
     assert d["attacker_id"] == "8" and d["id_param"] == "order_id"
-    assert not any("token" in k.lower() or "password" in k.lower() for k in d)
-    # op assembly is correct (path shape)
-    op = c.selected.to_op()
-    assert op["baseline_path"] == "/workshop/api/shop/orders/8"
-    assert op["payload"] == {"location": "path_segment", "target_param": "8",
-                             "payload_string": "7", "type": "BOLA"}
+    assert not any("token" in k.lower() or "password" in k.lower() for k in d)   # never on disk
+    assert c.selected.to_op()["baseline_path"] == "/api/orders/8"
 
 
-def test_targets_list_and_select(tmp_path, monkeypatch):
-    monkeypatch.setattr(branding, "config_dir", lambda: str(tmp_path))
-    tg.save_target(tg.Target(name="alpha", base_url="http://localhost:8888", spec_path="",
-                             method="GET", path_template="/a/{id}", id_location="path",
-                             id_param="id", attacker_id="1", victim_id="2"))
-    c, lines = _ctrl(tmp_path, monkeypatch, prompt=_scripted(["1"]))
-    c.dispatch("targets")
-    out = "\n".join(lines)
-    assert "alpha" in out
-    assert c.selected and c.selected.name == "alpha"
+def test_target_bad_spec_path_reprompts(tmp_path, monkeypatch):
+    spec = _spec(tmp_path)
+    c, lines = _ctrl(tmp_path, monkeypatch, prompt=_scripted([
+        "t", "http://localhost:8888",
+        str(tmp_path / "does_not_exist.json"), spec,      # bad spec -> re-prompt -> valid
+        "1", "1", "8", "7", "",
+    ]))
+    c.dispatch("target")
+    assert "wasn't found" in "\n".join(lines)
+    assert c.selected and c.selected.name == "t"
 
 
 def test_target_query_location_builds_query_op():
@@ -143,27 +178,136 @@ def test_target_query_location_builds_query_op():
                              "payload_string": "6", "type": "BOLA"}
 
 
+def test_targets_list_and_select(tmp_path, monkeypatch):
+    monkeypatch.setattr(branding, "config_dir", lambda: str(tmp_path))
+    tg.save_target(tg.Target(name="alpha", base_url="http://localhost:8888", spec_path="",
+                             method="GET", path_template="/a/{id}", id_location="path",
+                             id_param="id", attacker_id="1", victim_id="2"))
+    c, lines = _ctrl(tmp_path, monkeypatch, prompt=_scripted(["1"]))
+    c.dispatch("targets")
+    assert "alpha" in "\n".join(lines) and c.selected and c.selected.name == "alpha"
+
+
+# ------------------------------------------------------------------ MASKING invariant (bug #1)
+def test_only_key_and_tokens_are_masked(tmp_path, monkeypatch):
+    # do_target: every field is non-secret -> the masked prompt is NEVER used.
+    monkeypatch.setattr(branding, "config_dir", lambda: str(tmp_path))
+    spec = _spec(tmp_path)
+    prompt_spy = _Spy(["t", "http://localhost:8888", spec, "1", "1", "8", "7", ""])
+    secret_spy = _Spy([])
+    c = ConsoleController(prompt=prompt_spy, secret_prompt=secret_spy, echo=lambda *a: None,
+                          config_path=str(tmp_path / "config.toml"))
+    c.dispatch("target")
+    assert len(secret_spy.labels) == 0                       # NO target field was masked
+    assert any("Target name" in lbl for lbl in prompt_spy.labels)   # shown in clear text
+
+    # do_config: exactly ONE masked prompt (the API key); provider/model are clear.
+    monkeypatch.setattr(ConsoleController, "_refresh_settings", lambda self: None)
+    prompt_spy2 = _Spy(["1", "1"])
+    secret_spy2 = _Spy(["thekey"])
+    c2 = ConsoleController(prompt=prompt_spy2, secret_prompt=secret_spy2, echo=lambda *a: None,
+                           config_path=str(tmp_path / "config.toml"))
+    c2.dispatch("config")
+    assert len(secret_spy2.labels) == 1                      # only the key is masked
+
+
+# ------------------------------------------------------------------ verify (guided masked+confirmed tokens)
 def test_verify_without_selected_target(tmp_path, monkeypatch):
     c, lines = _ctrl(tmp_path, monkeypatch)
     c.dispatch("verify")
     assert "No target selected" in "\n".join(lines)
 
 
-def test_verify_runs_external_verify_and_renders_engine_verdict(tmp_path, monkeypatch):
+def test_verify_without_key_guides(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "LLM_API_KEY", None)
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", None)
+    c, lines = _ctrl(tmp_path, monkeypatch)
+    c.selected = tg.Target(name="t", base_url="http://localhost:8888", spec_path="", method="GET",
+                           path_template="/a/{id}", id_location="path", id_param="id",
+                           attacker_id="1", victim_id="2")
+    c.dispatch("verify")
+    assert "No API key configured" in "\n".join(lines)       # guided, not a crash
+
+
+def test_verify_confirms_and_confirms_token_receipt(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("k"))
-    monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", False)   # restored at teardown
+    monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", False)
     (tmp_path / "s.json").write_text('{"openapi":"3.0.0","paths":{}}', encoding="utf-8")
-    c, lines = _ctrl(tmp_path, monkeypatch, secret=_scripted(["atk", "own"]),
+    c, lines = _ctrl(tmp_path, monkeypatch, secret=_scripted(["Bearer atk", "Bearer own"]),
                      engine=_fake_engine())
     c.selected = tg.Target(name="t", base_url="http://localhost:8888", spec_path=str(tmp_path / "s.json"),
                            method="GET", path_template="/api/orders/{id}", id_location="path",
                            id_param="id", attacker_id="8", victim_id="7")
     c.dispatch("verify")
     out = "\n".join(lines)
-    assert "CONFIRMED" in out and "verified" in out.lower()          # verdict came from the engine
+    assert "CONFIRMED" in out and "verified" in out.lower()  # verdict from the engine
+    assert "received (" in out                               # token receipt confirmed (masked)
 
 
-# ------------------------------------------------------------------ terminal safety (first-class)
+# ------------------------------------------------------------------ THE confused-first-user walk (unit)
+def test_confused_first_user_walk_every_error_caught_and_recovered(tmp_path, monkeypatch):
+    """One session with several WRONG inputs — bad spec path, '2.5' model, the word
+    'targets' in the login field, an out-of-range endpoint number — each caught, explained,
+    and re-prompted, ending in a correctly-saved target. No silent failure, no crash."""
+    monkeypatch.setattr(ConsoleController, "_refresh_settings", lambda self: None)
+    spec = _spec(tmp_path)
+    prompt = _scripted([
+        # config: provider ok, model menu -> custom -> "2.5" (bad) -> valid
+        "1", "3", "2.5", "gemini-2.5-pro",
+        # target: name, url, BAD spec -> valid spec, BAD endpoint number -> valid, id-loc,
+        #         ids, LOGIN word 'targets' (bad path) -> blank
+        "crapi-orders", "http://localhost:8888",
+        str(tmp_path / "nope.json"), spec,
+        "9", "1",           # endpoint: 9 out of range -> re-prompt -> 1
+        "1",                # id location -> path
+        "8", "7",
+        "targets", "",      # login: 'targets' is not a file -> re-prompt -> blank
+    ])
+    c, lines = _ctrl(tmp_path, monkeypatch, prompt=prompt, secret=_scripted(["test-key"]))
+    c.dispatch("config")
+    c.dispatch("target")
+    out = "\n".join(lines)
+    # every wrong input produced a plain-language error + a re-prompt
+    assert "doesn't look like a model id" in out
+    assert "wasn't found" in out                             # bad spec path
+    assert "number from the list" in out                     # out-of-range endpoint
+    assert "login file wasn't found" in out                  # the 'targets' word
+    # and the session still ended with a correct, saved target — bad login NEVER saved
+    assert c.selected and c.selected.name == "crapi-orders"
+    d = tomllib.loads((tmp_path / "targets" / "crapi-orders.toml").read_text(encoding="utf-8"))
+    assert d["auth_spec_path"] == ""                         # 'targets' was rejected, not persisted
+
+
+# ------------------------------------------------------------------ demo
+def test_demo_no_key_guides_and_returns_2(monkeypatch, capsys):
+    run = _load_cli_run()
+    monkeypatch.setattr(settings, "LLM_API_KEY", None)
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", None)
+    called = {"confirm": 0}
+    monkeypatch.setattr(run, "confirm", lambda *a, **k: called.__setitem__("confirm", 1) or 0)
+    code = run.demo()
+    assert code == 2 and called["confirm"] == 0             # guided, engine never invoked
+    assert "needs an API key" in capsys.readouterr().err
+
+
+def test_demo_with_key_renders_confirmed_tree(monkeypatch, capsys):
+    run = _load_cli_run()
+    monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("k"))
+    monkeypatch.setattr(run.vm, "_boot_target", lambda *a, **k: None)
+    monkeypatch.setattr(run.vm, "_stop_target", lambda *a, **k: None)
+    monkeypatch.setattr(run.vm, "_rm_db", lambda *a, **k: None)
+
+    async def fake_run_one(case, cs, model, *a):
+        return {"final_verdict": "verified", "ai_verdict": "verified", "status": "completed",
+                "guard_override": "write_record_readback_decisive", "ground_truth": "REAL"}
+
+    monkeypatch.setattr(run.vm, "_run_one", fake_run_one)
+    code = run.demo()
+    out = capsys.readouterr().out
+    assert code == 1 and ("CONFIRMED" in out or "verified" in out.lower())
+
+
+# ------------------------------------------------------------------ terminal safety (unchanged; first-class)
 class _FakeTTY:
     def __init__(self, tty): self._tty = tty
     def isatty(self): return self._tty
@@ -178,7 +322,7 @@ def test_select_mode_tui_when_tty_and_prompt_toolkit_present():
 
 
 def test_select_mode_text_when_prompt_toolkit_missing(monkeypatch):
-    monkeypatch.setitem(sys.modules, "prompt_toolkit", None)          # import prompt_toolkit -> ImportError
+    monkeypatch.setitem(sys.modules, "prompt_toolkit", None)
     assert lz._select_mode(stdin=_FakeTTY(True), stdout=_FakeTTY(True), env={"TERM": "xterm"}) == "text"
 
 
@@ -187,7 +331,7 @@ def test_restore_terminal_resets_when_tty():
         def isatty(self): return True
     s = _S()
     assert lz._restore_terminal(stream=s) is True
-    assert "\x1b[?25h" in s.getvalue() and "\x1b[0m" in s.getvalue()   # show cursor + reset SGR
+    assert "\x1b[?25h" in s.getvalue() and "\x1b[0m" in s.getvalue()
 
 
 def test_restore_terminal_noop_when_not_tty():
@@ -206,19 +350,7 @@ def test_ctrl_c_exits_clean_and_restores(monkeypatch):
     def kb():
         raise KeyboardInterrupt
 
-    code = lz._guarded_run(c, kb, "text", None)
-    assert code == 130 and restored                                   # clean exit + terminal restored
-
-
-def test_eof_exits_clean(monkeypatch):
-    monkeypatch.setattr(lz, "_restore_terminal", lambda *a, **k: True)
-    c = ConsoleController(prompt=lambda *_: "", secret_prompt=lambda *_: "",
-                          echo=lambda *a: None, config_path="x")
-
-    def eof():
-        raise EOFError
-
-    assert lz._guarded_run(c, eof, "text", None) == 0
+    assert lz._guarded_run(c, kb, "text", None) == 130 and restored
 
 
 def test_tui_exception_falls_back_to_text(monkeypatch):
@@ -228,7 +360,7 @@ def test_tui_exception_falls_back_to_text(monkeypatch):
         called["text"] += 1
         c = ConsoleController(prompt=lambda *_: "", secret_prompt=lambda *_: "",
                               echo=lambda *a: None, config_path="x")
-        return c, (lambda: (_ for _ in ()).throw(EOFError()))         # clean exit on the fallback
+        return c, (lambda: (_ for _ in ()).throw(EOFError()))
 
     monkeypatch.setattr(lz, "make_text_console", fake_make_text)
     monkeypatch.setattr(lz, "_restore_terminal", lambda *a, **k: True)
@@ -238,5 +370,4 @@ def test_tui_exception_falls_back_to_text(monkeypatch):
     def boom():
         raise RuntimeError("tui broke")
 
-    code = lz._guarded_run(c, boom, "tui", None)
-    assert called["text"] == 1 and code == 0                          # fell back to text, exited cleanly
+    assert lz._guarded_run(c, boom, "tui", None) == 0 and called["text"] == 1

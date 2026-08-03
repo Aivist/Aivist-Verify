@@ -110,6 +110,28 @@ def confirm(caseset_path: str, case_id, model) -> int:
     return code
 
 
+_DEMO_CASESET = os.path.join(_REPO_ROOT, "scripts", "measure", "casesets", "vulnerable_target.json")
+_DEMO_CASE = "B1-X-CROSS"   # a REAL cross-user write BOLA, confirmed via a deterministic code channel
+
+
+def demo(model=None) -> int:
+    """Zero-setup demo: confirm a real cross-user BOLA on the built-in in-process lab
+    (no Docker, no external target, no tokens to supply). Reuses the lab confirm() path.
+    Needs an API key to call the verifier; without one it guides the user to `config`
+    (a clear message, never a crash)."""
+    print(f"{product_name()} demo - confirming a real BOLA on the built-in lab "
+          f"(no Docker, no target, no tokens to supply).")
+    if not _has_llm_key():
+        print(
+            f"This demo calls the AI verifier, so it needs an API key. Run  {command_name()} config  "
+            f"(or 'config' in the console) to set one, then re-run  {command_name()} demo . Nothing was sent.",
+            file=sys.stderr,
+        )
+        return _EXIT_NOTDATA
+    print("Booting a local vulnerable app and confirming one cross-user access bug end-to-end...\n")
+    return confirm(_DEMO_CASESET, _DEMO_CASE, model)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The CLI parser. `prog` and the description derive from the brand constant so
     the finalized name flows here with no edit. `verify` is the primary subcommand;
@@ -138,6 +160,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "config",
         help="Interactive setup: choose a provider, enter your API key (hidden), set a model.",
+    )
+    sub.add_parser(
+        "demo",
+        help="Zero-setup demo: confirm a BOLA on the built-in lab (no Docker/target/tokens; needs an API key).",
     )
     return ap
 
@@ -175,6 +201,8 @@ def main():
         sys.exit(confirm(args.caseset, args.case, args.model))
     if args.cmd == "config":
         sys.exit(run_config_flow())
+    if args.cmd == "demo":
+        sys.exit(demo())
 
 
 if __name__ == "__main__":
