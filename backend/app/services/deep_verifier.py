@@ -1243,12 +1243,19 @@ async def fetch_owner_view(
     owner: Optional[OwnerCredential],
     *,
     approved_host: Optional[str] = None,
+    query_params: Optional[Dict[str, Any]] = None,
 ) -> OwnerViewResult:
     """Read `path` AS THE OWNER, returning the object's authentic view.
 
     GET only, by construction — there is no method or body parameter, so this cannot be
     used to send an attack (structural property 2). Scope-locked with the same check the
     M1.3 pre-flight read uses.
+
+    `query_params` (optional) carries the attacked request's query string so the owner
+    re-read hits the SAME resource id when the id lives in the query rather than the path
+    (D29 — query-string IDOR). It is READ verbatim into the GET only; it does not add a
+    method or body, change custody, or alter the judgment — the owner view is still a pure,
+    custody-free GET, and the gate is still downgrade-only.
 
     NOTE: `custody` is deliberately NOT passed to `_send_request`. Custody carries the
     ATTACKER's live session and would inline-inject it over these headers, silently
@@ -1260,7 +1267,7 @@ async def fetch_owner_view(
         return OwnerViewResult(available=False, reason="no_owner_credential")
     if not path or not path.startswith("/"):
         return OwnerViewResult(available=False, reason="invalid_path")
-    req = {"method": "GET", "path": path, "query_params": {},
+    req = {"method": "GET", "path": path, "query_params": dict(query_params or {}),
            "headers": owner.as_read_headers(), "body": None}
     try:
         approved = (approved_host or "").lower()
@@ -1790,7 +1797,7 @@ async def execute_deep_verification(
             if owner_credential is not None and _final_verdict == "verified":
                 _owner_view = await fetch_owner_view(
                     client, attack_req.get("path", ""), base_url, owner_credential,
-                    approved_host=approved,
+                    approved_host=approved, query_params=attack_req.get("query_params"),
                 )
                 _corroborated = _owner_view.available and _owner_view_corroborates(
                     _anchor_body, _owner_view.body

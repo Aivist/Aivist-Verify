@@ -8,6 +8,7 @@ import os
 import sys
 import json
 import types
+import asyncio
 
 import pytest
 import yaml
@@ -20,9 +21,12 @@ from backend.app.cli import external_verify as ev
 from backend.app.cli.external_verify import (
     run_external_verify, classify_degradation, _resolve_tokens,
     _approved_host, _build_parsed_request, _attack_path_from_op, _auth_header, _load_spec_file,
+    _split_path_query,
 )
 from backend.app.services.endpoint_catalog import catalog_from_openapi
-from backend.app.services.deep_verifier import OwnerCredential
+from backend.app.services import deep_verifier as dv
+from backend.app.services.deep_verifier import OwnerCredential, fetch_owner_view
+from backend.app.services.fuzzer import _reconstruct_url, mutate_request
 from backend.app.services.scope import ScopePolicy
 from backend.app.core.config import settings
 
@@ -264,3 +268,95 @@ def test_malformed_yaml_spec_degrades_to_notdata(tmp_path, monkeypatch):
     out = "\n".join(lines)
     assert code == 2
     assert "[NOT DATA]" in out and "could not read --spec" in out
+
+
+# ============================================================================
+# D29 — query-string / non-path IDOR is now expressible and confirmable.
+# The id lives in the query string: carry it on the BASELINE, swap it for the
+# attack, compose a single-'?' URL, and re-read it in the owner view. Path-based
+# cases stay byte-identical (regression). Observed-real trigger: crAPI
+# GET /workshop/api/mechanic/mechanic_report?report_id= (hand-verified IDOR).
+# ============================================================================
+_OP_QS = {
+    "method": "GET",
+    "baseline_path": "/workshop/api/mechanic/mechanic_report?report_id=7",  # attacker's OWN id
+    "body": None,
+    "payload": {"location": "query_param", "target_param": "report_id",
+                "payload_string": "6", "type": "BOLA"},                     # swap -> victim id 6
+    "shape": "query_string_idor",
+}
+
+
+def test_split_path_query_parses_baseline_query_and_is_empty_for_path_cases():
+    path, q = _split_path_query("/workshop/api/mechanic/mechanic_report?report_id=7")
+    assert path == "/workshop/api/mechanic/mechanic_report" and q == {"report_id": "7"}
+    assert _split_path_query("/api/users/1/gizmo") == ("/api/users/1/gizmo", {})  # path case: no query
+
+
+def test_query_string_baseline_carries_id_and_attack_swaps_it():
+    parsed = _build_parsed_request(_OP_QS, "u-1")
+    # BASELINE now carries the attacker's OWN query id (was {} before -> baseline had no id -> 500)
+    assert parsed["path"] == "/workshop/api/mechanic/mechanic_report"
+    assert parsed["query_params"] == {"report_id": "7"}
+    # the engine's REAL mutation swaps ONLY that id for the attack (baseline vs attack differ by the id)
+    attack = asyncio.run(mutate_request(parsed, _OP_QS["payload"]))
+    assert attack["query_params"] == {"report_id": "6"} and attack["path"] == parsed["path"]
+    # rendered Reproduce line is correct for a query id (single '?')
+    assert _attack_path_from_op(_OP_QS) == "/workshop/api/mechanic/mechanic_report?report_id=6"
+
+
+def test_reconstruct_url_never_double_question_mark():
+    base = "http://localhost:8888"
+    u = _reconstruct_url({"path": "/x?a=1", "query_params": {"b": "2"}}, base)
+    assert u.count("?") == 1 and "a=1" in u and "b=2" in u
+    # explicit query_params WIN on a key clash (the attack id replacing the baseline id)
+    u2 = _reconstruct_url({"path": "/m?report_id=7", "query_params": {"report_id": "6"}}, base)
+    assert u2.count("?") == 1 and "report_id=6" in u2 and "report_id=7" not in u2
+
+
+def test_reconstruct_url_path_based_is_byte_identical():
+    base = "http://localhost:8888"
+    assert _reconstruct_url({"path": "/api/users/2/gizmo", "query_params": {}}, base) \
+        == "http://localhost:8888/api/users/2/gizmo"
+    assert _reconstruct_url({"path": "/a", "query_params": {"k": "v"}}, base) \
+        == "http://localhost:8888/a?k=v"
+
+
+def test_owner_view_carries_query_string_and_stays_get_owner_only(monkeypatch):
+    """The owner re-read hits the SAME resource id when the id is in the query (D29), while
+    remaining a custody-free GET AS THE OWNER (identity isolation)."""
+    captured = {}
+
+    async def fake_send(client, req, base_url, **kw):
+        captured["req"] = req
+        return {"status_code": 200, "response_body": '{"id":6}'}
+
+    monkeypatch.setattr(dv, "_send_request", fake_send)
+    owner = OwnerCredential.from_config("OWNER-TOKEN-CANARY")
+    res = asyncio.run(fetch_owner_view(
+        object(), "/workshop/api/mechanic/mechanic_report", "http://localhost:8888",
+        owner, query_params={"report_id": "6"}))
+    assert res.available is True
+    req = captured["req"]
+    assert req["query_params"] == {"report_id": "6"}          # the query id reached the owner read
+    assert req["method"] == "GET" and req["body"] is None      # still GET-only, no body (structural)
+    assert "OWNER-TOKEN-CANARY" in str(req["headers"])         # reads AS THE OWNER (identity isolation)
+
+
+def test_owner_view_with_query_is_still_fail_safe_block_on_non_2xx(monkeypatch):
+    """Downgrade-only preserved: a non-2xx owner view (a query-string case that is NOT a real
+    leak) blocks -> available=False -> the gate can never manufacture a confirmation."""
+    async def fake_send(client, req, base_url, **kw):
+        return {"status_code": 403, "response_body": "denied"}
+    monkeypatch.setattr(dv, "_send_request", fake_send)
+    owner = OwnerCredential.from_config("owner-token")
+    res = asyncio.run(fetch_owner_view(
+        object(), "/m", "http://localhost:8888", owner, query_params={"report_id": "6"}))
+    assert res.available is False
+
+
+def test_path_segment_assembly_byte_identical_regression():
+    """Path-based shape unchanged: query_params stays {} and the attack path is the same swap."""
+    parsed = _build_parsed_request(_OP, "u-9")
+    assert parsed["path"] == "/api/users/1/gizmo" and parsed["query_params"] == {}
+    assert _attack_path_from_op(_OP) == "/api/users/2/gizmo"

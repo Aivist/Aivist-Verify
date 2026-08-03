@@ -37,7 +37,7 @@ import sys
 import tomllib
 import uuid
 from typing import Any, Callable, Dict, Optional, Tuple
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qsl, urlencode
 
 from pydantic import SecretStr
 
@@ -111,13 +111,28 @@ def _fill_unique(body: Optional[Dict[str, Any]], unique: str) -> Optional[Dict[s
     return {k: (unique if v == "$UNIQUE" else v) for k, v in body.items()}
 
 
+def _split_path_query(raw_path: str) -> Tuple[str, Dict[str, str]]:
+    """Split a baseline_path into (path, query_params). A path with no '?' yields an empty
+    dict — byte-identical to the pre-existing path-based behavior. This lets a query-string id
+    be expressed in the op (`/…/mechanic_report?report_id=7`) and carried on the BASELINE
+    request, exactly as a path id is carried in the path (D29 — query-string IDOR)."""
+    parts = urlsplit(raw_path)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    return (parts.path or raw_path), query
+
+
 def _build_parsed_request(op: Dict[str, Any], unique: str) -> Dict[str, Any]:
-    """The BASELINE request dict the engine consumes — same shape verdict_measure builds."""
+    """The BASELINE request dict the engine consumes — same shape verdict_measure builds.
+
+    A query string in `baseline_path` is parsed into `query_params` so the BASELINE carries
+    the attacker's OWN query id; the engine's `query_param` mutation then swaps only that id
+    for the attack (D29). For a path-based op (no '?') `query_params` is `{}`, unchanged."""
     body = _fill_unique(op.get("body"), unique)
+    path, query_params = _split_path_query(op["baseline_path"])
     return {
         "method": op["method"],
-        "path": op["baseline_path"],
-        "query_params": {},
+        "path": path,
+        "query_params": query_params,
         "headers": {"Content-Type": "application/json"} if body else {},
         "body": body,
     }
@@ -125,10 +140,19 @@ def _build_parsed_request(op: Dict[str, Any], unique: str) -> Dict[str, Any]:
 
 def _attack_path_from_op(op: Dict[str, Any]) -> str:
     """The concrete path the attack hits (baseline path with the id swapped in), for the
-    rendered header / Reproduce line only. Mirrors verdict_measure._attack_path."""
+    rendered header / Reproduce line only. Mirrors verdict_measure._attack_path.
+
+    For a `query_param` payload the swap is on the target query param's VALUE (keeping a
+    single '?'), matching the actual attack the engine sends (D29); path-based cases are a
+    literal substring replace, unchanged."""
     p = op.get("payload")
     if not p:
         return op.get("baseline_path", "")
+    if str(p.get("location", "")).lower() == "query_param":
+        path, query = _split_path_query(op["baseline_path"])
+        query[str(p.get("target_param"))] = str(p.get("payload_string"))
+        qs = urlencode(query)
+        return f"{path}?{qs}" if qs else path
     return op["baseline_path"].replace(str(p.get("target_param")), str(p.get("payload_string")))
 
 

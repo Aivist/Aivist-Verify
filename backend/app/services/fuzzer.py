@@ -19,7 +19,7 @@ import asyncio
 import random
 import difflib
 from typing import Dict, Any, Optional, List
-from urllib.parse import urlencode, urlparse, urlunparse, urljoin
+from urllib.parse import urlencode, urlparse, urlunparse, urljoin, parse_qsl
 
 import httpx
 from sqlalchemy import select
@@ -507,7 +507,18 @@ def _reconstruct_url(parsed_request: dict, base_url: str) -> str:
     parsed_base = urlparse(base_url)
     path = parsed_request.get("path", "/")
     query_params = parsed_request.get("query_params", {})
-    query_string = urlencode(query_params, doseq=True) if query_params else ""
+    # If the path itself already carries a query (e.g. an op wrote "/x?a=1"), split it off and
+    # MERGE with query_params — explicit query_params win on a key clash — so a query-string id
+    # composes correctly and we never emit a malformed double-'?' URL (D29). A path with no '?'
+    # is untouched, so path-based cases stay byte-identical.
+    if "?" in path:
+        path, _, _embedded = path.partition("?")
+        merged = dict(parse_qsl(_embedded, keep_blank_values=True))
+        if query_params:
+            merged.update(query_params)
+        query_string = urlencode(merged, doseq=True) if merged else ""
+    else:
+        query_string = urlencode(query_params, doseq=True) if query_params else ""
 
     reconstructed = urlunparse((
         parsed_base.scheme or "https",
