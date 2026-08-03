@@ -88,6 +88,9 @@ Operator front door (this node's line — all re-verified 2026-08-02):
    target / spec / tokens / endpoint, then runs. **Sequenced AFTER the crAPI run-through**, because
    its design depends on what real targets actually require the user to provide (spec shape, path-param
    forms, auth/token forms) — build the input surface to fit observed reality, not guessed reality.
+   > **CLI UX — adopted / rejected** (recorded so external UX suggestions aren't re-litigated):
+   > ADOPTED — evidence-chain tree (honest); confirmed/refuted tally (measurable); `--json` (planned — machine-readable); inspectable real bytes (auditable).
+   > REJECTED — competitor-comparison text (unverifiable); live raw-HTTP firehose (credential-leak); hacker-movie styling (off-brand).
 5. **Frontend — the product UI.** *(Subsumes **D5**: retire the divergent Vite `frontend/`
    (`docs/TECH_DEBT.md:67`) — likely the same work as building the product UI; director ruling: PLANNED.)*
 6. **README (dual positioning) + comparison report** — this engine's verification vs a detection-side tool.

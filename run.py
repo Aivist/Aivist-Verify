@@ -143,6 +143,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main():
+    # No args -> open the interactive console (the "download, configure, use" front
+    # door). Every existing subcommand path below is unchanged; the console is an
+    # ADDED friendly layer, not a replacement. The `run:main` entry point is preserved.
+    if len(sys.argv) == 1:
+        from backend.app.cli.console import launch_console
+        sys.exit(launch_console())
+
     args = build_parser().parse_args()
     if args.cmd in ("verify", "confirm"):
         if args.auth and not args.target:
