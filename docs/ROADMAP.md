@@ -104,6 +104,15 @@ Operator front door (this node's line — all re-verified 2026-08-02):
 10. **A second *measured* model** — the zero-FP evidence is measured on **gemini-2.5-pro only**;
    non-Gemini SAFE-case (false-positive) behavior is **unvalidated** (the provider seam gives
    connectivity, not a correctness/zero-FP guarantee). See §4 / [`LLM_PROVIDERS.md`](./LLM_PROVIDERS.md).
+11. **Verdict presentation — make the evidence chain's weight visible** *(presentation layer only, no
+   engine/verdict change; merges with the CLI presentation pass noted above and item 6's README +
+   comparison report).* The engine performs a substantial physical verification — attacker request →
+   id-swapped attack → independent owner-view re-read → byte-level comparison proving cross-boundary
+   data access → reproducible PoC — but the current output renders it as a few terse lines, so a
+   first-time engineer may under-read its significance. Display the full physical chain step by step,
+   show which surface-signals were ruled out and why, and emit a reproducible evidence package the user
+   can re-run. Goal: make the confirmation's substance legible and independently reproducible.
+   **RECORD ONLY — do not implement.**
 
 ### ⏸️ DEFERRED (with trigger)
 - **D2 — no authentication/authorization on any API route** (`docs/TECH_DEBT.md:38`) — acceptable for

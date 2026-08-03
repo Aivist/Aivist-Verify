@@ -429,7 +429,11 @@
      upstream excludes public resources — verified by code reading; the only near-hit
      (`"unauthenticated"`, `fuzzer.py:109`) is a soft-logout signature for auth self-heal, unrelated.
      Because the gate is downgrade-only this is **status quo, not a regression**, and the gate was
-     deliberately NOT contorted to handle it.
+     deliberately NOT contorted to handle it. **(Update — now addressed by the D30 public-resource
+     probe: an opt-in, downgrade-only bystander re-read that suppresses confirmation only when
+     affirmatively certain a resource is public. See the **D30 — ✅ RESOLVED** entry below. One
+     residual remains: a resource "broken for every authenticated user" is indistinguishable from a
+     public one and is suppressed — a safe-direction miss.)**
   2. **Owner credential is per-DEPLOYMENT, not per-finding** (`AI_DEEP_VERIFY_OWNER_AUTH`). Sufficient
      for both labs and for proving this gate; a real target whose findings belong to different owners
      would need per-finding credentials, which **do not exist**.
@@ -913,7 +917,38 @@
   owner-view path-only read, is inside `deep_verifier` — the one spot the fix must touch the core, so it needs
   care (minimal blast radius, full regression), not a casual assembly-layer edit.
 
-### D30 — public / shared resources produce a FALSE POSITIVE — HIGH (DANGEROUS-direction; gates real-target readiness)
+### D30 — public / shared resources produced a FALSE POSITIVE — ✅ RESOLVED (public-resource probe; default OFF)
+- **Status: ✅ RESOLVED (commit `ea65372`).** The D24 read-semantic owner-view gate now runs a
+  PUBLIC-RESOURCE PROBE before it may confirm. `fetch_control_view` (`deep_verifier.py` — a
+  custody-free, GET-only, scope-locked sibling of `fetch_owner_view`) re-reads the SAME resource as a
+  THIRD / bystander identity that has no ownership of the object, and the pure predicate
+  `_resource_is_public` (`deep_verifier.py`) suppresses the confirmation ONLY when affirmatively
+  certain the resource is public — a clean 2xx AND a body that corroborates the owner's authentic
+  view (reusing the existing `_owner_view_corroborates` / 0.95 discipline). On ANY ambiguity (probe
+  missing / non-2xx / errored / timed-out / out-of-scope / empty / decoy / non-matching body) it fails
+  safe to "private" and the confirmation proceeds.
+- **Downgrade-only, by construction.** The probe's ONLY possible mutation is turning a would-be
+  `verified` into `inconclusive`, routed through the UNCHANGED `_apply_owner_view_gate`; no new path
+  assigns `verified`. The suppression reason `PUBLIC_RESOURCE_NOT_BOLA_REASON` is deliberately NOT one
+  of the four D19 promotion channels, and suppression sets `owner_view_corroborated=False`, so a
+  suppressed record can never promote. Opt-in via `AI_DEEP_VERIFY_BYSTANDER_AUTH` (default `None` → no
+  probe → byte-identical), mirroring the owner-auth opt-in; the four exemption channels, the
+  cross-resource guard, D24's helpers, and D19 are untouched.
+- **Validation.** 24 offline tests with independent ground truth
+  (`backend/tests/test_d30_public_resource.py`): known-public → suppressed; known-private BOLA → still
+  confirmed; ambiguous / soft-deny → fails safe to private (still confirmed); the probe is proven
+  custody-free, GET-only, and scope-locked. Backend suite **587 passed**. The two crAPI acceptance
+  assertions were reproduced against **FAITHFUL crAPI-shaped responses driving the real engine**
+  (crAPI itself was NOT booted here): the public community post flips **CONFIRMED → not-confirmed**,
+  and the private order BOLA **STILL CONFIRMS when a third account is denied / differs**. **Live crAPI
+  confirmation is pending the director's machine.**
+- **RESIDUAL (weigh before enabling on a real target).** The probe cannot distinguish "public by
+  design" from "broken for EVERY authenticated user": if a private object is readable by an unrelated
+  third account (a BOLA with no ownership check *anywhere*), the probe reads it too and the real BOLA
+  is SUPPRESSED — a SAFE-direction **missed detection**. This is the deliberate trade — eliminate the
+  dangerous-direction FP, accept a narrow safe-direction miss — and it is exactly what the live crAPI
+  order-endpoint check must settle (whether that endpoint denies an unrelated third account).
+- **Historical context — the finding as first recorded (kept verbatim below):**
 - **This is the more serious of the two crAPI findings, and the one that matters most.** It is the
   first **empirical, real-target** trigger of **D24 residual gap #1 (public / shared resources)** —
   see [D24 "STILL OPEN — boundaries" #1](#d24--read-semantic-verdicts-had-no-deterministic-gate-sev-1--resolved)
