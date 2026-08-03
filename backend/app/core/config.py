@@ -220,6 +220,26 @@ class Settings(BaseSettings):
         description="Owner/victim credential for owner-scoped reads by the deep verifier (two-account baseline). 'Header: value' or a bare bearer token. Empty => absent, byte-identical behavior. One credential per deployment, NOT per finding. Never used for attack requests. SecretStr — never serialized/logged."
     )
 
+    # D30 — the THIRD/BYSTANDER credential for public-resource discrimination. A principal with NO
+    # ownership of the attacked object. When set (and the D24 owner-view gate is about to
+    # corroborate a read-semantic 'verified'), the deep verifier issues ONE GET as this identity
+    # via `fetch_control_view` (custody-free, GET-only, scope-locked — same guarantees as the owner
+    # read). If that identity ALSO receives the resource (2xx + corroborating content), the resource
+    # is public/shared, so the cross-user read is NOT a BOLA and the 'verified' is SUPPRESSED to
+    # 'inconclusive'. This is DOWNGRADE-ONLY — it can only turn a would-be 'verified' into
+    # 'inconclusive', never manufacture one — and it fails SAFE (any ambiguous/failed probe -> treat
+    # as private, confirm normally). It is NEVER used for an attack request.
+    #
+    # KNOWN LIMITATION (same as owner-auth): ONE credential per DEPLOYMENT, not per finding.
+    # Default None => no bystander probe is issued and behavior is byte-identical to before — so the
+    # D30 public-resource false positive is only MITIGATED once a bystander credential is configured.
+    # Same format as owner-auth: "Header-Name: value" or a bare bearer token. SecretStr — never
+    # serialized/logged.
+    AI_DEEP_VERIFY_BYSTANDER_AUTH: Optional[SecretStr] = Field(
+        default=None,
+        description="Third/bystander credential for D30 public-resource discrimination by the deep verifier. A principal with no ownership of the attacked object. 'Header: value' or a bare bearer token. Empty => no bystander probe, byte-identical behavior (D30 unmitigated). One credential per deployment, NOT per finding. Downgrade-only + fail-safe; never used for attack requests. SecretStr — never serialized/logged."
+    )
+
     # D19 — PROMOTE the shadow deep-verify verdict from observe-only to AUTHORITATIVE.
     # This is the ONLY flag that lets the deep verifier change a user-visible verdict, and it
     # does so CONSERVATIVELY and STRUCTURALLY: when True, the Phase-7 shadow pass may upgrade a

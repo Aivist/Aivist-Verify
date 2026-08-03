@@ -79,6 +79,10 @@ _CFG_ATTACKER_USER = "TARGET_ATTACKER_USERNAME"
 _CFG_ATTACKER_PASS = "TARGET_ATTACKER_PASSWORD"
 _CFG_OWNER_USER = "TARGET_OWNER_USERNAME"
 _CFG_OWNER_PASS = "TARGET_OWNER_PASSWORD"
+# D30 (optional): the THIRD/bystander account's login credential. Read from the config file ONLY
+# (never prompted, so the attacker/owner prompt flow is unchanged); absent => None => no bystander.
+_CFG_BYSTANDER_USER = "TARGET_BYSTANDER_USERNAME"
+_CFG_BYSTANDER_PASS = "TARGET_BYSTANDER_PASSWORD"
 
 
 class LoginError(Exception):
@@ -171,6 +175,20 @@ def resolve_login_credentials(
 
     return (_cred(_CFG_ATTACKER_USER, _CFG_ATTACKER_PASS, "attacker"),
             _cred(_CFG_OWNER_USER, _CFG_OWNER_PASS, "owner"))
+
+
+def resolve_bystander_login_credential(config_path: Optional[str]) -> Optional[Credential]:
+    """The OPTIONAL D30 third/bystander login credential (a principal with no ownership of the
+    attacked object). Read from the config file ONLY (keys TARGET_BYSTANDER_USERNAME /
+    TARGET_BYSTANDER_PASSWORD) — deliberately NOT prompted, so the attacker/owner login flow is
+    unchanged. Returns None unless BOTH a username and password are present (partial config => no
+    bystander, byte-identical). Password becomes SecretStr immediately."""
+    cfg = _read_config(config_path)
+    user = str(cfg.get(_CFG_BYSTANDER_USER) or "").strip()
+    pw = str(cfg.get(_CFG_BYSTANDER_PASS) or "")
+    if not user or not pw:
+        return None
+    return Credential(username=user, password=SecretStr(pw))
 
 
 def _jwt_exp(token: str) -> Optional[float]:

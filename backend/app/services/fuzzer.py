@@ -1567,6 +1567,12 @@ async def _run_shadow_deep_verification(
         # through only; nothing consumes it yet (the D24 read-semantic gate is a separate
         # milestone), and it is NEVER used for an attack request.
         owner_credential = OwnerCredential.from_config(reveal_secret(settings.AI_DEEP_VERIFY_OWNER_AUTH))
+        # D30: the THIRD/BYSTANDER credential for public-resource discrimination. Resolved the same
+        # way, absent by default -> None -> byte-identical (no bystander probe). Passed through only;
+        # consumed solely by the D24 read-semantic branch's suppress-only public-check. It is
+        # DOWNGRADE-ONLY (can only turn a would-be 'verified' into 'inconclusive') and NEVER used
+        # for an attack request. The D19 promotion logic below is unchanged.
+        bystander_credential = OwnerCredential.from_config(reveal_secret(settings.AI_DEEP_VERIFY_BYSTANDER_AUTH))
 
         for rec in rows:
             # Each record is independent; one failure must not stop the others.
@@ -1588,6 +1594,7 @@ async def _run_shadow_deep_verification(
                     auth_context=_shadow_auth_context(custody, job.parsed_request),
                     available_endpoints=_shadow_endpoint_catalog(job.parsed_request, catalog_source),
                     owner_credential=owner_credential,
+                    bystander_credential=bystander_credential,
                     model_name=model,
                 )
 

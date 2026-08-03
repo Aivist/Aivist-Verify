@@ -58,6 +58,11 @@ _HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9-]+$")
 # them, or supplies them at the masked prompt.
 _CFG_ATTACKER_KEY = "TARGET_ATTACKER_TOKEN"
 _CFG_OWNER_KEY = "TARGET_OWNER_TOKEN"
+# D30: the THIRD/bystander token (a principal with no ownership of the attacked object). Optional;
+# read from the per-user config file ONLY (never a CLI flag; no interactive prompt, so the existing
+# attacker/owner prompt sequence is unchanged). Absent => None => no bystander probe (D30 unmitigated,
+# byte-identical). It flows ONLY into `bystander_credential`, never into an attack request.
+_CFG_BYSTANDER_KEY = "TARGET_BYSTANDER_TOKEN"
 
 
 # ------------------------------------------------------------------------------
@@ -201,6 +206,24 @@ def _resolve_tokens(
     return SecretStr(attacker), (SecretStr(owner) if owner else None)
 
 
+def _resolve_bystander_token(config_path: str) -> Optional[SecretStr]:
+    """The D30 THIRD/bystander token as a SecretStr, or None. Read from the per-user config file
+    ONLY (key TARGET_BYSTANDER_TOKEN) — deliberately NOT prompted, so the attacker/owner masked-
+    prompt sequence stays exactly as it was. Absent / unreadable => None => no bystander probe
+    (byte-identical behavior). Never raises."""
+    try:
+        if config_path and os.path.isfile(config_path):
+            with open(config_path, "rb") as fh:
+                loaded = tomllib.load(fh)
+            if isinstance(loaded, dict):
+                val = str(loaded.get(_CFG_BYSTANDER_KEY) or "").strip()
+                if val:
+                    return SecretStr(val)
+    except Exception:
+        pass
+    return None
+
+
 def classify_degradation(result: Any) -> Optional[str]:
     """CLI-layer honesty gate (DOWNGRADE-ONLY): the reason this real-target run is NOT DATA,
     or None if the engine's verdict may stand. It NEVER manufactures a verdict — it only
@@ -259,9 +282,13 @@ def _record_from_result(result: Any, op: Dict[str, Any], deg_reason: Optional[st
 async def _verify_external(
     target: str, spec: Dict[str, Any], op: Dict[str, Any],
     attacker_tok: SecretStr, owner_tok: Optional[SecretStr], model: Optional[str], engine: Callable,
+    bystander_tok: Optional[SecretStr] = None,
 ) -> Any:
     """Assemble external inputs into the ONE existing engine call. The attacker token flows
-    ONLY into auth_context; the owner token ONLY into owner_credential (red line 2)."""
+    ONLY into auth_context; the owner token ONLY into owner_credential; the bystander token ONLY
+    into bystander_credential (red line 2 — three separate variables, never merged). The bystander
+    credential is consumed solely by the D30 public-resource discrimination check (downgrade-only,
+    fail-safe) and is NEVER used for an attack request."""
     approved = _approved_host(target)
     catalog = catalog_from_openapi(spec)
     unique = f"ext-{uuid.uuid4().hex[:12]}"
@@ -270,6 +297,8 @@ async def _verify_external(
     auth_context = _auth_header(reveal_secret(attacker_tok))                 # attacker ONLY
     owner_cred = (OwnerCredential.from_config(reveal_secret(owner_tok))       # owner ONLY
                   if owner_tok is not None else None)
+    bystander_cred = (OwnerCredential.from_config(reveal_secret(bystander_tok))   # bystander ONLY
+                      if bystander_tok is not None else None)
 
     return await engine(
         parsed_request=parsed,
@@ -279,6 +308,7 @@ async def _verify_external(
         auth_context=auth_context,
         available_endpoints=catalog,
         owner_credential=owner_cred,
+        bystander_credential=bystander_cred,
         model_name=model,
     )
 
@@ -298,24 +328,36 @@ async def _verify_external_relogin(
     target: str, spec: Dict[str, Any], op: Dict[str, Any],
     login_spec: relogin.LoginSpec, attacker_cred: relogin.Credential,
     owner_cred: relogin.Credential, model: Optional[str], engine: Callable,
-    *, http_post=None,
+    *, http_post=None, bystander_cred: Optional[relogin.Credential] = None,
 ) -> Any:
-    """Obtain both tokens by INDEPENDENT logins (separate providers / clients / credentials —
+    """Obtain the tokens by INDEPENDENT logins (separate providers / clients / credentials —
     red line 1), feed them into the SAME `_verify_external` engine call the static path uses, and
-    — if a request 401s (token expired) — re-log-in both accounts and retry the engine ONCE. The
-    owner token only ever becomes an `OwnerCredential`; it can never enter an attack request."""
+    — if a request 401s (token expired) — re-log-in the accounts and retry the engine ONCE. The
+    owner token only ever becomes an `OwnerCredential`; it can never enter an attack request.
+
+    D30: an OPTIONAL third/bystander account (default None => no bystander login, byte-identical —
+    the existing attacker+owner login flow and its login-call count are unchanged). When supplied it
+    logs in INDEPENDENTLY (its own TokenProvider / client / credential), and its token flows ONLY
+    into `bystander_credential` for the downgrade-only public-resource check — never an attack."""
     scope = ScopePolicy.from_declaration([_approved_host(target)])
     attacker = relogin.TokenProvider(attacker_cred, login_spec, target, scope, http_post=http_post)
     owner = relogin.TokenProvider(owner_cred, login_spec, target, scope, http_post=http_post)
+    bystander = (relogin.TokenProvider(bystander_cred, login_spec, target, scope, http_post=http_post)
+                 if bystander_cred is not None else None)
 
     attacker_tok = SecretStr(await attacker.token())      # fresh login (proactive, near-expiry aware)
     owner_tok = SecretStr(await owner.token())
-    result = await _verify_external(target, spec, op, attacker_tok, owner_tok, model, engine)
+    bystander_tok = SecretStr(await bystander.token()) if bystander is not None else None
+    result = await _verify_external(target, spec, op, attacker_tok, owner_tok, model, engine,
+                                    bystander_tok=bystander_tok)
 
-    if _auth_degraded(result):                            # 401 -> re-login BOTH + retry ONCE
+    if _auth_degraded(result):                            # 401 -> re-login + retry ONCE
         attacker_tok = SecretStr(await attacker.refresh())
         owner_tok = SecretStr(await owner.refresh())
-        result = await _verify_external(target, spec, op, attacker_tok, owner_tok, model, engine)
+        if bystander is not None:
+            bystander_tok = SecretStr(await bystander.refresh())
+        result = await _verify_external(target, spec, op, attacker_tok, owner_tok, model, engine,
+                                        bystander_tok=bystander_tok)
     return result
 
 
@@ -367,6 +409,8 @@ def run_external_verify(
         try:
             login_spec = relogin.LoginSpec.from_file(auth_spec_path)
             attacker_cred, owner_cred = relogin.resolve_login_credentials(cfg, prompt, prompt_secret)
+            # D30: optional third/bystander login credential (config-file only; None => no bystander).
+            bystander_cred = relogin.resolve_bystander_login_credential(cfg)
         except Exception as e:
             err(f"[NOT DATA] could not set up --auth re-login: {type(e).__name__}: {e}")
             return 2
@@ -375,24 +419,26 @@ def run_external_verify(
         try:
             result = asyncio.run(_verify_external_relogin(
                 target, spec, op, login_spec, attacker_cred, owner_cred, model, engine,
-                http_post=http_post,
+                http_post=http_post, bystander_cred=bystander_cred,
             ))
         except Exception as e:
             # login failure / token-refresh failure / scope violation -> NOT DATA, never "safe".
             err(f"[NOT DATA] run error against {target}: {type(e).__name__}: {e}")
             return 2
     else:
-        # STATIC-token mode (unchanged).
+        # STATIC-token mode (unchanged attacker/owner; optional D30 bystander from config file).
         try:
             attacker_tok, owner_tok = _resolve_tokens(cfg, prompt_secret)
         except Exception as e:
             err(f"[NOT DATA] no usable attacker token: {e}")
             return 2
+        bystander_tok = _resolve_bystander_token(cfg)   # config-file only; None => no bystander probe
         # Runtime-only enablement (committed config defaults stay False), mirroring the lab path.
         settings.AI_DEEP_VERIFY_ENABLED = True
         try:
             result = asyncio.run(
-                _verify_external(target, spec, op, attacker_tok, owner_tok, model, engine)
+                _verify_external(target, spec, op, attacker_tok, owner_tok, model, engine,
+                                 bystander_tok=bystander_tok)
             )
         except Exception as e:
             err(f"[NOT DATA] run error against {target}: {type(e).__name__}: {e}")

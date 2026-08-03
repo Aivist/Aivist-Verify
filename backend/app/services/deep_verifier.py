@@ -323,6 +323,18 @@ class DeepVerificationResult:
     # or a follow-up occurred so the gate is out of scope). It changes NO verdict, NO channel, and
     # NO guard_override — it is an observation point, not a piece of gate logic.
     owner_view_corroborated: Optional[bool] = None
+    # D30 public-resource discrimination (observe-only; additive). Set ONLY inside the D24
+    # read-semantic branch when the owner-view gate was about to corroborate and a bystander
+    # credential was configured. bystander_view_available = did the third (bystander/control)
+    # identity's GET-only, custody-free probe return a clean 2xx. resource_is_public = did that
+    # probe AFFIRMATIVELY prove the resource public (2xx AND corroborating content) — in which
+    # case the read-semantic 'verified' was SUPPRESSED to 'inconclusive' as not-a-BOLA (public
+    # reads are not cross-user violations). Both default None when the D30 check did not run
+    # (no bystander credential, verdict != 'verified', or a follow-up occurred). They change NO
+    # verdict directly — the suppression is expressed as a DOWNGRADE of owner_view_corroborated,
+    # routed through the unchanged downgrade-only owner-view gate.
+    bystander_view_available: Optional[bool] = None
+    resource_is_public: Optional[bool] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -1286,6 +1298,52 @@ async def fetch_owner_view(
         return OwnerViewResult(available=False, reason=f"transport_error:{type(e).__name__}")
 
 
+async def fetch_control_view(
+    client: httpx.AsyncClient,
+    path: str,
+    base_url: str,
+    control: Optional[OwnerCredential],
+    *,
+    approved_host: Optional[str] = None,
+    query_params: Optional[Dict[str, Any]] = None,
+) -> OwnerViewResult:
+    """Read `path` AS A THIRD (bystander / control) identity — a principal with NO ownership of
+    the attacked object — used ONLY by the D30 public-resource discrimination check.
+
+    Same contract as `fetch_owner_view`, by deliberate mirror (do not diverge): GET only (there is
+    no method or body parameter, so it structurally cannot express an attack); scope-locked with the
+    same pre-send `ScopePolicy.check` + `_send_request` chokepoint; custody deliberately NOT passed,
+    so the ATTACKER's live session can never be inline-injected over these headers (the two
+    identities cannot be conflated). `control=None` sends an UNAUTHENTICATED GET (empty auth
+    headers) — the truly-anonymous public probe.
+
+    FAIL-SAFE BLOCK, identical direction to `fetch_owner_view`: `available` is True ONLY on a clean
+    2xx; a non-2xx, a scope violation, or any transport failure yields `available=False`. This
+    result NEVER changes a verdict by itself — it feeds the suppress-only `_resource_is_public`
+    predicate, whose only effect is to DOWNGRADE a would-be confirmation. Never raises.
+    """
+    if not path or not path.startswith("/"):
+        return OwnerViewResult(available=False, reason="invalid_path")
+    headers = control.as_read_headers() if control is not None else {}
+    req = {"method": "GET", "path": path, "query_params": dict(query_params or {}),
+           "headers": headers, "body": None}
+    try:
+        approved = (approved_host or "").lower()
+        scope_policy = ScopePolicy.from_declaration([approved]) if approved else None
+        if scope_policy is not None and not scope_policy.check(_reconstruct_url(req, base_url)).allowed:
+            return OwnerViewResult(available=False, reason="outside_approved_scope")
+        res = await _send_request(client, req, base_url, scope=scope_policy)   # custody deliberately omitted
+        status = res.get("status_code")
+        if isinstance(status, int) and 200 <= status < 300:
+            return OwnerViewResult(available=True, status=status,
+                                   body=res.get("response_body"), reason="ok")
+        return OwnerViewResult(available=False, status=status, reason=f"non_2xx:{status}")
+    except ScopeViolationError:
+        return OwnerViewResult(available=False, reason="scope_violation")
+    except Exception as e:
+        return OwnerViewResult(available=False, reason=f"transport_error:{type(e).__name__}")
+
+
 # ==============================================================================
 # D24 — the READ-SEMANTIC OWNER-VIEW DIFFERENTIAL gate.
 #
@@ -1326,6 +1384,11 @@ async def fetch_owner_view(
 
 _OWNER_VIEW_CORROBORATION_THRESHOLD = 0.95
 OWNER_VIEW_NOT_CORROBORATED_REASON = "owner_view_not_corroborated"
+# D30 — the downgrade reason a read-semantic 'verified' carries when it was SUPPRESSED because a
+# third (bystander) identity affirmatively proved the resource is public/shared. Deliberately NOT
+# one of the four D19 exemption-channel names, so a suppressed record can never authorize a
+# promotion (it reads as "not corroborated" to the D19 choke point, exactly like a normal block).
+PUBLIC_RESOURCE_NOT_BOLA_REASON = "public_resource_read_not_cross_user"
 
 
 def _owner_view_corroborates(attack_body: Optional[str], owner_body: Optional[str]) -> bool:
@@ -1334,6 +1397,29 @@ def _owner_view_corroborates(attack_body: Optional[str], owner_body: Optional[st
     if not attack_body or not owner_body:
         return False
     return _compute_similarity(attack_body, owner_body) >= _OWNER_VIEW_CORROBORATION_THRESHOLD
+
+
+def _resource_is_public(control_view: "OwnerViewResult", owner_body: Optional[str]) -> bool:
+    """D30 AFFIRMATIVE-CERTAINTY public-resource predicate (pure; suppress-only consumer).
+
+    Returns True IFF a third (bystander/unauthenticated) identity DEMONSTRABLY received the SAME
+    resource the owner sees — i.e. BOTH:
+      (1) the control probe returned a clean 2xx (`control_view.available is True`), AND
+      (2) the control body CORROBORATES the owner's authentic view (reusing the D24 discipline,
+          `_owner_view_corroborates`, same `_OWNER_VIEW_CORROBORATION_THRESHOLD`).
+
+    EVERY other outcome returns False -> "treat as private, let the confirmation proceed":
+      * control_view is None, or its probe was not available (missing credential, non-2xx,
+        transport error, timeout, out-of-scope refusal) -> (1) fails;
+      * an empty / decoy / soft-deny / different body that does not corroborate -> (2) fails.
+
+    There is NO input for which an ambiguous or failed probe returns True, so this predicate can
+    NEVER cause an ambiguous probe to suppress a real confirmation. It reads only the probe result
+    and the owner body; it holds no verdict and cannot manufacture or strengthen one — its sole
+    consumer uses it to DOWNGRADE. Never raises."""
+    if control_view is None or not getattr(control_view, "available", False):
+        return False
+    return _owner_view_corroborates(getattr(control_view, "body", None), owner_body)
 
 
 def _apply_owner_view_gate(current_verdict: Optional[str], corroborated: bool) -> Optional[str]:
@@ -1362,6 +1448,7 @@ async def execute_deep_verification(
     available_endpoints: Optional[List[str]] = None,
     model_name: Optional[str] = None,
     owner_credential: Optional["OwnerCredential"] = None,
+    bystander_credential: Optional["OwnerCredential"] = None,
 ) -> DeepVerificationResult:
     """
     Run the isolated, serial AI-in-the-loop write-then-read deep verification.
@@ -1397,6 +1484,21 @@ async def execute_deep_verification(
             request: attacks always go out as the attacker (see the channel notes
             above), and `fetch_owner_view` takes no method/body, so it structurally
             cannot carry one.
+        bystander_credential: OPTIONAL third/bystander credential (D30 public-resource
+            discrimination). A principal with NO ownership of the attacked object. When
+            present AND the owner-view gate is about to corroborate a read-semantic
+            'verified', the code issues ONE GET as this identity via `fetch_control_view`
+            (custody-free, method/body-free, scope-locked — same structural guarantees as
+            `fetch_owner_view`). If that identity ALSO receives the resource (2xx AND
+            corroborating content), the resource is public/shared, so the cross-user read
+            is NOT an authorization violation and the 'verified' is SUPPRESSED to
+            'inconclusive'. This is DOWNGRADE-ONLY and runs only when the gate would
+            otherwise confirm: it can only turn a would-be 'verified' into 'inconclusive',
+            NEVER manufacture or strengthen one. On ANY ambiguity (probe errors / times
+            out / non-2xx / out-of-scope / non-corroborating body) it treats the resource
+            as private and lets the confirmation proceed. None/absent — the default — means
+            no bystander probe is issued and behavior is byte-identical to before. It is
+            NEVER merged into an attack request (separate variable, GET-only).
 
     Returns:
         DeepVerificationResult — the AI verdict alongside the full evidence trail.
@@ -1794,6 +1896,9 @@ async def execute_deep_verification(
             # an unverifiable claim must never be the one that gets to stand.
             # D19 observability: None until/unless the gate actually runs below.
             _owner_view_corroborated: Optional[bool] = None
+            # D30 observability: None until/unless the bystander probe actually runs below.
+            _bystander_view_available: Optional[bool] = None
+            _resource_public: Optional[bool] = None
             if owner_credential is not None and _final_verdict == "verified":
                 _owner_view = await fetch_owner_view(
                     client, attack_req.get("path", ""), base_url, owner_credential,
@@ -1802,20 +1907,57 @@ async def execute_deep_verification(
                 _corroborated = _owner_view.available and _owner_view_corroborates(
                     _anchor_body, _owner_view.body
                 )
+                # ---------- D30: PUBLIC-RESOURCE DISCRIMINATION (SUPPRESS-ONLY) ----------
+                # A read-semantic 'verified' the owner-view gate would corroborate is STILL a false
+                # positive when the resource is public/shared: a public object legitimately returns
+                # the SAME bytes to ANY identity, so owner-view corroboration is satisfied for a
+                # benign reason (crAPI's public community post — D30). Before letting this
+                # confirmation stand, probe the SAME resource as a THIRD (bystander) identity that
+                # has NO ownership of the object. If that identity ALSO receives it (AFFIRMATIVE
+                # certainty: 2xx AND corroborating content), the read is not a cross-user violation.
+                #
+                # STRUCTURAL FAIL-SAFE (the whole point of D30): this block runs ONLY when
+                # `_corroborated` is already True, and its ONLY possible mutation is `_corroborated
+                # = False` — the strictly weaker value — inside the `_resource_public` branch. On
+                # ANY ambiguity `_resource_is_public` returns False (a missing/None probe, a
+                # non-2xx / errored / timed-out / out-of-scope probe -> not `.available`, or a
+                # non-corroborating / empty / decoy / soft-deny body), so `_corroborated` is left
+                # untouched and the real confirmation proceeds. There is NO path here that raises
+                # confidence or assigns 'verified'; it can only DOWNGRADE. Not configured
+                # (bystander_credential is None) -> the probe never runs -> byte-identical behavior.
+                if _corroborated and bystander_credential is not None:
+                    _bystander_view = await fetch_control_view(
+                        client, attack_req.get("path", ""), base_url, bystander_credential,
+                        approved_host=approved, query_params=attack_req.get("query_params"),
+                    )
+                    _bystander_view_available = _bystander_view.available
+                    _resource_public = _resource_is_public(_bystander_view, _owner_view.body)
+                    if _resource_public:
+                        _corroborated = False   # the ONLY mutation D30 can make (suppress)
+                        logger.info(
+                            "[DEEP-VERIFY] D30 public-resource discrimination: a third (bystander) "
+                            "identity ALSO read the resource with corroborating content "
+                            "(bystander_view_available=%r) -> the resource is PUBLIC/SHARED, the "
+                            "cross-user read is NOT an authorization violation -> owner-view "
+                            "corroboration SUPPRESSED (a would-be 'verified' will downgrade).",
+                            _bystander_view.available,
+                        )
                 # D19: record the gate's already-made decision (True=corroborate, False=block).
-                # Single source of truth — the same boolean the gate acts on; changes nothing.
+                # Single source of truth — the SAME boolean the gate acts on, AFTER the D30
+                # suppress-only check, so a public resource reads as NOT corroborated (never promoted).
                 _owner_view_corroborated = _corroborated
                 _gated = _apply_owner_view_gate(_final_verdict, _corroborated)
                 if _gated != _final_verdict:
                     logger.info(
                         "[DEEP-VERIFY] D24 owner-view differential: the attack response does "
                         "NOT corroborate the owner's authentic view (owner_view_available=%r "
-                        "reason=%r) -> 'verified' DOWNGRADED to %r. The attacker did not "
-                        "demonstrably receive the victim's data.",
-                        _owner_view.available, _owner_view.reason, _gated,
+                        "reason=%r public_resource=%r) -> 'verified' DOWNGRADED to %r. The "
+                        "attacker did not demonstrably receive the victim's private data.",
+                        _owner_view.available, _owner_view.reason, _resource_public, _gated,
                     )
                     _final_verdict = _gated
-                    _override = OWNER_VIEW_NOT_CORROBORATED_REASON
+                    _override = (PUBLIC_RESOURCE_NOT_BOLA_REASON if _resource_public
+                                 else OWNER_VIEW_NOT_CORROBORATED_REASON)
                 else:
                     logger.info(
                         "[DEEP-VERIFY] D24 owner-view differential: attack response "
@@ -1848,6 +1990,8 @@ async def execute_deep_verification(
                     ) if pre_flight_result is not None else None
                 ),
                 owner_view_corroborated=_owner_view_corroborated,
+                bystander_view_available=_bystander_view_available,
+                resource_is_public=_resource_public,
             )
 
         # ---------------- Execute the follow-up (scope-locked) ----------------
