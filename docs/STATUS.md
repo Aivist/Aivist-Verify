@@ -69,12 +69,12 @@ the earlier single-target record (140 SAFE / 70 VULN, one target), kept as histo
 
 | Suite | Command (from repo root) | Result |
 |---|---|---|
-| Backend | `python -m pytest backend/tests -q` | **523 passed** |
+| Backend | `python -m pytest backend/tests -q` | **587 passed** |
 | Ground-truth target (`vulnerable_target`, integer-id) | `python -m pytest vulnerable_target -q` | **31 passed** |
 | Ground-truth target (`depot_target`, UUID-id) | `python -m pytest depot_target -q` | **23 passed** |
 
-> Re-verified against the repo 2026-08-02 (all three suites run). The backend count was **473** while
-> only the confirmer spine had landed; it is now **523** after the presentation pass, entry point,
+> Re-verified against the repo 2026-08-03 (all three suites run). The backend count was **473** while
+> only the confirmer spine had landed; it is now **587** after the presentation pass, entry point,
 > config flow, `config.py` user-config source, the external real-target path, YAML `--spec` support,
 > and the `--auth` auto-relogin path (see the next section).
 

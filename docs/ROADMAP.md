@@ -32,7 +32,7 @@
 > **This board is the single authoritative answer** to "what's done, what's next, what's deferred,
 > what's rejected." It owns **status, ordering, and decisions**; **code facts** (test counts, shipped
 > modules, commit hashes) live in [`STATUS.md`](./STATUS.md). Every `DONE` below was **re-verified
-> against the repo on 2026-08-02** (backend suite = **523 passed**; the multi-step-auth commit
+> against the repo on 2026-08-03** (backend suite = **587 passed**; the multi-step-auth commit
 > **`675835ff`** confirmed against its touched files). Sections §1–§8 below are the detailed rationale
 > the board summarizes; the tags here win for status.
 

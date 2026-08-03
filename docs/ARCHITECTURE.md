@@ -96,14 +96,14 @@ anti gravity/
 │  │     └─ endpoint_catalog.py   # D18: OpenAPI → "METHOD /path [tags/operationId]" catalog + write-record queries (B-1)
 │  ├─ scripts/
 │  │  └─ deep_verify_live_check.py  # Manual Gemini+target check (not pytest)
-│  └─ tests/                      # pytest (507): pruner, step8_custody, scope (+enforcement),
+│  └─ tests/                      # pytest (587): pruner, step8_custody, scope (+enforcement),
 │                                 # step_d_hunter_link, api_endpoints, step9_proxy, verdict_oracle,
 │                                 # endpoint_catalog, d18_phase2_crosspath, d18_b22_guard, d18_b1_write_record,
 │                                 # d18_b1_shadow_integration, m1_evidence_anchoring, m12_object_scope,
 │                                 # m12_state_readback_exemption (M1.2A), m12b_state_gather (M1.2B),
 │                                 # m13_delete (M1.3 negative assertion),
 │                                 # m14_mass_assignment (M1.4 low-entropy state jump)
-├─ vulnerable_target/            # Standalone ground-truth target (:8001), own DB, 14 pytest cases
+├─ vulnerable_target/            # Standalone ground-truth target (:8001), own DB, 31 pytest cases
 │  ├─ main.py
 │  ├─ test_vulns.py
 │  └─ benchmark/                  # BAC verification benchmark docs + RESULTS
