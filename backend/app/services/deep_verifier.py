@@ -379,6 +379,13 @@ class DeepVerificationResult:
     # routed through the unchanged downgrade-only owner-view gate.
     bystander_view_available: Optional[bool] = None
     resource_is_public: Optional[bool] = None
+    # Broken-for-all disclosure (opt-in via the op's `assert_owner_only`). True ONLY when D30 would
+    # suppress AND a single anonymous probe deterministically showed the resource is NOT anonymously
+    # readable (every AUTHENTICATED principal — attacker + bystander — received the owner's data, but
+    # an anonymous request did not). The verdict STAYS `inconclusive`; this flag plus the dedicated
+    # `guard_override` reason drive a conditional, human-review rendering. It NEVER contributes to a
+    # `verified` verdict and is NOT a promotion channel.
+    broken_for_all_suspected: Optional[bool] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -751,15 +758,28 @@ def _record_is_relevant_to_write(
     return _write_record_content_match(record_body, caller_object_id, written_values)
 
 
+# The principal-auth header carriers (JWT/Bearer/session/cookie-auth). Same set `_redact_headers`
+# masks; used by `_strip_auth_headers` to build the anonymous probe for the broken-for-all disclosure.
+_PRINCIPAL_AUTH_HEADERS = frozenset({"authorization", "cookie", "x-token"})
+
+
 def _redact_headers(headers: Dict[str, str]) -> Dict[str, str]:
     """Mask auth secrets in the evidence trail / prompt (request still uses the real value)."""
     out = {}
     for k, v in (headers or {}).items():
-        if k.lower() in ("authorization", "cookie", "x-token"):
+        if k.lower() in _PRINCIPAL_AUTH_HEADERS:
             out[k] = "***REDACTED***"
         else:
             out[k] = v
     return out
+
+
+def _strip_auth_headers(headers: Dict[str, str]) -> Dict[str, str]:
+    """Drop ONLY the principal-auth headers (Authorization / Cookie / X-Token — the JWT/Bearer/
+    session/cookie-auth carriers), PRESERVING every other (routing) header so a gateway key such as
+    an X-API-Key survives. Used to assemble the ANONYMOUS probe for the broken-for-all disclosure —
+    it must remove the caller's identity while keeping the request routable."""
+    return {k: v for k, v in (headers or {}).items() if k.lower() not in _PRINCIPAL_AUTH_HEADERS}
 
 
 def _summarize_response(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -1350,16 +1370,19 @@ async def fetch_control_view(
     *,
     approved_host: Optional[str] = None,
     query_params: Optional[Dict[str, Any]] = None,
+    extra_headers: Optional[Dict[str, str]] = None,
 ) -> OwnerViewResult:
     """Read `path` AS A THIRD (bystander / control) identity — a principal with NO ownership of
-    the attacked object — used ONLY by the D30 public-resource discrimination check.
+    the attacked object — used by the D30 public-resource check and the broken-for-all disclosure.
 
     Same contract as `fetch_owner_view`, by deliberate mirror (do not diverge): GET only (there is
     no method or body parameter, so it structurally cannot express an attack); scope-locked with the
     same pre-send `ScopePolicy.check` + `_send_request` chokepoint; custody deliberately NOT passed,
     so the ATTACKER's live session can never be inline-injected over these headers (the two
-    identities cannot be conflated). `control=None` sends an UNAUTHENTICATED GET (empty auth
-    headers) — the truly-anonymous public probe.
+    identities cannot be conflated). `control=None` sends an UNAUTHENTICATED GET — the anonymous
+    probe; `extra_headers` (optional) carries non-auth ROUTING headers (e.g. a gateway X-API-Key)
+    that must survive the anonymity strip. When `control` is set its auth header wins over any
+    colliding `extra_headers`, so the existing D30 bystander call (no `extra_headers`) is unchanged.
 
     FAIL-SAFE BLOCK, identical direction to `fetch_owner_view`: `available` is True ONLY on a clean
     2xx; a non-2xx, a scope violation, or any transport failure yields `available=False`. This
@@ -1368,7 +1391,9 @@ async def fetch_control_view(
     """
     if not path or not path.startswith("/"):
         return OwnerViewResult(available=False, reason="invalid_path")
-    headers = control.as_read_headers() if control is not None else {}
+    headers = dict(extra_headers or {})            # non-auth routing headers (empty for the D30 call)
+    if control is not None:
+        headers.update(control.as_read_headers())  # the bystander's auth wins over any routing collision
     req = {"method": "GET", "path": path, "query_params": dict(query_params or {}),
            "headers": headers, "body": None}
     try:
@@ -1433,6 +1458,12 @@ OWNER_VIEW_NOT_CORROBORATED_REASON = "owner_view_not_corroborated"
 # one of the four D19 exemption-channel names, so a suppressed record can never authorize a
 # promotion (it reads as "not corroborated" to the D19 choke point, exactly like a normal block).
 PUBLIC_RESOURCE_NOT_BOLA_REASON = "public_resource_read_not_cross_user"
+# Broken-for-all disclosure (opt-in). A LOCKED-inconclusive conditional finding: every AUTHENTICATED
+# principal could read an owner-scoped resource but an anonymous request could not, and the operator
+# asserted the resource should be owner-private. Deliberately NOT one of the four D19 exemption-channel
+# names, so it can NEVER authorize a promotion (mirrors the D30/OWNER_VIEW discipline). This path can
+# ONLY produce `inconclusive` — never verified/confirmed.
+BROKEN_FOR_ALL_ASSERTION_REASON = "broken_for_all_owner_assertion_human_review"
 
 
 def _owner_view_corroborates(attack_body: Optional[str], owner_body: Optional[str]) -> bool:
@@ -1494,6 +1525,7 @@ async def execute_deep_verification(
     owner_credential: Optional["OwnerCredential"] = None,
     bystander_credential: Optional["OwnerCredential"] = None,
     challenge_break: bool = False,
+    assert_owner_only: bool = False,
 ) -> DeepVerificationResult:
     """
     Run the isolated, serial AI-in-the-loop write-then-read deep verification.
@@ -1551,6 +1583,16 @@ async def execute_deep_verification(
             checkpoint and returns NOT DATA (degraded) rather than hammering the target further. It
             is DOWNGRADE-ONLY: it can only force NOT DATA, never a verdict. Default False — the
             lab / measurement path never counts or aborts, so behavior is byte-identical.
+        assert_owner_only: OPTIONAL operator assertion (from the op) that the attacked resource is
+            meant to be owner-private. Default False -> byte-identical (the whole feature is opt-in).
+            It takes effect ONLY inside the D30 suppress branch (a bystander could read the resource):
+            when True, ONE anonymous probe of the same resource is issued; if every AUTHENTICATED
+            principal could read it but an anonymous request could NOT receive the owner's data, the
+            verdict is LOCKED to `inconclusive` (never verified) and surfaced as a broken-for-all
+            CONDITIONAL finding for human review (guard_override=BROKEN_FOR_ALL_ASSERTION_REASON).
+            Because a broken-for-all bug and an all-authenticated-shared feature are black-box
+            identical, the tool NEVER confirms from the assertion — it only mechanically evidences it.
+            The assertion can only ever change the SUPPRESS reason; it can never manufacture `verified`.
 
     Returns:
         DeepVerificationResult — the AI verdict alongside the full evidence trail.
@@ -1982,6 +2024,8 @@ async def execute_deep_verification(
             # D30 observability: None until/unless the bystander probe actually runs below.
             _bystander_view_available: Optional[bool] = None
             _resource_public: Optional[bool] = None
+            # Broken-for-all disclosure: None until/unless the anonymous probe deterministically fires.
+            _broken_for_all: Optional[bool] = None
             if owner_credential is not None and _final_verdict == "verified":
                 _owner_view = await fetch_owner_view(
                     client, attack_req.get("path", ""), base_url, owner_credential,
@@ -2051,6 +2095,69 @@ async def execute_deep_verification(
                             "corroboration SUPPRESSED (a would-be 'verified' will downgrade).",
                             _bystander_view.available,
                         )
+                        # ---------- BROKEN-FOR-ALL DISCLOSURE (opt-in; LOCKED inconclusive) ----------
+                        # D30 can't tell "public by design" from "broken for every authenticated user"
+                        # (black-box identical). When the operator ASSERTS this resource is owner-private,
+                        # we gather ONE more piece of MECHANICAL evidence to distinguish them: an anonymous
+                        # probe of the SAME resource (principal-auth stripped, routing headers kept).
+                        #   * anonymous ALSO receives the owner's data -> genuinely PUBLIC -> the assertion
+                        #     is contradicted by reality -> plain D30 suppress (no conditional finding).
+                        #   * anonymous does NOT receive the owner's data (deterministically: it reached the
+                        #     server, non-empty, non-5xx, and does not corroborate) AND every authenticated
+                        #     principal did -> MECHANICAL evidence of broken-for-all. We DO NOT confirm: the
+                        #     verdict stays inconclusive (the gate already downgraded); only the reason
+                        #     changes so the renderer can surface a human-review conditional finding.
+                        #   * ambiguity (probe errored/timed-out/out-of-scope, 5xx, or empty body) -> plain
+                        #     D30 suppress (the special rendering requires deterministic evidence).
+                        # This path is STRUCTURALLY INCAPABLE of producing verified: `_corroborated` is
+                        # already False and is never set True here. It only ever selects the SUPPRESS reason.
+                        if assert_owner_only:
+                            _anon_view = await fetch_control_view(
+                                client, attack_req.get("path", ""), base_url, None,
+                                approved_host=approved, query_params=attack_req.get("query_params"),
+                                extra_headers=_strip_auth_headers(attack_req.get("headers") or {}),
+                            )
+                            _anon_reason = _anon_view.reason or ""
+                            _anon_status = _anon_view.status
+                            # Ambiguous = the probe did not deterministically reach a real, readable
+                            # answer: a transport/scope failure, a 5xx server error, or a 2xx with an
+                            # EMPTY body. A CLEAN non-2xx denial (401/403/404) is NOT ambiguous — it is
+                            # deterministic proof anonymous did not receive the owner's data. (Note
+                            # `fetch_control_view` returns no body on a non-2xx, so the empty-body clause
+                            # is gated on `available` to avoid mis-reading a clean denial as ambiguous.)
+                            _anon_ambiguous = (
+                                _anon_reason.startswith("transport_error")
+                                or _anon_reason in ("scope_violation", "outside_approved_scope", "invalid_path")
+                                or (isinstance(_anon_status, int) and _anon_status >= 500)
+                                or (_anon_view.available and not (_anon_view.body or "").strip())
+                            )
+                            if not _anon_ambiguous and not _owner_view_corroborates(
+                                _anon_view.body, _owner_view.body
+                            ):
+                                _broken_for_all = True
+                                logger.warning(
+                                    "[DEEP-VERIFY] Broken-for-all disclosure (assert_owner_only): every "
+                                    "AUTHENTICATED principal read this resource, but an anonymous request "
+                                    "did NOT receive the owner's data (anon_status=%r reason=%r). LOCKED "
+                                    "inconclusive; surfaced as a CONDITIONAL finding for HUMAN REVIEW "
+                                    "(never confirmed).", _anon_status, _anon_reason,
+                                )
+                            else:
+                                logger.info(
+                                    "[DEEP-VERIFY] Broken-for-all disclosure: anonymous probe was %s "
+                                    "(anon_status=%r reason=%r) -> plain D30 suppress, no conditional finding.",
+                                    "ambiguous" if _anon_ambiguous else "corroborating (genuinely public)",
+                                    _anon_status, _anon_reason,
+                                )
+                        else:
+                            # Self-teach hint (verdict UNCHANGED): teach the operator the opt-in exists.
+                            logger.info(
+                                "[DEEP-VERIFY] D30 hint: a bystander could read this resource. If it is a "
+                                "broken-for-all authorization gap (every authenticated user can read any "
+                                "owner's object) rather than a public-by-design resource, set "
+                                "\"assert_owner_only\": true on the op to surface it as a conditional "
+                                "finding for human review.",
+                            )
                 # D19: record the gate's already-made decision (True=corroborate, False=block).
                 # Single source of truth — the SAME boolean the gate acts on, AFTER the D30
                 # suppress-only check, so a public resource reads as NOT corroborated (never promoted).
@@ -2065,8 +2172,11 @@ async def execute_deep_verification(
                         _owner_view.available, _owner_view.reason, _resource_public, _gated,
                     )
                     _final_verdict = _gated
-                    _override = (PUBLIC_RESOURCE_NOT_BOLA_REASON if _resource_public
-                                 else OWNER_VIEW_NOT_CORROBORATED_REASON)
+                    _override = (
+                        BROKEN_FOR_ALL_ASSERTION_REASON if _broken_for_all
+                        else PUBLIC_RESOURCE_NOT_BOLA_REASON if _resource_public
+                        else OWNER_VIEW_NOT_CORROBORATED_REASON
+                    )
                 else:
                     logger.info(
                         "[DEEP-VERIFY] D24 owner-view differential: attack response "
@@ -2101,6 +2211,7 @@ async def execute_deep_verification(
                 owner_view_corroborated=_owner_view_corroborated,
                 bystander_view_available=_bystander_view_available,
                 resource_is_public=_resource_public,
+                broken_for_all_suspected=_broken_for_all,
             )
 
         # ---------------- Execute the follow-up (scope-locked) ----------------

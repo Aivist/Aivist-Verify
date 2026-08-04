@@ -267,6 +267,7 @@ def _record_from_result(result: Any, op: Dict[str, Any], deg_reason: Optional[st
         "anchoring_result": getattr(result, "anchoring_result", None),
         "pre_flight_status": getattr(result, "pre_flight_status", None),
         "owner_view_corroborated": getattr(result, "owner_view_corroborated", None),
+        "broken_for_all_suspected": getattr(result, "broken_for_all_suspected", None),
         "owner_view_similarity": None,
         # header + Reproduce line (no credentials):
         "method": op.get("method"),
@@ -310,6 +311,7 @@ async def _verify_external(
         owner_credential=owner_cred,
         bystander_credential=bystander_cred,
         challenge_break=True,               # real target -> run-level WAF/rate-limit circuit breaker
+        assert_owner_only=bool(op.get("assert_owner_only")),   # opt-in broken-for-all disclosure
         model_name=model,
     )
 

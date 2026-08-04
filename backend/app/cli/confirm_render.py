@@ -166,6 +166,11 @@ _READ_SEMANTIC_REFUTE = (
     "so no cross-user read was confirmed."
 )
 
+# guard_override for the opt-in broken-for-all conditional finding. Defined LOCALLY (this module
+# stays engine-import-free); a drift-guard test pins it to deep_verifier.BROKEN_FOR_ALL_ASSERTION_REASON.
+# It is deliberately NOT in _CODE_CONFIRMED_CHANNELS, so it can never render [CONFIRMED].
+_BROKEN_FOR_ALL_REASON = "broken_for_all_owner_assertion_human_review"
+
 # Per-anchor value translations. Keys are the exact engine field values.
 _CALLER_IDENTITY = {
     "confirmed": "the read-back object belongs to the victim, not the attacker (a genuine cross-user target)",
@@ -518,6 +523,39 @@ def render_tree(record: dict, *, color: Optional[bool] = None) -> str:
         if rep:
             lines.append(paint("  Reproduce:", "bold"))
             lines.append("    " + rep)
+    elif record.get("guard_override") == _BROKEN_FOR_ALL_REASON:
+        # A LOCKED-inconclusive conditional finding (opt-in `assert_owner_only`). NOT a confirmation:
+        # by black-box design a broken-for-all gap and an all-authenticated-shared feature are
+        # identical, so the tool refuses to decide from the operator's assertion alone. The two IF
+        # branches carry EQUAL prominence (both bold); no confirming language appears anywhere here.
+        lines.append(paint(f"[INCONCLUSIVE]  {shape_plain} - {method} {path}", "bold", "yellow"))
+        lines.append("  Verdict: " + paint("inconclusive", "bold", "yellow")
+                     + "  (locked - a conditional finding requiring human review)  "
+                     + _tok(paint, "guard_override", record.get("guard_override")))
+        s1 = _attacker_step(record)
+        if s1:
+            lines.append(paint("  Attempted:", "bold"))
+            lines.append("    " + s1)
+        lines.append(paint("  Mechanical evidence (what the engine physically observed):", "bold"))
+        lines.append("    - Every AUTHENTICATED principal that tried could read this resource: the "
+                     "attacker (cross-account) AND an unrelated third/bystander account both received "
+                     "the owner's data.  "
+                     + _tok(paint, "broken_for_all_suspected", record.get("broken_for_all_suspected")))
+        lines.append("    - An ANONYMOUS request (auth token stripped) did NOT receive the owner's data.")
+        lines.append(paint("  The operator asserted this resource should be owner-private.", "bold"))
+        lines.append(paint(textwrap.fill(
+            "IF that assertion holds: this is a serious BROKEN-FOR-ALL authorization gap - any "
+            "authenticated user can read any owner's object.", width=78,
+            initial_indent="  ", subsequent_indent="    "), "bold"))
+        lines.append(paint(textwrap.fill(
+            "IF this resource is shared-by-design (for example an internal directory readable by all "
+            "staff): THIS IS EXPECTED, NOT A BUG.", width=78,
+            initial_indent="  ", subsequent_indent="    "), "bold"))
+        lines.append(textwrap.fill(
+            "Why the verdict is locked to inconclusive: black-box, a broken-for-all gap and an "
+            "all-authenticated-shared feature are identical from the outside. To hold Zero-FP the "
+            "engine refuses to decide from a human assertion alone. Human review required.",
+            width=80, initial_indent="  ", subsequent_indent="  "))
     else:  # refuted
         lines.append(paint(f"[REFUTED]  {shape_plain} - {method} {path}", "green"))
         lines.append("  Verdict: " + paint(str(verdict), "green") + "  (checked - no cross-user effect)")

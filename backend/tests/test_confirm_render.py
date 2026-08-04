@@ -20,12 +20,14 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from backend.app.cli.confirm_render import (
     render_tree, render_tally, case_outcome, exit_code_for, _claim_tier, _CODE_CONFIRMED_CHANNELS,
+    _BROKEN_FOR_ALL_REASON,
 )
 # Test files MAY import the engine (the renderer module must not). The drift-guards anchor the
 # renderer's channel set + render output to deep_verifier's OWN exemption-reason constants.
 from backend.app.services.deep_verifier import (
     WRITE_RECORD_EXEMPTION_REASON, STATE_READBACK_EXEMPTION_REASON,
     DELETE_READBACK_EXEMPTION_REASON, STATE_JUMP_EXEMPTION_REASON,
+    BROKEN_FOR_ALL_ASSERTION_REASON,
 )
 
 _FOUR_CHANNELS = (WRITE_RECORD_EXEMPTION_REASON, STATE_READBACK_EXEMPTION_REASON,
@@ -284,3 +286,52 @@ def test_exit_code_tiers():
     assert exit_code_for([nd]) == 2
     assert exit_code_for([rf, sg]) == 1                 # any verified (signal) -> 1
     assert exit_code_for([rf, nd]) == 2                 # not-data with no verified -> 2
+
+
+# ==============================================================================
+# Broken-for-all conditional finding — renders [INCONCLUSIVE], NEVER [CONFIRMED].
+# ==============================================================================
+def _broken_for_all_record():
+    # The shape the engine emits on the locked-inconclusive broken-for-all path.
+    return {"shape": "read_semantic__orders", "ground_truth": None, "final_verdict": "inconclusive",
+            "ai_verdict_raw": "verified", "guard_override": _BROKEN_FOR_ALL_REASON,
+            "owner_view_corroborated": False, "broken_for_all_suspected": True,
+            "status": "completed", "degraded": False, "method": "GET",
+            "baseline_path": "/workshop/api/shop/orders/12", "attack_path": "/workshop/api/shop/orders/11"}
+
+
+def test_broken_for_all_renders_inconclusive_never_confirmed():
+    out = render_tree(_broken_for_all_record(), color=False)
+    assert "[INCONCLUSIVE]" in out
+    assert "[CONFIRMED]" not in out and "[SIGNAL" not in out
+    # the two IF branches are BOTH present (equal prominence; neither is fine print)
+    assert "IF that assertion holds" in out
+    assert "EXPECTED, NOT A BUG" in out
+    # the banned words never appear in this rendering
+    low = out.lower()
+    assert "confirmed" not in low and "verified" not in low
+    # raw token kept (transparency), and the reason token surfaced
+    assert _BROKEN_FOR_ALL_REASON in out
+    assert "broken_for_all_suspected" in out
+
+
+def test_broken_for_all_tier_is_outside_code_confirmed():
+    rec = _broken_for_all_record()
+    assert _claim_tier(rec) != "code_confirmed"          # never the zero-FP-claim tier
+    assert case_outcome(rec) != "confirmed"
+    # a lone conditional finding is not a confirmation -> does not raise the exit code to 1
+    assert exit_code_for([rec]) == 0
+
+
+def test_broken_for_all_windows_console_safe():
+    out = render_tree(_broken_for_all_record(), color=False)
+    assert "—" not in out                            # no em-dash
+    assert _ESC not in out                                # no stray ANSI when color off
+
+
+def test_drift_guard_broken_for_all_reason_matches_engine_and_is_not_a_code_channel():
+    # The renderer's LOCAL reason string must match the engine's constant, and must NOT be one of
+    # the four code-confirmed channels (so it can never render [CONFIRMED] / authorize a promotion).
+    assert _BROKEN_FOR_ALL_REASON == BROKEN_FOR_ALL_ASSERTION_REASON
+    assert _BROKEN_FOR_ALL_REASON not in _CODE_CONFIRMED_CHANNELS
+    assert _BROKEN_FOR_ALL_REASON not in _FOUR_CHANNELS
