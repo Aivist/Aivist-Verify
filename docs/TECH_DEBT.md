@@ -85,7 +85,7 @@
   been removed entirely.)
 - **Where:** `backend/tests/test_api_endpoints.py` (API smoke); `test_step9_proxy.py`
   (proxy radar, Step 9); plus pruner, custody, Step D extraction in other files.
-  Total backend suite: **587 tests**. See [`STATUS.md`](./STATUS.md).
+  Total backend suite: **647 tests**. See [`STATUS.md`](./STATUS.md).
 - **Covered:** FastAPI `TestClient` over isolated per-test SQLite with Gemini and
   background fuzzing mocked — analyze (200 + 422), findings persist (201 + 422),
   verify/batch 404s, health check. **Step 9:** WriterService serialization, SSEHub
@@ -937,17 +937,27 @@
 - **Validation.** 24 offline tests with independent ground truth
   (`backend/tests/test_d30_public_resource.py`): known-public → suppressed; known-private BOLA → still
   confirmed; ambiguous / soft-deny → fails safe to private (still confirmed); the probe is proven
-  custody-free, GET-only, and scope-locked. Backend suite **587 passed**. The two crAPI acceptance
-  assertions were reproduced against **FAITHFUL crAPI-shaped responses driving the real engine**
-  (crAPI itself was NOT booted here): the public community post flips **CONFIRMED → not-confirmed**,
-  and the private order BOLA **STILL CONFIRMS when a third account is denied / differs**. **Live crAPI
-  confirmation is pending the director's machine.**
+  custody-free, GET-only, and scope-locked. Backend suite **587 passed** (at the D30 commit; **647** as
+  of this doc update). The community-post assertion was reproduced against a **FAITHFUL crAPI-shaped
+  response driving the real engine** (crAPI itself was NOT booted here): the public community post flips
+  **CONFIRMED → not-confirmed**. **CORRECTION (order endpoint).** The companion fixture — "the private
+  order BOLA STILL CONFIRMS when a third account is denied / differs" — rested on a **now-retracted**
+  assumption. The live crAPI order endpoint (`GET /workshop/api/shop/orders/{order_id}`) is **fully
+  public / missing-auth** — an **anonymous** request (no token) returns the owner order — **not** a
+  private BOLA (see [`STATUS.md`](./STATUS.md) crAPI block), so the tool **correctly does NOT confirm
+  it**. That fixture is retained only as a **generic** "a genuine private BOLA still confirms"
+  regression, not as a model of the crAPI order endpoint.
 - **RESIDUAL (weigh before enabling on a real target).** The probe cannot distinguish "public by
   design" from "broken for EVERY authenticated user": if a private object is readable by an unrelated
   third account (a BOLA with no ownership check *anywhere*), the probe reads it too and the real BOLA
   is SUPPRESSED — a SAFE-direction **missed detection**. This is the deliberate trade — eliminate the
-  dangerous-direction FP, accept a narrow safe-direction miss — and it is exactly what the live crAPI
-  order-endpoint check must settle (whether that endpoint denies an unrelated third account).
+  dangerous-direction FP, accept a narrow safe-direction miss. **Update:** the live crAPI order endpoint
+  that once stood in for this case is now **settled — it is fully public / missing-auth** (an anonymous
+  request reads the owner order), so it never was the "broken for every authenticated user" case at all.
+  The genuine broken-for-all case is now addressed by the **opt-in `assert_owner_only` disclosure**
+  (commit `b33e223`, **D32**): it surfaces such a resource as a LOCKED-`inconclusive` **conditional
+  finding for human review**. That does **not** remove the SAFE-direction miss by default (it stays
+  opt-in and never emits `[CONFIRMED]`), but it gives the operator a mechanical way to disclose it.
 - **Historical context — the finding as first recorded (kept verbatim below):**
 - **This is the more serious of the two crAPI findings, and the one that matters most.** It is the
   first **empirical, real-target** trigger of **D24 residual gap #1 (public / shared resources)** —
@@ -970,6 +980,13 @@
   discipline exists to prevent. On the same crAPI run the gate was *correct* on a private resource
   (`GET /workshop/api/shop/orders/{order_id}`, a hand-verified REAL BOLA → correctly `verified`), so the
   distinction is precisely public-vs-private, not the mechanism.
+  > **[CORRECTION 2026-08-05 — supersedes the order-endpoint claim in the verbatim line above.]** The
+  > order endpoint cited here as a "correct private-resource confirmation" is now known to be **fully
+  > public / missing-auth** — an anonymous request returns the owner order — so that `verified` was
+  > itself a **public-resource false positive**, the same class as the community post, not a correct
+  > private-BOLA confirmation. The public-vs-private *point* stands in principle, but the crAPI order
+  > endpoint is **not** a valid private-resource example. See [`STATUS.md`](./STATUS.md) crAPI block and
+  > the current D30 framing above.
 - **This defines the real boundary of the zero-FP guarantee (record explicitly):** the zero-FP property holds
   for **private / authorization-gated resources**, and does **NOT** currently hold when the target contains
   **public / shared resources** — the owner-view gate will confirm them as cross-user "leaks." The two labs
@@ -1001,6 +1018,33 @@
 - **No fix here — deliberately.** Do NOT add heuristics (proximity, JSON-path scoping, negation parsing) to
   "fix" this: a smarter classifier is new logic that would need its own validation and could shift the direction.
   Recorded as a known boundary. **Flag for the future README "Known limitations" list.**
+
+### D32 — broken-for-all disclosure relies on the operator's owner-private assertion — LOW (SAFE-direction, opt-in)
+- **Where:** the opt-in `assert_owner_only` path in `execute_deep_verification` (`deep_verifier.py`) plus
+  the `[INCONCLUSIVE]` rendering in `confirm_render.py`. Feature landed commit **`b33e223`**.
+- **What it is.** D30 suppresses when a bystander can also read an owner-scoped resource, because "public
+  by design" and "broken for EVERY authenticated user" are **black-box identical**. The opt-in
+  `assert_owner_only` disclosure gathers ONE more mechanical fact — an **anonymous** probe of the same
+  resource (principal-auth headers stripped, routing headers kept) — and, when every authenticated
+  principal could read it but the anonymous request deterministically could NOT get the owner's data,
+  **locks the verdict to `inconclusive`** and surfaces a **broken-for-all conditional finding for human
+  review** (rendered `[INCONCLUSIVE]`).
+- **The boundary (recorded so it is explicit).** The mechanism proves only **mechanical facts** (which
+  principals could read what); it **cannot** decide the resource's intended access policy. That intent
+  judgment is supplied by the operator's `assert_owner_only` label — a **ground-truth assertion the tool
+  does not verify**. If the operator **mis-asserts** a genuinely shared-by-design resource as
+  owner-private, the result is the **same LOCKED-`inconclusive` conditional finding** requiring human
+  review — **never a false `[CONFIRMED]` / `verified`**. The path is structurally incapable of promotion:
+  `broken_for_all_owner_assertion_human_review` is deliberately **not** one of the four D19 channels, and
+  `_corroborated` is already False on this branch, so it can only ever select the SUPPRESS reason.
+- **Direction: SAFE.** The tool guarantees the mechanical facts and the inconclusive lock; the worst a
+  wrong assertion can do is raise a conditional finding a human must adjudicate — it can never manufacture
+  a verdict.
+- **Default OFF.** `assert_owner_only` defaults False → byte-identical to the prior D30 behavior. A
+  drift-guard test pins the renderer's local reason string to the engine's `BROKEN_FOR_ALL_ASSERTION_REASON`
+  and asserts it is not a code-confirmed channel. Tests: `test_broken_for_all.py` (drives the real engine),
+  `test_confirm_render.py` (the `[INCONCLUSIVE]` render + drift guards).
+- **Flag for the future README "Known limitations" list** (alongside D30's residual and D31).
 
 ---
 

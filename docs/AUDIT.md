@@ -8,8 +8,8 @@
 > affects coverage, not the claim.
 >
 > **Method.** Ground truth built from code (trusted over docs); full suite run. **Baseline at audit:
-> backend `pytest` = 587 passed, 2 benign third-party warnings.** Re-verify before relying on any line
-> number — code moves.
+> backend `pytest` = 587 passed, 2 benign third-party warnings** (now **647 passed** as of 2026-08-05).
+> Re-verify before relying on any line number — code moves.
 >
 > **The claim being protected:** *zero false positives on private / authorization-gated resources,
 > with a reproducible evidence chain.* The zero-FP property is a claim about the **deep-verifier final
@@ -35,8 +35,13 @@ These are the pre-publication must-address items in the direction the whole disc
   `PUBLIC_RESOURCE_NOT_BOLA_REASON` is not a D19 channel. Opt-in via `AI_DEEP_VERIFY_BYSTANDER_AUTH`
   ([config.py:238](../backend/app/core/config.py:238), default `None`). See [`TECH_DEBT.md` D30](./TECH_DEBT.md).
 - **Residual (SAFE-direction, recorded):** a BOLA "broken for *every* authenticated user" is
-  indistinguishable from a public resource → suppressed (missed detection). Deliberate trade; live crAPI
-  order-endpoint check pending.
+  indistinguishable from a public resource → suppressed (missed detection). Deliberate trade. The live
+  crAPI order-endpoint check that once stood in for this is now **settled — that endpoint is fully
+  public / missing-auth** (anonymous reads the owner order), so it was never the broken-for-all case.
+  The genuine broken-for-all case is now addressable via the **opt-in `assert_owner_only` disclosure**
+  (commit `b33e223`, TECH_DEBT **D32**): it surfaces such a resource as a LOCKED-`inconclusive`
+  conditional finding for human review — **never `[CONFIRMED]`** — without removing the default
+  safe-direction miss.
 
 ### 🔴 OPEN — Rule-oracle emits `verified` directly from coarse heuristics
 - **Direction: DANGEROUS**, but **scoped to the rule-oracle triage layer — NOT the deep-verifier
@@ -101,9 +106,9 @@ These do **not** threaten the zero-FP claim; they bound which real targets the t
 - **Rule-oracle heuristic thresholds are arbitrary.** Length-deviation cutoffs 0.05 / 0.1 / 0.15
   ([fuzzer.py:822](../backend/app/services/fuzzer.py:822) onward) are unvalidated magic numbers on the
   triage layer. Direction: DANGEROUS on the rule-oracle-only path (see Tier 1), boundary otherwise.
-- **Doc drift (test counts).** Several docs stated stale backend counts (507 / 523; actual 587) and a
-  stale lab count (14; actual 31). Corrected in a companion drift-alignment commit; historical deltas
-  (e.g. "Suite 507→510") left verbatim.
+- **Doc drift (test counts).** Several docs stated stale backend counts (507 / 523 / 587; actual **647**
+  as of 2026-08-05) and a stale lab count (14; actual 31). Corrected in companion drift-alignment commits;
+  historical deltas (e.g. "Suite 507→510") left verbatim.
 
 ---
 

@@ -32,9 +32,10 @@
 > **This board is the single authoritative answer** to "what's done, what's next, what's deferred,
 > what's rejected." It owns **status, ordering, and decisions**; **code facts** (test counts, shipped
 > modules, commit hashes) live in [`STATUS.md`](./STATUS.md). Every `DONE` below was **re-verified
-> against the repo on 2026-08-03** (backend suite = **587 passed**; the multi-step-auth commit
-> **`675835ff`** confirmed against its touched files). Sections §1–§8 below are the detailed rationale
-> the board summarizes; the tags here win for status.
+> against the repo on 2026-08-03** (the multi-step-auth commit **`675835ff`** confirmed against its
+> touched files); the **backend suite is 647 passed as of 2026-08-05** (presentation cut A + WAF
+> Part 1/2 + broken-for-all disclosure landed since — see ✅ DONE). Sections §1–§8 below are the
+> detailed rationale the board summarizes; the tags here win for status.
 
 ### ✅ DONE (re-verified against code)
 Engine-side (detail in §3/§4 and [`STATUS.md`](./STATUS.md)): **M1 complete** — five vuln shapes,
@@ -68,6 +69,20 @@ Operator front door (this node's line — all re-verified 2026-08-02):
   `SecretStr`; login endpoint scope-checked); the static-token path and the engine are untouched
   (`relogin.py` + `external_verify.py`, commit **`675835ff`**). Live-proven on **VAmPI at 60s TTL**. Known
   safe-direction limit: owner-view mid-run 401 (TECH_DEBT **D28**).
+- **Real-target WAF / rate-limit robustness (downgrade-only).** **Part 1** — run-level challenge circuit
+  breaker (commit **`d4b49ef`**; opt-in `challenge_break`, default OFF, so lab / measurement is
+  byte-identical). **Part 2** — a 200-status WAF / challenge page can never corroborate the D24 owner-view
+  gate (commit **`6fab3cc`**). Neither guard can create or strengthen a verdict. Detail in
+  [`STATUS.md`](./STATUS.md); classifier boundary TECH_DEBT **D31**. *(This is the "WAF circuit-breaker"
+  sub-part of PLANNED item 1, now done.)*
+- **Presentation-deepening — cut A** (commit **`ad45846`**). Claim-tiering (`[CONFIRMED]` code-gated vs
+  `[SIGNAL]` model-opinion, with an explicit basis line) + a walkable evidence chain, from existing record
+  fields only; renderer stays pure/offline. Detailed as §0 item **11 cut A** below; **cut B pending**.
+- **Broken-for-all disclosure** (opt-in `assert_owner_only`, commit **`b33e223`**). A LOCKED-`inconclusive`
+  **conditional finding for human review** when every authenticated principal can read an owner-scoped
+  resource but an anonymous request cannot — **structurally cannot promote to `verified`** (not a D19
+  channel). Exists because a broken-for-all bug and a shared-by-design feature are black-box identical, so
+  the intent judgment stays with the operator. TECH_DEBT **D32**.
 
 ### ▶️ NEXT (one item)
 - **Multi-step auth slice 2 — the remainder.** (a) Owner-token **mid-run** refresh, which needs an
@@ -78,16 +93,25 @@ Operator front door (this node's line — all re-verified 2026-08-02):
 
 ### 📋 PLANNED (ordered)
 1. **Remote arbitrary targets + full SSRF / DNS-rebinding / rate-limit hardening** — beyond localhost.
-   *(Subsumes the "WAF circuit-breaker": detect a WAF/rate-limiter has started blocking and stop rather
-   than hammering the target and poisoning verdicts — same rate-limit-hardening work, one item.)*
+   *(The "WAF circuit-breaker" sub-part is now **DONE** — run-level challenge circuit breaker `d4b49ef`
+   + the 200-status challenge-page corroboration guard `6fab3cc`, both downgrade-only; see ✅ DONE above.
+   What remains here is the broader remote-target / SSRF / DNS-rebinding work.)*
 2. **Passive endpoint discovery (proxy radar)** — feed observed flows into the catalog. *(This is the
    open half of **D18** "automated attack-surface discovery" ≡ the `catalog_from_har` stub,
    `backend/app/services/endpoint_catalog.py:154` — one item, not three.)*
 3. **Live crAPI acceptance run** — an **agent-run exploratory validation is DONE** (crAPI stood up via
    Docker on the director's Windows machine; three hand-verified endpoints; surfaced **D29** + **D30** —
    see [`STATUS.md`](./STATUS.md) / [`TECH_DEBT.md`](./TECH_DEBT.md)). An engineering signal, NOT a zero-FP
-   claim. **Still pending:** the post-D30 live re-check (order-endpoint bystander probe) and a
-   purely-manual director acceptance run.
+   claim. The post-D30 order-endpoint question is now **settled: that endpoint is public / missing-auth**
+   (an anonymous request reads the owner order), so the tool correctly does NOT confirm it. **Still
+   pending:** a purely-manual director acceptance run.
+   > **STRATEGIC (real-target README headline) — recorded so it isn't re-litigated.** crAPI did **not**
+   > yield a clean cross-user BOLA headline: of the three endpoints probed, the **order** endpoint is
+   > **public / missing-auth**, the **community post** is **shared-by-design**, and only **`mechanic_report`**
+   > is a genuine cross-user IDOR (and it needed the D29 fix to express). A crisp real-target headline needs
+   > a target with a **genuine per-user BOLA**. **VAmPI already has one** (live-confirmed, above). Evaluate
+   > **Juice Shop** and other OWASP targets in a later **dedicated** run before the README (item 6) commits
+   > to a headline target.
 4. **Interactive onboarding UX for the CLI** — an opening screen that prompts the user for
    target / spec / tokens / endpoint, then runs. **Sequenced AFTER the crAPI run-through**, because
    its design depends on what real targets actually require the user to provide (spec shape, path-param
@@ -98,6 +122,8 @@ Operator front door (this node's line — all re-verified 2026-08-02):
 5. **Frontend — the product UI.** *(Subsumes **D5**: retire the divergent Vite `frontend/`
    (`docs/TECH_DEBT.md:67`) — likely the same work as building the product UI; director ruling: PLANNED.)*
 6. **README (dual positioning) + comparison report** — this engine's verification vs a detection-side tool.
+   **Headline target still open:** crAPI is not a clean cross-user-BOLA headline (order = public,
+   community = shared — see item 3 strategic note); pick a target with a genuine per-user BOLA first.
 7. **GitHub publication + promotion.**
 8. **Umbrella brand name finalization** — `lanivist` is a provisional placeholder (single constant
    `BRAND_NAME`); the `verify` suffix is locked.

@@ -69,14 +69,16 @@ the earlier single-target record (140 SAFE / 70 VULN, one target), kept as histo
 
 | Suite | Command (from repo root) | Result |
 |---|---|---|
-| Backend | `python -m pytest backend/tests -q` | **587 passed** |
+| Backend | `python -m pytest backend/tests -q` | **647 passed** |
 | Ground-truth target (`vulnerable_target`, integer-id) | `python -m pytest vulnerable_target -q` | **31 passed** |
 | Ground-truth target (`depot_target`, UUID-id) | `python -m pytest depot_target -q` | **23 passed** |
 
-> Re-verified against the repo 2026-08-03 (all three suites run). The backend count was **473** while
-> only the confirmer spine had landed; it is now **587** after the presentation pass, entry point,
+> Re-verified against the repo 2026-08-05 (backend suite run). The backend count was **473** while
+> only the confirmer spine had landed; it is now **647** after the presentation pass, entry point,
 > config flow, `config.py` user-config source, the external real-target path, YAML `--spec` support,
-> and the `--auth` auto-relogin path (see the next section).
+> the `--auth` auto-relogin path, the real-target WAF/rate-limit challenge circuit breaker (Part 1) +
+> the 200-status challenge-page corroboration guard (Part 2), the presentation-deepening **cut A**
+> (claim-tiering + walkable evidence chain), and the opt-in **broken-for-all** disclosure (see below).
 
 ## Operator front door — CLI, packaging, config, external targets (code facts, re-verified 2026-08-02)
 
@@ -145,9 +147,19 @@ file touched is `config.py`, and only to ADD a settings source (below). What shi
   and an **execution agent** (not a manual director run) drove `lanivist verify` (real gemini-2.5-pro)
   against three hand-verified endpoints — each verdict judged against hand-verification done FIRST, since
   a real target carries no ground-truth label:
-  - `GET /workshop/api/shop/orders/{order_id}` (declared path id) — hand-verified **REAL BOLA** →
-    **CONFIRMED**, matched (a true positive), carried by the **owner-view gate**
-    (`owner_view_corroborated=True`) with the id-shaped anchors observe-only.
+  - `GET /workshop/api/shop/orders/{order_id}` (declared path id) — **CORRECTION — overclaim
+    retracted.** Earlier hand-verified as a **REAL BOLA → CONFIRMED (true positive)**; that
+    hand-verification pre-dated the anonymous probe and is **now known wrong**. The endpoint requires
+    **no auth at all** — an **anonymous** request (no token) returns the full owner order (email,
+    `transaction_id`) — so it is a **fully public / missing-auth** endpoint, **not a cross-user
+    BOLA**. It is therefore **out of scope for a cross-user BOLA confirmer**, and the tool
+    **correctly does NOT confirm it**: with D30 (authenticated bystander probe) an unrelated account
+    also reads the order → suppressed, and the broken-for-all anonymous probe finds anonymous reads
+    it too → genuinely public, so not even a broken-for-all conditional finding. The original run's
+    `CONFIRMED` was in fact the **same public-resource false-positive class as the community post
+    below** — masked at the time only because the hand-verification mislabeled the endpoint as
+    private. (This settles the "does that endpoint deny a third account, or is it broken for
+    everyone?" question that was left open below.)
   - `GET /community/api/v2/community/posts/{postId}` (inline id, a **public** community feed) —
     hand-verified **TRUE-NEGATIVE** → **CONFIRMED = a real FALSE POSITIVE**: the first real-target
     trigger of the D24 public/shared-resource gap, which **motivated D30** (now ✅ RESOLVED, commit
@@ -158,10 +170,45 @@ file touched is `config.py`, and only to ADD a settings source (below). What shi
     IDOR** → first **REFUTED** (a false negative from an assembly-layer gap), then **CONFIRMED** and
     matched after the **D29** fix (query-string ids now carried on the baseline + owner-view; commit
     `227b9c6`). See TECH_DEBT **D29**.
-  The **owner-view gate carried every crAPI confirmation; the id-shaped anchors stayed observe-only** —
-  the same portable-moat pattern seen on VAmPI. **Still pending:** a purely-manual director acceptance
-  run, and the post-D30 live order-endpoint re-check (does that endpoint deny an unrelated third account,
-  or is it broken for everyone? — the D30 residual, `AUDIT.md`).
+  The **owner-view gate carried the one genuine crAPI confirmation (the `mechanic_report` IDOR); the
+  id-shaped anchors stayed observe-only** — the same portable-moat pattern seen on VAmPI. **Honest net
+  tally after the correction above:** of the three endpoints, **one is a genuine cross-user IDOR the
+  tool confirms** (`mechanic_report`, post-D29), **one is public / missing-auth** (order — the tool
+  correctly does NOT confirm), and **one is public-by-design** (community post — the D30 false positive,
+  now suppressed). So **crAPI did not yield a clean cross-user BOLA headline** — see [`ROADMAP.md`](./ROADMAP.md)
+  §0. **Still pending:** a purely-manual director acceptance run. (The post-D30 live order-endpoint
+  re-check is now **settled** — the endpoint is public/missing-auth, above — not the D30 broken-for-all
+  residual it was once thought to be.)
+- **Real-target WAF / rate-limit robustness — challenge circuit breaker (Part 1) + corroboration guard
+  (Part 2).** Two downgrade-only guards on the real-target path (neither can create or strengthen a
+  verdict; the lab / measurement path is byte-identical):
+  - **Part 1 — run-level challenge circuit breaker** (`deep_verifier.py`, commit `d4b49ef`). When the
+    target begins challenging / rate-limiting mid-run (401/403/429, or a 200 block page), the run stops
+    at a checkpoint and returns **NOT DATA** rather than hammering the target — a challenge is not a
+    security signal. Opt-in on the real-target path (`challenge_break=True`); default OFF, so the lab /
+    measurement path never counts or aborts.
+  - **Part 2 — 200-status challenge-page corroboration guard** (`deep_verifier.py`, commit `6fab3cc`). A
+    WAF block page can return HTTP 200; if the attack response and the D24 owner-view fetch both land on
+    that same block page they are byte-similar, so the owner-view gate would read a **false**
+    corroboration → a false `[CONFIRMED]`, silently. A guard IN FRONT of corroboration turns a would-be
+    corroboration that rests on a challenge page into **NOT DATA**. Gated on `_corroborated is True`, so a
+    legitimate 200-denial that does not corroborate (e.g. the labs' `200 {"error":"forbidden"}` SAFE
+    cases) is untouched → stays `[REFUTED]`. `fetch_owner_view`, the four channels, and D19 are untouched.
+    Known classifier boundary: TECH_DEBT **D31**. Tests: `test_challenge_corroboration.py`.
+- **Broken-for-all disclosure (opt-in `assert_owner_only`; verdict LOCKED to inconclusive; commit
+  `b33e223`).** D30 cannot tell "public by design" from "broken for **every** authenticated user"
+  (black-box identical). When the operator **asserts** a resource is owner-private and D30 would suppress
+  (a bystander could read it), **one anonymous probe** of the same resource is issued (principal-auth
+  headers stripped, routing headers such as a gateway `X-API-Key` kept). If every **authenticated**
+  principal could read it but the anonymous request deterministically could **not** get the owner's data,
+  the verdict is **locked to `inconclusive`** and surfaced as a **broken-for-all conditional finding for
+  human review** — rendered `[INCONCLUSIVE]`, **never `[CONFIRMED]` / verified**. It is **structurally
+  incapable of promotion**: `broken_for_all_owner_assertion_human_review` is deliberately **not** one of
+  the four D19 channels, and `_corroborated` is already False. It exists **because** a broken-for-all bug
+  and a shared-by-design feature are black-box identical, so the intent judgment stays with the operator
+  and the tool refuses to confirm on the assertion alone — it only mechanically evidences it. Known
+  boundary: TECH_DEBT **D32**. Tests: `test_broken_for_all.py` (drives the real engine) + the
+  `[INCONCLUSIVE]` render and drift guards in `test_confirm_render.py`.
 - **YAML `--spec` support** (`external_verify._load_spec_file`, commit `5a6cf52`). `--spec` accepts
   `.yml`/`.yaml` (parsed with `yaml.safe_load` ONLY — never the unsafe loader) as well as `.json`; JSON
   stays byte-identical and feeds the same `catalog_from_openapi`. Suite 507→510.
