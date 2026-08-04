@@ -107,6 +107,13 @@ def test_red_line_1_scope_declared_from_target_and_fail_closed(tmp_path, monkeyp
     assert pol.check("http://localhost:9999/x").allowed is False        # wrong port -> refused
 
 
+def test_external_path_enables_challenge_circuit_breaker(tmp_path, monkeypatch):
+    # WAF-robustness Part 1: a real-target run opts into the run-level challenge circuit breaker.
+    eng = _FakeEngine(_result())
+    _run(tmp_path, monkeypatch, eng, prompt=_prompts("atk", ""))
+    assert eng.captured["challenge_break"] is True
+
+
 def test_approved_host_derivation():
     assert _approved_host("http://localhost:8888") == "localhost:8888"
     assert _approved_host("http://127.0.0.1:8080/base") == "127.0.0.1:8080"

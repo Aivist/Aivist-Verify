@@ -309,6 +309,7 @@ async def _verify_external(
         available_endpoints=catalog,
         owner_credential=owner_cred,
         bystander_credential=bystander_cred,
+        challenge_break=True,               # real target -> run-level WAF/rate-limit circuit breaker
         model_name=model,
     )
 

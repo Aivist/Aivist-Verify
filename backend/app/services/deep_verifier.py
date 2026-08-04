@@ -53,6 +53,7 @@ from backend.app.services.fuzzer import (
     _host_of,
     _compute_similarity,
     ScopeViolationError,
+    _BLOCK_KEYWORDS,   # the EXISTING WAF/challenge signature — reused, never a parallel detector
 )
 # Scope-lock (node 3): the single audited host-scope decision. Every request this
 # verifier issues is gated by ONE ScopePolicy — the pre-send checks below and the
@@ -88,6 +89,44 @@ def _path_is_write_record(path: Optional[str]) -> bool:
     return bool(_catalog_tokens(path or "") & _WRITE_RECORD_KEYWORDS)
 
 logger = logging.getLogger("app.services.deep_verifier")
+
+# ==============================================================================
+# WAF / rate-limit CHALLENGE detection (WAF-robustness, Parts 1 & 2). ONE detector,
+# shared by the run-level circuit breaker (Part 1) and the owner-view corroboration guard
+# (Part 2) — deliberately NOT a parallel detector. A "challenge" is a 401/403/429 status, OR
+# a 2xx whose body carries a known block/challenge signature (reuses fuzzer._BLOCK_KEYWORDS).
+# Every consumer is DOWNGRADE-ONLY: a challenge can only force NOT DATA / block corroboration,
+# never produce or strengthen a verdict.
+# ==============================================================================
+_CHALLENGE_STATUSES = frozenset({401, 403, 429})
+# Conservative per-run abort threshold. A single run issues only a handful of attacker-side
+# requests (each already 429/503-backed-off + retried once by _send_request), so this many
+# DISTINCT *persisted* challenges within one run means the target is systematically challenging /
+# rate-limiting — stop rather than keep hammering. Downgrade-only (-> NOT DATA). A named constant,
+# not inline magic; the director may tune it.
+_CHALLENGE_ABORT_THRESHOLD = 2
+_CHALLENGE_ABORT_REASON = (
+    "target began challenging / rate-limiting mid-run - stopped to avoid hammering "
+    "(not a security signal)"
+)
+
+
+def _is_challenge_response(status_code: Any, body: Optional[str]) -> bool:
+    """True iff a response looks like a WAF / rate-limit challenge — a 401/403/429 status, OR a
+    2xx whose body carries a known block/challenge signature (`fuzzer._BLOCK_KEYWORDS`; NOT a
+    parallel detector). Content-only on the 2xx branch, so a legitimate 2xx carrying real data
+    never matches. Never raises."""
+    try:
+        s = int(status_code)
+    except (TypeError, ValueError):
+        return False
+    if s in _CHALLENGE_STATUSES:
+        return True
+    if 200 <= s < 300:
+        low = (body or "").lower()
+        return any(kw in low for kw in _BLOCK_KEYWORDS)
+    return False
+
 
 # Max characters of a response body embedded in the prompt / evidence trail.
 _EVIDENCE_BODY_MAX = 2000
@@ -1449,6 +1488,7 @@ async def execute_deep_verification(
     model_name: Optional[str] = None,
     owner_credential: Optional["OwnerCredential"] = None,
     bystander_credential: Optional["OwnerCredential"] = None,
+    challenge_break: bool = False,
 ) -> DeepVerificationResult:
     """
     Run the isolated, serial AI-in-the-loop write-then-read deep verification.
@@ -1499,6 +1539,13 @@ async def execute_deep_verification(
             as private and lets the confirmation proceed. None/absent — the default — means
             no bystander probe is issued and behavior is byte-identical to before. It is
             NEVER merged into an attack request (separate variable, GET-only).
+        challenge_break: OPTIONAL run-level challenge circuit breaker (WAF-robustness Part 1).
+            When True (the real-target path opts in), each attacker-side request this run issues is
+            checked for a WAF / rate-limit challenge (`_is_challenge_response`); once
+            `_CHALLENGE_ABORT_THRESHOLD` distinct challenges accumulate, the run aborts at the next
+            checkpoint and returns NOT DATA (degraded) rather than hammering the target further. It
+            is DOWNGRADE-ONLY: it can only force NOT DATA, never a verdict. Default False — the
+            lab / measurement path never counts or aborts, so behavior is byte-identical.
 
     Returns:
         DeepVerificationResult — the AI verdict alongside the full evidence trail.
@@ -1564,9 +1611,29 @@ async def execute_deep_verification(
     pre_flight_path: Optional[str] = None
 
     async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
+        # --- Part 1: run-level challenge circuit breaker (downgrade-only) -------------------
+        # Counts DISTINCT challenged responses across THIS run's attacker-side requests; when the
+        # count reaches the threshold, `_challenge_tripped` is set and the run aborts at the next
+        # checkpoint (marked NOT DATA). Enabled only for real-target runs (`challenge_break=True`);
+        # the lab / measurement path leaves it False, so `_guarded_send` is a transparent
+        # pass-through to `_send_request` (no counting, no aborting) and behavior is byte-identical.
+        # The owner-view / bystander reads (custody-free GETs inside fetch_*) are intentionally NOT
+        # counted here — that keeps Part 1 out of the D24/D30 red-line functions.
+        _challenge_count = 0
+        _challenge_tripped = False
+
+        async def _guarded_send(req: Dict[str, Any]) -> Dict[str, Any]:
+            nonlocal _challenge_count, _challenge_tripped
+            res = await _send_request(client, req, base_url, scope=scope_policy)
+            if challenge_break and _is_challenge_response(res.get("status_code"), res.get("response_body")):
+                _challenge_count += 1
+                if _challenge_count >= _CHALLENGE_ABORT_THRESHOLD:
+                    _challenge_tripped = True
+            return res
+
         # ---------------- Step 1: real baseline (+ M1.3 pre-flight) + attack ----------------
         try:
-            baseline_result = await _send_request(client, baseline_req, base_url, scope=scope_policy)
+            baseline_result = await _guarded_send(baseline_req)
             if payload:
                 attack_req = await mutate_request(baseline_req, payload)
             else:
@@ -1606,7 +1673,7 @@ async def execute_deep_verification(
                         pre_flight_path = None
                     else:
                         try:
-                            pre_flight_result = await _send_request(client, _pf_req, base_url, scope=scope_policy)
+                            pre_flight_result = await _guarded_send(_pf_req)
                             logger.info(
                                 "[DEEP-VERIFY] M1.3 pre-flight: read victim object state %r BEFORE the "
                                 "DELETE -> status=%s (existence anchor for the negative assertion).",
@@ -1619,7 +1686,7 @@ async def execute_deep_verification(
                             )
                             pre_flight_result = None
 
-            attack_result = await _send_request(client, attack_req, base_url, scope=scope_policy)
+            attack_result = await _guarded_send(attack_req)
         except Exception as e:
             logger.warning(f"[DEEP-VERIFY] Baseline/attack send failed: {e}")
             return _disabled_or_degraded("degraded", f"baseline/attack request failed: {e}")
@@ -1695,7 +1762,7 @@ async def execute_deep_verification(
                             raise ScopeViolationError(
                                 f"record probe host outside approved scope '{approved}'"
                             )
-                        _probe_result = await _send_request(client, _probe, base_url, scope=scope_policy)
+                        _probe_result = await _guarded_send(_probe)
                         _object_scoped = _record_is_relevant_to_write(
                             (_probe_result or {}).get("response_body"),
                             caller_object_id, written_values,
@@ -1772,6 +1839,17 @@ async def execute_deep_verification(
                                 attack_req.get("headers", {}), attack_req.get("body"), attack_result)
                 + "\n"
             )
+
+        # ---------------- Part 1 checkpoint: abort a systematically-challenged run BEFORE the
+        # turn-1 model call (covers baseline / pre-flight / attack / record-probe). Downgrade-only. --
+        if _challenge_tripped:
+            logger.warning(
+                "[DEEP-VERIFY] Challenge circuit breaker: %s distinct challenge/rate-limit responses "
+                "this run (>= %s) -> aborting before the model call, NOT DATA.",
+                _challenge_count, _CHALLENGE_ABORT_THRESHOLD,
+            )
+            return _disabled_or_degraded("degraded", _CHALLENGE_ABORT_REASON,
+                                         baseline_trail, attack_trail)
 
         # ---------------- Need a configured provider to run the AI step ----------------
         if not provider.is_configured():
@@ -2024,7 +2102,7 @@ async def execute_deep_verification(
                 )
             else:
                 try:
-                    fu_result = await _send_request(client, fu_parsed, base_url, scope=scope_policy)
+                    fu_result = await _guarded_send(fu_parsed)
                     follow_up_response = _summarize_response(fu_result)
                     follow_up_feedback = (
                         f"HTTP {fu_result.get('status_code')} | "
@@ -2035,6 +2113,17 @@ async def execute_deep_verification(
                     follow_up_feedback = f"REFUSED (scope lock): {sve}. No request was executed."
                 except Exception as e:
                     follow_up_feedback = f"ERROR executing follow-up: {type(e).__name__}: {e}"
+
+        # ---------------- Part 1 checkpoint: the follow-up may have pushed the run over the
+        # challenge threshold; abort BEFORE the turn-2 model call. Downgrade-only -> NOT DATA. ------
+        if _challenge_tripped:
+            logger.warning(
+                "[DEEP-VERIFY] Challenge circuit breaker: %s distinct challenge/rate-limit responses "
+                "this run (>= %s) after the follow-up -> aborting before turn-2, NOT DATA.",
+                _challenge_count, _CHALLENGE_ABORT_THRESHOLD,
+            )
+            return _disabled_or_degraded("degraded", _CHALLENGE_ABORT_REASON,
+                                         baseline_trail, attack_trail, turns_raw)
 
         # ---------------- AI turn 2 (same conversation) ----------------
         body_line = f"\nBody: {json.dumps(fu_body)}" if fu_body is not None else ""
