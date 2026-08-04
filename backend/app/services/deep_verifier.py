@@ -109,6 +109,11 @@ _CHALLENGE_ABORT_REASON = (
     "target began challenging / rate-limiting mid-run - stopped to avoid hammering "
     "(not a security signal)"
 )
+# Part 2: the NOT-DATA reason when a WOULD-BE owner-view corroboration rests on a challenge page.
+_CHALLENGE_PAGE_REASON = (
+    "owner-view corroboration rested on a WAF / challenge page (a 401/403/429, or a 200 block "
+    "page) - not the victim's data (not a security signal)"
+)
 
 
 def _is_challenge_response(status_code: Any, body: Optional[str]) -> bool:
@@ -1985,6 +1990,32 @@ async def execute_deep_verification(
                 _corroborated = _owner_view.available and _owner_view_corroborates(
                     _anchor_body, _owner_view.body
                 )
+                # ---------- WAF-robustness Part 2: CHALLENGE-PAGE GUARD (downgrade-only) ----------
+                # A WAF/challenge page can return HTTP 200. If the ATTACK response and the OWNER-VIEW
+                # fetch both land on the SAME 200 block page, they are byte-similar, so
+                # `_owner_view_corroborates` reads them as "the attacker saw the owner's data" -> a
+                # FALSE owner_view_corroborated=True -> a false [CONFIRMED], silently (nothing errors).
+                # Guard: a WOULD-BE corroboration (`_corroborated` already True) where the attack OR the
+                # owner-view response is a challenge page (401/403/429 status, or a 2xx block signature)
+                # is NOT the victim's data -> the run is NOT DATA and the owner-view does NOT corroborate.
+                # DOWNGRADE-ONLY: it can only force NOT DATA, never create/strengthen a verdict.
+                # Gating on `_corroborated is True` is deliberate and load-bearing: a legitimate
+                # 200-denial that does NOT corroborate (dissimilar to the owner's real data - e.g. the
+                # labs' 200 {"error":"forbidden"} SAFE cases) is left UNTOUCHED -> stays [REFUTED],
+                # byte-identical. RED LINES untouched: this is a new guard IN FRONT of corroboration, not
+                # a change to fetch_owner_view (custody-free / GET-only), the four channels, or D19.
+                if _corroborated and (
+                    _is_challenge_response(attack_result.get("status_code"), _anchor_body)
+                    or _is_challenge_response(_owner_view.status, _owner_view.body)
+                ):
+                    logger.warning(
+                        "[DEEP-VERIFY] Challenge-page guard: a would-be owner-view corroboration rests on "
+                        "a WAF/challenge page (attack_status=%s owner_status=%s) -> NOT the victim's data "
+                        "-> NOT DATA (owner-view does NOT corroborate). Never a confirmation.",
+                        attack_result.get("status_code"), _owner_view.status,
+                    )
+                    return _disabled_or_degraded("degraded", _CHALLENGE_PAGE_REASON,
+                                                 baseline_trail, attack_trail, turns_raw)
                 # ---------- D30: PUBLIC-RESOURCE DISCRIMINATION (SUPPRESS-ONLY) ----------
                 # A read-semantic 'verified' the owner-view gate would corroborate is STILL a false
                 # positive when the resource is public/shared: a public object legitimately returns
