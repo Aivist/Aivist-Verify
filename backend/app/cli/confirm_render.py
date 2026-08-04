@@ -139,6 +139,12 @@ _SAME_RESOURCE_PROOF = (
     "(no cross-resource read-back was required)."
 )
 
+# The four deterministic exemption channels - the ONLY guard_override values that authorize a
+# code-confirmed 'verified'. Derived from the _CHANNEL_PROOF keys so this cannot drift from the
+# translation table; a test also pins it to deep_verifier's own *_EXEMPTION_REASON constants.
+# This MIRRORS fuzzer._code_authorized_channel (those four channels OR owner_view_corroborated).
+_CODE_CONFIRMED_CHANNELS = frozenset(_CHANNEL_PROOF)
+
 # guard_override -> the "why it did not confirm" paragraph for a REFUTED verdict.
 _REFUTE_CHANNEL = {
     "cross_resource_readback_not_decisive": (
@@ -148,6 +154,11 @@ _REFUTE_CHANNEL = {
     "owner_view_not_corroborated": (
         "Re-fetched the victim's object as the victim; the attacker's response did NOT return "
         "the victim's data, so no cross-user read actually occurred."
+    ),
+    "public_resource_read_not_cross_user": (
+        "A third, unrelated identity could also read this resource, so it is public/shared - "
+        "reading it across accounts is not an authorization violation. The verdict was "
+        "suppressed to inconclusive (D30 public-resource discrimination)."
     ),
 }
 _READ_SEMANTIC_REFUTE = (
@@ -218,18 +229,48 @@ def _is_notdata(record: dict) -> bool:
     return _verdict(record) is None
 
 
-def case_outcome(record: dict) -> str:
-    """'confirmed' (verified) | 'refuted' (a verdict, not verified) | 'notdata' (degraded/error)."""
+def _claim_tier(record: dict) -> str:
+    """The claim tier for a record, from ENGINE FIELDS ONLY (never `ground_truth`):
+      "not_data"       - degraded / errored / no verdict;
+      "refuted"        - a verdict that is not 'verified';
+      "code_confirmed" - 'verified' AND a DETERMINISTIC code channel authorized it (one of the four
+                         exemption channels, OR the D24 owner-view gate corroborated). This is the
+                         zero-FP-claim domain;
+      "signal"         - 'verified' but NO deterministic code channel authorized it (the model's
+                         opinion / triage heuristics alone). An engineering lead, NOT a confirmation.
+    Mirrors fuzzer._code_authorized_channel exactly; the renderer cannot manufacture `verified` or a
+    higher tier - both are read from the record's own engine fields."""
     if _is_notdata(record):
+        return "not_data"
+    if _verdict(record) != "verified":
+        return "refuted"
+    if record.get("guard_override") in _CODE_CONFIRMED_CHANNELS:
+        return "code_confirmed"
+    if record.get("owner_view_corroborated") is True:
+        return "code_confirmed"
+    return "signal"
+
+
+def case_outcome(record: dict) -> str:
+    """'confirmed' (code-confirmed verified) | 'signal' (verified, not code-confirmed) |
+    'refuted' (a verdict, not verified) | 'notdata' (degraded/error). Derived from `_claim_tier`."""
+    tier = _claim_tier(record)
+    if tier == "not_data":
         return "notdata"
-    return "confirmed" if _verdict(record) == "verified" else "refuted"
+    if tier == "code_confirmed":
+        return "confirmed"
+    if tier == "signal":
+        return "signal"
+    return "refuted"
 
 
 def exit_code_for(records) -> int:
-    """0 = nothing confirmed (clean); 1 = >=1 confirmed; 2 = a NOT-DATA run (degraded/error).
-    Precedence: a real confirmation is the headline (1); else any NOT DATA blocks a clean 0 (2)."""
+    """0 = nothing verified (clean); 1 = >=1 verified (code-confirmed OR signal); 2 = a NOT-DATA run.
+    A 'signal' is still a 'verified' verdict, so it is NOT clean - it returns 1 alongside a
+    code-confirmation (the tier distinction lives in the tree/tally, not the exit code). Precedence:
+    any verified is the headline (1); else any NOT DATA blocks a clean 0 (2)."""
     outcomes = [case_outcome(r) for r in records]
-    if "confirmed" in outcomes:
+    if "confirmed" in outcomes or "signal" in outcomes:
         return 1
     if "notdata" in outcomes:
         return 2
@@ -261,14 +302,97 @@ def _evidence_lines(record: dict, paint):
         out.append(_translate(_NEGATIVE_ASSERTION, na) + "  " + _tok(paint, "negative_assertion", na))
     pf = record.get("pre_flight_status")
     if pf is not None:
-        out.append(f"pre-flight read HTTP {pf} - the object existed and was the victim's before the attack")
-    ar = record.get("anchoring_result")
-    if ar:
-        out.append(_translate(_ANCHORING, ar) + "  " + _tok(paint, "anchoring_result", ar))
+        out.append(f"pre-flight read HTTP {pf} - the object existed and was the victim's before the attack  "
+                   + _tok(paint, "pre_flight_status", pf))
+    sim = record.get("owner_view_similarity")
+    if sim is not None:
+        out.append(f"owner-view similarity {sim} vs the corroboration threshold  "
+                   + _tok(paint, "owner_view_similarity", sim))
     if record.get("owner_view_corroborated") is True:
         out.append("re-fetched the victim's object as the victim; the attacker's response matched it  "
                    + _tok(paint, "owner_view_corroborated", True))
+    ar = record.get("anchoring_result")
+    if ar:
+        out.append(_translate(_ANCHORING, ar) + "  " + _tok(paint, "anchoring_result", ar))
     return out
+
+
+# ------------------------------------------------------------------------------
+# Walkable evidence chain - the ordered, physical account (built ONLY from fields the
+# record actually carries; any step whose field is absent is omitted, never fabricated).
+# ------------------------------------------------------------------------------
+def _attacker_step(record: dict) -> Optional[str]:
+    """Step 1: what was sent as the attacker. None when the record lacks method/path (golden rows
+    do; live `confirm` records carry them)."""
+    method = record.get("method")
+    path = record.get("attack_path") or record.get("baseline_path")
+    if not method or not path:
+        return None
+    body = record.get("body")
+    body_s = "" if body is None else f"  body={json.dumps(body, ensure_ascii=False)}"
+    return f"{method} {path}{body_s}"
+
+
+def _reread_step(record: dict, paint) -> Optional[str]:
+    """Step 2: the independent re-read, as a DIFFERENT identity than the attack, named per channel.
+    None when no code-gated re-read authorized the verdict (e.g. a model-opinion signal)."""
+    ch = record.get("guard_override")
+    _by_channel = {
+        "write_record_readback_decisive":
+            "read the object back through a record/log endpoint as another identity (write-record read-back)",
+        "state_readback_causally_decisive":
+            "re-read the attacked object's own state as another identity (object-state read-back)",
+        "delete_readback_negative_assertion_decisive":
+            "read the object's state before the attack and again after, as another identity (pre-flight then after read)",
+        "state_jump_causally_decisive":
+            "read the object's prior state and its state after the attack, as another identity (pre-flight then after read)",
+    }
+    if ch in _by_channel:
+        return _by_channel[ch] + "  " + _tok(paint, "guard_override", ch)
+    if record.get("owner_view_corroborated") is True:
+        return ("re-fetched the victim's object AS THE VICTIM - a different identity than the attack "
+                "(owner-view re-read)  " + _tok(paint, "owner_view_corroborated", True))
+    return None
+
+
+def _ruled_out_steps(record: dict, tier: str):
+    """Step 4: what was NOT taken as proof - field-backed only. For a code-confirmed verdict, state
+    explicitly that the model's raw opinion alone did not decide it (the code channel did)."""
+    out = []
+    if tier == "code_confirmed":
+        raw = record.get("ai_verdict_raw")
+        out.append(f"the model's raw opinion alone did NOT decide this - the deterministic code "
+                   f"channel did  (ai_verdict_raw={raw})")
+    return out
+
+
+def _append_chain(lines, record: dict, paint, tier: str) -> None:
+    """Emit the ordered, walkable evidence chain into `lines`. Steps with no backing field are
+    omitted; the numbering counts only the steps actually shown."""
+    lines.append(paint("  Evidence chain (the engine's own run):", "bold"))
+    n = 0
+    s1 = _attacker_step(record)
+    if s1:
+        n += 1
+        lines.append(f"    {n}. Sent as the attacker:  " + s1)
+    s2 = _reread_step(record, paint)
+    if s2:
+        n += 1
+        lines.append(f"    {n}. Independent re-read (a different identity than the attack):  " + s2)
+    comps = _evidence_lines(record, paint)
+    if comps:
+        n += 1
+        lines.append(f"    {n}. What decided it:")
+        for c in comps:
+            lines.append("       - " + c)
+    ruled = _ruled_out_steps(record, tier)
+    if ruled:
+        n += 1
+        lines.append(f"    {n}. Not taken as proof:")
+        for r in ruled:
+            lines.append("       - " + r)
+    if n == 0:
+        lines.append("    (no per-step evidence fields were recorded on this row)")
 
 
 def _why_not_lines(record: dict, paint):
@@ -346,7 +470,8 @@ def render_tree(record: dict, *, color: Optional[bool] = None) -> str:
     shape_plain = _SHAPE_PLAIN.get(shape, shape)
     method = record.get("method") or "-"
     path = record.get("baseline_path") or "-"
-    notdata = _is_notdata(record)
+    tier = _claim_tier(record)
+    notdata = (tier == "not_data")
     verdict = _verdict(record)
     lines = []
 
@@ -355,25 +480,51 @@ def render_tree(record: dict, *, color: Optional[bool] = None) -> str:
         reason = record.get("degraded_reason") or record.get("error") or "engine returned no usable verdict"
         lines.append(f"  Status: {record.get('status', 'degraded')} - {reason}")
         lines.append("  No verdict produced - excluded from any confirm/clean claim.")
-    elif verdict == "verified":
+    elif tier == "code_confirmed":
         channel_name, proof = _confirm_proof(record)
         ch_tok = record.get("guard_override")
         lines.append(paint(f"[CONFIRMED]  {shape_plain} - {method} {path}", "bold", "red"))
         lines.append("  Verdict: " + paint("verified", "bold", "red")
                      + f"  (confirming channel: {channel_name})  "
                      + _tok(paint, "guard_override", ch_tok if ch_tok else "read_semantic_owner_view_gate"))
+        lines.append("  Basis: a deterministic code gate authorized this "
+                     "(write-then-independent-read proof), not the model's opinion alone.")
         lines.append(paint("  What the engine proved:", "bold"))
         lines.append(textwrap.fill(proof, width=80, initial_indent="    ", subsequent_indent="    "))
-        lines.append(paint("  Evidence chain (the engine's own run):", "bold"))
-        for ln in _evidence_lines(record, paint):
-            lines.append("    - " + ln)
+        _append_chain(lines, record, paint, tier)
+        if record.get("ground_truth") is None:
+            lines.append(textwrap.fill(
+                "Real target: no ground truth. The deterministic gate fired (on the two labs that "
+                "meant zero false positives), but zero-FP is a lab-measured property and is NOT "
+                "claimed on this target.", width=80, initial_indent="  ", subsequent_indent="  "))
         rep = _reproduce_line(record)
         if rep:
             lines.append(paint("  Reproduce:", "bold"))
             lines.append("    " + rep)
-    else:
+    elif tier == "signal":
+        # Verified, but NO deterministic code channel authorized it - the model's opinion / triage
+        # heuristics alone. A calmer marker (NOT bold red): this is a lead, not a zero-FP confirmation.
+        lines.append(paint(f"[SIGNAL - model opinion, not code-confirmed]  {shape_plain} - {method} {path}", "cyan"))
+        lines.append("  Verdict: " + paint("verified", "cyan")
+                     + "  (no deterministic code channel authorized this)  "
+                     + _tok(paint, "guard_override", record.get("guard_override")))
+        lines.append(textwrap.fill(
+            "No deterministic code gate authorized this. It rests on the model's judgment (and/or "
+            "triage heuristics), not the write-then-independent-read proof. Engineering signal - "
+            "NOT a zero-false-positive confirmation. Treat it as a lead to verify, not a confirmed "
+            "finding.", width=80, initial_indent="  ", subsequent_indent="  "))
+        _append_chain(lines, record, paint, tier)
+        rep = _reproduce_line(record)
+        if rep:
+            lines.append(paint("  Reproduce:", "bold"))
+            lines.append("    " + rep)
+    else:  # refuted
         lines.append(paint(f"[REFUTED]  {shape_plain} - {method} {path}", "green"))
         lines.append("  Verdict: " + paint(str(verdict), "green") + "  (checked - no cross-user effect)")
+        s1 = _attacker_step(record)
+        if s1:
+            lines.append(paint("  Attempted:", "bold"))
+            lines.append("    " + s1)
         lines.append(paint("  Why it did not confirm:", "bold"))
         for ln in _why_not_lines(record, paint):
             lines.append("    - " + ln)
@@ -384,19 +535,24 @@ def render_tree(record: dict, *, color: Optional[bool] = None) -> str:
 
 
 def render_tally(records, *, color: Optional[bool] = None) -> str:
-    """One honest line for full-caseset mode: how many candidates the code gate CONFIRMED
-    vs. REFUTED over the batch. Counts strictly from the engine verdict (`verified` =>
-    confirmed; anything else => not). No claims about other scanners; just the tally."""
+    """One honest line for full-caseset mode. The ALARMING red count is CODE-CONFIRMED only
+    (`verified` + a deterministic code channel); a `verified` that no channel authorized is broken
+    out as an unconfirmed SIGNAL, not folded into the confirmed count. Counts strictly from the
+    engine verdict via `case_outcome`; never `ground_truth`. No claims about other scanners."""
     paint = _painter(color)
     outcomes = [case_outcome(r) for r in records]
     total = len(outcomes)
     confirmed = outcomes.count("confirmed")
+    signal = outcomes.count("signal")
     refuted = outcomes.count("refuted")
     notdata = outcomes.count("notdata")
 
-    conf_seg = paint(f"{confirmed} confirmed exploitable", *(("bold", "red") if confirmed else ("dim",)))
+    conf_seg = paint(f"{confirmed} confirmed (code-gated)", *(("bold", "red") if confirmed else ("dim",)))
     ref_seg = paint(f"{refuted} refuted", "green")
-    parts = [f"{total} candidate(s) checked", conf_seg, ref_seg]
+    parts = [f"{total} candidate(s) checked", conf_seg]
+    if signal:
+        parts.append(paint(f"{signal} unconfirmed signal(s)", "cyan"))
+    parts.append(ref_seg)
     if notdata:
         parts.append(paint(f"{notdata} not-data", "yellow"))
     return _redact("  " + " | ".join(parts))

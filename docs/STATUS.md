@@ -89,12 +89,20 @@ file touched is `config.py`, and only to ADD a settings source (below). What shi
   `verdict_measure._run_one`'s `execute_deep_verification` path and renders the returned
   `DeepVerificationResult`. The verdict is read ONLY from `final_verdict`/`ai_verdict` — the
   renderer **structurally cannot manufacture `verified`**; `ground_truth` feeds only the separate
-  `[lab oracle]` line. Exit codes: `0` nothing confirmed · `1` ≥1 confirmed · `2` NOT DATA.
-- **Presentation pass** (`backend/app/cli/confirm_render.py`, commits `ef8fe3b` + `2e3f736`).
-  Plain-language translation of every channel/anchor token (raw token kept alongside), ANSI color
-  (CONFIRMED red / REFUTED green, TTY-autodetected, **no `rich` dependency**, `NO_COLOR`/`FORCE_COLOR`
-  honored), and a one-line confirmed/refuted `render_tally` for full-caseset mode. Pure + offline;
-  tested against committed golden rows at zero API cost.
+  `[lab oracle]` line. Exit codes: `0` nothing verified · `1` ≥1 verified (code-confirmed **or** signal) ·
+  `2` NOT DATA.
+- **Presentation pass** (`backend/app/cli/confirm_render.py`, commits `ef8fe3b` + `2e3f736`;
+  **presentation-deepening cut A landed**). Plain-language translation of every channel/anchor token (raw
+  token kept alongside); ANSI color, TTY-autodetected, **no `rich` dependency**, `NO_COLOR`/`FORCE_COLOR`
+  honored. **Cut A adds claim-tiering (the zero-FP boundary is now SHOWN, not just stated):** a
+  code-authorized `verified` (one of the four exemption channels, or the D24 owner-view corroboration)
+  renders bold-red `[CONFIRMED]` with an explicit "deterministic code gate" basis line; a `verified` that no
+  code channel authorized renders a calmer `[SIGNAL — model opinion, not code-confirmed]` with a "not a
+  zero-FP confirmation" caveat. Evidence renders as an ordered, walkable physical chain (sent-as-attacker →
+  independent re-read as another identity → what decided it → what was ruled out → reproduce); `render_tally`
+  breaks signals out from the red code-gated count. Pure + offline; verdict still read from engine fields
+  only; tested against committed golden rows at zero API cost. **Cut B (raw request/response bytes +
+  re-runnable evidence package) pending — see [`ROADMAP.md`](./ROADMAP.md) item 11.**
 - **Console entry point** (`pyproject.toml` → `[project.scripts] lanivist = "run:main"`, commit
   `4bb643b`). After `pip install -e .` the command is **`lanivist verify …`** / **`lanivist config`**;
   `python run.py …` still works. `verify` is primary, `confirm` a back-compat alias. The brand token

@@ -14,11 +14,22 @@ import os
 import sys
 import json
 
+import pytest
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from backend.app.cli.confirm_render import (
-    render_tree, render_tally, case_outcome, exit_code_for,
+    render_tree, render_tally, case_outcome, exit_code_for, _claim_tier, _CODE_CONFIRMED_CHANNELS,
 )
+# Test files MAY import the engine (the renderer module must not). The drift-guards anchor the
+# renderer's channel set + render output to deep_verifier's OWN exemption-reason constants.
+from backend.app.services.deep_verifier import (
+    WRITE_RECORD_EXEMPTION_REASON, STATE_READBACK_EXEMPTION_REASON,
+    DELETE_READBACK_EXEMPTION_REASON, STATE_JUMP_EXEMPTION_REASON,
+)
+
+_FOUR_CHANNELS = (WRITE_RECORD_EXEMPTION_REASON, STATE_READBACK_EXEMPTION_REASON,
+                  DELETE_READBACK_EXEMPTION_REASON, STATE_JUMP_EXEMPTION_REASON)
 
 _GOLDEN = os.path.join(os.path.dirname(__file__), "..", "..",
                        "scripts", "measure", "results", "sweep_highN.jsonl")
@@ -31,17 +42,22 @@ def _golden_rows():
         return [json.loads(line) for line in fh if line.strip()]
 
 
-def test_golden_corpus_renders_and_outcome_tracks_engine_verdict():
+_TIER_TAG = {"code_confirmed": "[CONFIRMED]", "signal": "[SIGNAL",
+             "refuted": "[REFUTED]", "not_data": "[NOT DATA]"}
+_TIER_OUTCOME = {"code_confirmed": "confirmed", "signal": "signal",
+                 "refuted": "refuted", "not_data": "notdata"}
+
+
+def test_golden_corpus_renders_and_header_matches_tier():
     rows = _golden_rows()
     assert rows, "golden record is empty"
     for r in rows:
         out = render_tree(r, color=False)             # must never raise
         assert isinstance(out, str) and out
-        expected = "confirmed" if r["final_verdict"] == "verified" else "refuted"
-        assert case_outcome(r) == expected
-        assert ("[CONFIRMED]" in out) == (expected == "confirmed")
-        assert ("[REFUTED]" in out) == (expected == "refuted")
-    # the golden record contains verified rows -> the corpus exit code is 1
+        tier = _claim_tier(r)                          # from engine fields only, never ground_truth
+        assert _TIER_TAG[tier] in out                 # header matches the tier
+        assert case_outcome(r) == _TIER_OUTCOME[tier]  # outcome maps the tier consistently
+    # the golden record contains verified rows (code_confirmed + signal) -> corpus exit code is 1
     assert exit_code_for(rows) == 1
 
 
@@ -102,7 +118,8 @@ def test_renderer_cannot_manufacture_verified_from_ground_truth():
 
 
 def test_color_is_opt_in_and_off_by_default_when_pinned():
-    r = next(x for x in _golden_rows() if x["final_verdict"] == "verified")
+    # Pick a CODE_CONFIRMED row explicitly: a plain `verified` may be a signal row (now [SIGNAL]).
+    r = next(x for x in _golden_rows() if _claim_tier(x) == "code_confirmed")
     plain = render_tree(r, color=False)
     colored = render_tree(r, color=True)
     assert _ESC not in plain                            # no ANSI when color is off
@@ -144,14 +161,21 @@ def test_credentials_are_redacted():
 
 def test_render_tally_counts_strictly_from_the_engine_verdict():
     records = [
-        {"final_verdict": "verified", "shape": "x", "ground_truth": "REAL", "degraded": False},
+        # code_confirmed (channel) and code_confirmed (owner-view) -> the confirmed (code-gated) count
+        {"final_verdict": "verified", "guard_override": WRITE_RECORD_EXEMPTION_REASON,
+         "shape": "x", "ground_truth": "REAL", "degraded": False},
         {"final_verdict": "inconclusive", "shape": "x", "ground_truth": "SECURE", "degraded": False},
-        {"final_verdict": "verified", "shape": "x", "ground_truth": "REAL", "degraded": False},
+        {"final_verdict": "verified", "owner_view_corroborated": True,
+         "shape": "x", "ground_truth": "REAL", "degraded": False},
         {"final_verdict": "failed", "shape": "x", "ground_truth": "SECURE", "degraded": False},
+        # verified but NO code channel -> broken out as an unconfirmed signal, NOT confirmed
+        {"final_verdict": "verified", "guard_override": None, "shape": "x",
+         "ground_truth": "REAL", "degraded": False},
     ]
     out = render_tally(records, color=False)
-    assert "4 candidate(s) checked" in out
-    assert "2 confirmed exploitable" in out
+    assert "5 candidate(s) checked" in out
+    assert "2 confirmed (code-gated)" in out            # only the code-gated ones are the red count
+    assert "1 unconfirmed signal(s)" in out             # the model-opinion verified is a signal
     assert "2 refuted" in out
     assert "scanner" not in out.lower()                 # no competitor claims
 
@@ -160,5 +184,103 @@ def test_render_tally_ignores_ground_truth():
     # ground_truth REAL but the engine did NOT verify -> counts as refuted, never confirmed.
     records = [{"final_verdict": "failed", "shape": "x", "ground_truth": "REAL", "degraded": False}]
     out = render_tally(records, color=False)
-    assert "0 confirmed exploitable" in out
+    assert "0 confirmed (code-gated)" in out
     assert "1 refuted" in out
+
+
+# ==============================================================================
+# CLAIM TIER (cut A) - a code-authorized verdict wears a different badge than a model-opinion one.
+# ==============================================================================
+@pytest.mark.parametrize("ch", _FOUR_CHANNELS)
+def test_verified_with_each_exemption_channel_is_code_confirmed(ch):
+    r = {"shape": "write_record", "ground_truth": "REAL", "final_verdict": "verified",
+         "guard_override": ch, "ai_verdict_raw": "verified", "status": "completed", "degraded": False}
+    assert _claim_tier(r) == "code_confirmed"
+    out = render_tree(r, color=False)
+    assert "[CONFIRMED]" in out
+    assert "[SIGNAL" not in out
+    assert "deterministic code gate" in out             # the explicit Basis line
+
+
+def test_verified_with_owner_view_corroborated_is_code_confirmed():
+    r = {"shape": "read_semantic", "ground_truth": "REAL", "final_verdict": "verified",
+         "guard_override": None, "owner_view_corroborated": True,
+         "ai_verdict_raw": "verified", "status": "completed", "degraded": False}
+    assert _claim_tier(r) == "code_confirmed"
+    out = render_tree(r, color=False)
+    assert "[CONFIRMED]" in out and "[SIGNAL" not in out
+
+
+def test_verified_without_code_channel_is_signal_not_confirmed():
+    # THE load-bearing case: verified, but guard_override None AND owner_view_corroborated not True.
+    r = {"shape": "read_semantic", "ground_truth": "REAL", "final_verdict": "verified",
+         "guard_override": None, "owner_view_corroborated": None,
+         "ai_verdict_raw": "verified", "status": "completed", "degraded": False}
+    assert _claim_tier(r) == "signal"
+    assert case_outcome(r) == "signal"
+    out = render_tree(r, color=False)
+    assert "[SIGNAL" in out
+    assert "[CONFIRMED]" not in out                     # NOT the alarming code-confirmed badge
+    assert "not a zero-false-positive confirmation" in out.lower()   # the caveat is present
+
+
+def test_real_target_code_confirmed_carries_honest_context_line():
+    r = {"shape": "read_semantic", "ground_truth": None, "final_verdict": "verified",
+         "guard_override": None, "owner_view_corroborated": True,
+         "status": "completed", "degraded": False}
+    out = render_tree(r, color=False)
+    assert "[CONFIRMED]" in out
+    # (the context sentence is line-wrapped; assert two contiguous fragments, not the whole span)
+    assert "Real target: no ground truth" in out
+    assert "NOT claimed on this target" in out
+
+
+def test_lab_code_confirmed_has_no_real_target_context_line():
+    r = {"shape": "delete", "ground_truth": "REAL", "final_verdict": "verified",
+         "guard_override": DELETE_READBACK_EXEMPTION_REASON, "negative_assertion": "confirmed_physical",
+         "status": "completed", "degraded": False}
+    out = render_tree(r, color=False)
+    assert "[CONFIRMED]" in out
+    assert "NOT claimed on this target" not in out      # lab rows keep the [lab oracle] line only
+
+
+# ==============================================================================
+# DRIFT GUARDS - the renderer's code-channel set must never silently diverge from the engine's.
+# ==============================================================================
+def test_drift_guard_set_level_channels_match_deep_verifier_constants():
+    # Set-level: the renderer's four channel strings ARE deep_verifier's four exemption reasons.
+    assert _CODE_CONFIRMED_CHANNELS == set(_FOUR_CHANNELS)
+
+
+def test_drift_guard_render_level_golden_channel_rows_always_confirmed():
+    # Render-level positive anchor, INDEPENDENT of _claim_tier: over the committed golden corpus,
+    # EVERY row whose guard_override equals one of deep_verifier's four constants must render
+    # [CONFIRMED]. A self-consistent bug (a mistyped channel string reclassifying code-confirmed
+    # rows as signal) would pass the tier-header test but fail HERE, because the expectation is
+    # anchored to the engine's OWN constants, not the renderer's copy.
+    four = set(_FOUR_CHANNELS)
+    rows = [r for r in _golden_rows() if r.get("guard_override") in four]
+    assert rows, "golden corpus should contain code-channel rows to anchor on"
+    for r in rows:
+        out = render_tree(r, color=False)
+        assert "[CONFIRMED]" in out
+        assert "[SIGNAL" not in out and "[REFUTED]" not in out
+
+
+# ==============================================================================
+# EXIT CODES per tier - a signal is a verified verdict, so it is NOT clean (still 1).
+# ==============================================================================
+def test_exit_code_tiers():
+    cc = {"final_verdict": "verified", "guard_override": WRITE_RECORD_EXEMPTION_REASON,
+          "shape": "x", "ground_truth": "REAL", "degraded": False}
+    sg = {"final_verdict": "verified", "guard_override": None, "owner_view_corroborated": None,
+          "shape": "x", "ground_truth": "REAL", "degraded": False}
+    rf = {"final_verdict": "failed", "shape": "x", "ground_truth": "SECURE", "degraded": False}
+    nd = {"final_verdict": None, "shape": "x", "ground_truth": "REAL",
+          "degraded": True, "status": "degraded"}
+    assert exit_code_for([cc]) == 1
+    assert exit_code_for([sg]) == 1                     # a lone signal must NOT silently drop to 0
+    assert exit_code_for([rf]) == 0
+    assert exit_code_for([nd]) == 2
+    assert exit_code_for([rf, sg]) == 1                 # any verified (signal) -> 1
+    assert exit_code_for([rf, nd]) == 2                 # not-data with no verified -> 2

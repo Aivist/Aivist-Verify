@@ -116,7 +116,25 @@ Operator front door (this node's line — all re-verified 2026-08-02):
    first-time engineer may under-read its significance. Display the full physical chain step by step,
    show which surface-signals were ruled out and why, and emit a reproducible evidence package the user
    can re-run. Goal: make the confirmation's substance legible and independently reproducible.
-   **RECORD ONLY — do not implement.**
+   **▶️ IN PROGRESS — split into two cuts:**
+   - **A — claim-tiering + walkable evidence chain, from existing record fields — ✅ DONE** (`confirm_render.py`):
+     a code-authorized `verified` (one of the four exemption channels, or the D24 owner-view corroboration)
+     renders as bold-red `[CONFIRMED]` with an explicit "deterministic code gate" basis line; a `verified`
+     that no code channel authorized renders as a calmer `[SIGNAL — model opinion, not code-confirmed]` with a
+     "not a zero-FP confirmation" caveat. The evidence renders as an ordered, walkable physical chain
+     (sent-as-attacker → independent re-read as another identity → what decided it → what was ruled out →
+     reproduce); the red tally count and a `signal` are broken apart. Renderer stays pure/offline; verdict
+     still read from engine fields only.
+   - **B — raw request/response bytes + a re-runnable evidence package + D30 suppression detail — PENDING**
+     (needs record-shape enrichment: the response-byte trails on `DeepVerificationResult` — `baseline` /
+     `attack` / `follow_up_response` — and `resource_is_public` / `bystander_view_available` are not flattened
+     into either record builder yet).
+   - **NOTE (golden fixture schema):** the committed `scripts/measure/results/sweep_highN.jsonl` is
+     **schema-v2 / stale** — it predates `owner_view_corroborated` in the row — so its **20 read-semantic VULN
+     rows render `[SIGNAL]` offline**, even though the engine did owner-view-corroborate them. The **live
+     `confirm` path** (`external_verify._record_from_result`) and the **v3 `verdict_measure.py` builder** both
+     carry the boolean and tier them `[CONFIRMED]` correctly. A **v2→v3 golden regeneration (one live run)** is
+     deferred to the presentation-return phase, **before the README** (item 6).
 
 ### ⏸️ DEFERRED (with trigger)
 - **D2 — no authentication/authorization on any API route** (`docs/TECH_DEBT.md:38`) — acceptable for
