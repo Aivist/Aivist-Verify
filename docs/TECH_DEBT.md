@@ -981,6 +981,27 @@
 - **Severity:** HIGH, dangerous-direction. **Gates real-target readiness** — it must be weighed before any
   zero-FP claim is made against a target that includes public/shared resources.
 
+### D31 — the 200-status challenge classifier is a body-substring signature (over-suppression boundary) — LOW (SAFE-direction)
+- **Where:** `_is_challenge_response` (`deep_verifier.py`), the ONE shared WAF / rate-limit challenge detector
+  used by both the run-level challenge circuit breaker and the owner-view corroboration guard.
+- **Exact classification (recorded so the boundary's width is explicit).** `_is_challenge_response(status, body)`
+  returns True iff **EITHER** the status is **401 / 403 / 429**, **OR** the status is a **2xx AND the lower-cased
+  body contains any `_BLOCK_KEYWORDS` substring**: `access denied`, `forbidden`, `blocked`, `waf`, `captcha`,
+  `rate limit`, `not authorized`, `invalid token`, `csrf` (reused verbatim from `fuzzer._BLOCK_KEYWORDS` — one
+  detector, never a parallel one). The 2xx branch is content-only.
+- **The limitation.** The 2xx branch is a body-**substring** match, so a GENUINE cross-user confirmation whose
+  LEGITIMATE object data happens to contain one of those tokens (e.g. a user's post that mentions "forbidden", a
+  field literally named `csrf`, content discussing a "rate limit") is misread as a challenge page. Consequence:
+  at the owner-view corroboration guard a would-be `[CONFIRMED]` is downgraded to **NOT DATA**; in the circuit
+  breaker such a response counts toward the abort threshold.
+- **Direction: SAFE.** This can only WEAKEN a verdict (both consumers are downgrade-only), so it is a **missed
+  detection / NOT DATA, NEVER a false positive**. It is the same trade the existing rule-oracle **veto**
+  (`_VETO_KEYWORDS`, `fuzzer.py`) already makes — a 200-OK body carrying a denial word is treated as
+  not-exploitable — so the discipline is consistent, not new.
+- **No fix here — deliberately.** Do NOT add heuristics (proximity, JSON-path scoping, negation parsing) to
+  "fix" this: a smarter classifier is new logic that would need its own validation and could shift the direction.
+  Recorded as a known boundary. **Flag for the future README "Known limitations" list.**
+
 ---
 
 ## Suggested priority order for the next agent
