@@ -462,3 +462,286 @@ def test_login_cookie_missing_degrades_to_notdata(tmp_path, monkeypatch):
     out = "\n".join(lines)
     assert code == 2 and "[NOT DATA]" in out        # graceful, never "target safe"
     assert "session" in out                         # honest reason names the missing cookie (no secret)
+
+
+# ==============================================================================
+# Slice 2c — multi-step / CSRF login: an ordered pre-login sequence run within ONE per-account
+# session (one client; a cookie set in a step carries to the login). The four invariants hold for
+# the sequence too; IDENTITY ISOLATION is the load-bearing check (a shared client -> false positive).
+# ==============================================================================
+import asyncio as _asyncio
+import httpx as _httpx
+from backend.app.cli.relogin import (
+    LoginStep, Extract, Inject, _HttpxLoginSession,
+)
+
+
+class _MSSession:
+    """Fake per-account login session. Mimics an httpx cookie jar (Set-Cookie carries WITHIN this
+    session only) and records every request. A GET step yields a CSRF (in body/header/cookie/HTML)
+    and sets a per-session SESSIONID; a POST login REQUIRES the injected CSRF to match AND the
+    session cookie to have carried, then returns a username-identifying token."""
+    _seq = 0
+
+    def __init__(self):
+        type(self)._seq += 1
+        self.sid = type(self)._seq
+        self.jar = {}                 # THIS session's own cookie jar — never shared across accounts
+        self.requests = []
+        self.closed = False
+
+    async def request(self, method, url, *, json_body=None, headers=None):
+        sent = dict(self.jar)
+        rec = {"method": method, "url": url, "headers": dict(headers or {}),
+               "sent_cookies": sent, "body": dict(json_body or {})}
+        self.requests.append(rec)
+        csrf, sess = f"CSRF{self.sid}", f"SESS{self.sid}"
+        if method == "GET":                                   # a pre-login step
+            self.jar["SESSIONID"] = sess                      # mimic Set-Cookie -> this session's jar
+            return LoginResponse(200, {"csrf_token": csrf}, {"X-Csrf": csrf},
+                                 {"SESSIONID": sess, "csrftoken": csrf},
+                                 text='<form><input name="csrf" value="' + csrf + '"></form>')
+        injected = rec["headers"].get("X-CSRF-Token") or rec["body"].get("csrf")
+        if injected != csrf:
+            return LoginResponse(403, {"error": "bad or missing csrf"}, {}, {})
+        if sent.get("SESSIONID") != sess:
+            return LoginResponse(403, {"error": "session cookie did not carry"}, {}, {})
+        user = rec["body"].get("username", "?")
+        return LoginResponse(200, {"auth_token": "TOK." + user + "." + str(self.sid)}, {}, {})
+
+    async def aclose(self):
+        self.closed = True
+
+
+def _ms_factory():
+    created = []
+
+    def factory(scope):
+        s = _MSSession()
+        created.append(s)
+        return s
+
+    factory.created = created
+    return factory
+
+
+def _ms_spec(extract_location="body", extract_field="csrf_token", inject_in="header"):
+    """GET /login (extract csrf) then POST /login (inject csrf)."""
+    inject = (Inject(headers={"X-CSRF-Token": "csrf"}) if inject_in == "header"
+              else Inject(body={"csrf": "csrf"}))
+    return LoginSpec(method="POST", path="/users/v1/login",
+                     username_field="username", password_field="password", token_field="auth_token",
+                     steps=(LoginStep(method="GET", path="/users/v1/login",
+                                      extract=Extract("csrf", extract_location, extract_field)),),
+                     inject=inject)
+
+
+def test_multistep_body_extract_header_inject_obtains_token():
+    factory = _ms_factory()
+    prov = TokenProvider(Credential("alice", SecretStr("pw")), _ms_spec(), _TARGET, _SCOPE,
+                         session_factory=factory)
+    tok = _asyncio.run(prov.token())
+    s = factory.created[0]
+    assert tok == "TOK.alice." + str(s.sid)
+    assert [r["method"] for r in s.requests] == ["GET", "POST"]          # pre-GET then login POST
+    assert s.requests[1]["headers"]["X-CSRF-Token"] == "CSRF" + str(s.sid)      # captured csrf injected
+    assert s.requests[1]["sent_cookies"]["SESSIONID"] == "SESS" + str(s.sid)    # cookie carried GET->login
+    assert s.closed                                                     # session cleaned up
+
+
+@pytest.mark.parametrize("loc,field", [("body", "csrf_token"), ("header", "X-Csrf"),
+                                       ("cookie", "csrftoken"), ("regex", r'value="(CSRF\d+)"')])
+def test_multistep_extract_from_each_location(loc, field):
+    factory = _ms_factory()
+    prov = TokenProvider(Credential("bob", SecretStr("pw")),
+                         _ms_spec(extract_location=loc, extract_field=field), _TARGET, _SCOPE,
+                         session_factory=factory)
+    tok = _asyncio.run(prov.token())
+    assert tok == "TOK.bob." + str(factory.created[0].sid)              # every location yields the CSRF
+
+
+def test_multistep_body_inject_puts_captured_value_in_login_body():
+    factory = _ms_factory()
+    prov = TokenProvider(Credential("carol", SecretStr("pw")),
+                         _ms_spec(inject_in="body"), _TARGET, _SCOPE, session_factory=factory)
+    tok = _asyncio.run(prov.token())
+    s = factory.created[0]
+    assert tok == "TOK.carol." + str(s.sid)
+    assert s.requests[1]["body"]["csrf"] == "CSRF" + str(s.sid)         # captured csrf injected into body
+
+
+# --------------------------------------------- LOAD-BEARING: identity isolation (multi-step)
+def test_isolation_multistep_owner_token_reads_as_owner_not_attacker():
+    factory = _ms_factory()
+    eng = _FakeEngine([
+        _result(ai_verdict=None, attack={"response": {"status_code": 401}}),   # forces a relogin
+        _result(ai_verdict="verified"),
+    ])
+    atk = Credential("attackeruser", SecretStr("apw"))
+    own = Credential("victimowner", SecretStr("opw"))
+    _asyncio.run(_verify_external_relogin(
+        _TARGET, _SPEC, _OP, _ms_spec(), atk, own, None, eng, session_factory=factory))
+    assert len(eng.calls) == 2
+    # a MULTI-STEP owner token flows ONLY through owner_credential; never into the attack headers
+    for kw in eng.calls:
+        auth = str(kw["auth_context"])
+        assert "attackeruser" in auth and "victimowner" not in auth
+        oc = kw["owner_credential"]
+        assert isinstance(oc, OwnerCredential)
+        assert "victimowner" in oc.header_value and "attackeruser" not in oc.header_value
+    # STRUCTURAL: every session object served EXACTLY ONE account (a shared client would serve both)
+    for s in factory.created:
+        users = {r["body"].get("username") for r in s.requests if r["method"] == "POST"}
+        assert len(users) == 1
+    # owner sessions carry NONE of the attacker sessions' cookies (zero cross-account state bleed)
+    atk_sess = [s for s in factory.created
+                if any(r["body"].get("username") == "attackeruser" for r in s.requests)]
+    own_sess = [s for s in factory.created
+                if any(r["body"].get("username") == "victimowner" for r in s.requests)]
+    atk_cookie_vals = {c for s in atk_sess for r in s.requests for c in r["sent_cookies"].values()}
+    for s in own_sess:
+        for r in s.requests:
+            assert not (set(r["sent_cookies"].values()) & atk_cookie_vals)
+
+
+def test_isolation_assertion_is_sensitive_to_a_shared_client():
+    # NEGATIVE CONTROL: a factory handing out ONE shared session across accounts -> that session
+    # serves BOTH usernames, which the isolation assertion above forbids. Proves the test would FAIL
+    # if a single client were shared across accounts (the poison-the-verdict red line).
+    shared = _MSSession()
+
+    def shared_factory(scope):
+        return shared
+
+    atk = TokenProvider(Credential("attackeruser", SecretStr("p")), _ms_spec(), _TARGET, _SCOPE,
+                        session_factory=shared_factory)
+    own = TokenProvider(Credential("victimowner", SecretStr("p")), _ms_spec(), _TARGET, _SCOPE,
+                        session_factory=shared_factory)
+    _asyncio.run(atk.token())
+    _asyncio.run(own.token())
+    users = {r["body"].get("username") for r in shared.requests if r["method"] == "POST"}
+    assert users == {"attackeruser", "victimowner"}                     # one session, two accounts -> detectable
+
+
+# --------------------------------------------- back-compat: no steps == slice 1 (byte-identical)
+def test_no_steps_spec_uses_http_post_not_the_session():
+    def _boom_factory(scope):
+        raise AssertionError("the multi-step session must NOT be used for a no-steps spec")
+
+    fake = _fake_post_factory()
+    prov = TokenProvider(Credential("u", SecretStr("p")), _LOGIN_SPEC, _TARGET, _SCOPE,
+                         http_post=fake, session_factory=_boom_factory)
+    tok = _asyncio.run(prov.token())
+    assert tok.startswith("TOK.u.") and len(fake.calls) == 1           # single POST via http_post; no session
+
+
+# --------------------------------------------- direction-safe: broken sequence -> LoginError -> NOT DATA
+def test_multistep_missing_extract_field_is_login_error():
+    factory = _ms_factory()
+    spec = _ms_spec(extract_location="body", extract_field="nonexistent_field")
+    prov = TokenProvider(Credential("u", SecretStr("p")), spec, _TARGET, _SCOPE, session_factory=factory)
+    with pytest.raises(LoginError):
+        _asyncio.run(prov.token())
+
+
+def test_multistep_inject_undefined_capture_is_login_error():
+    factory = _ms_factory()
+    spec = LoginSpec(method="POST", path="/users/v1/login", username_field="username",
+                     password_field="password", token_field="auth_token",
+                     steps=(LoginStep("GET", "/users/v1/login",
+                                      extract=Extract("csrf", "body", "csrf_token")),),
+                     inject=Inject(headers={"X-CSRF-Token": "does_not_exist"}))
+    prov = TokenProvider(Credential("u", SecretStr("p")), spec, _TARGET, _SCOPE, session_factory=factory)
+    with pytest.raises(LoginError):
+        _asyncio.run(prov.token())
+
+
+def test_multistep_login_error_degrades_to_notdata_via_cli(tmp_path, monkeypatch):
+    # end-to-end: a multi-step login.json whose step extract cannot resolve -> LoginError -> NOT DATA
+    # (code 2), never a verdict. Uses the default-session seam with a stub that omits the csrf field.
+    monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", False)
+    cfg = _write_cfg(tmp_path)
+    login = tmp_path / "login.json"
+    login.write_text(json.dumps({"method": "POST", "path": "/users/v1/login",
+                                 "username_field": "username", "password_field": "password",
+                                 "token_field": "auth_token",
+                                 "steps": [{"method": "GET", "path": "/users/v1/login",
+                                            "extract": {"name": "csrf", "location": "body",
+                                                        "field": "nope"}}],
+                                 "inject": {"headers": {"X-CSRF-Token": "csrf"}}}), encoding="utf-8")
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps(_SPEC), encoding="utf-8")
+    op = tmp_path / "op.json"
+    op.write_text(json.dumps(_OP), encoding="utf-8")
+
+    async def _no_engine(**kw):
+        raise AssertionError("engine must not run when the login sequence fails")
+
+    from backend.app.cli import relogin as _relogin
+
+    class _StubSession:
+        async def request(self, method, url, *, json_body=None, headers=None):
+            return LoginResponse(200, {"something_else": 1}, {}, {})   # 200 but no 'nope' field
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(_relogin, "_default_session_factory", lambda scope: _StubSession())
+    lines = []
+    code = run_external_verify(
+        target=_TARGET, spec_path=str(spec), op_path=str(op), config_path=cfg, auth_spec_path=str(login),
+        engine=_no_engine,
+        echo=lambda *a: lines.append(" ".join(str(x) for x in a)),
+        err=lambda *a: lines.append(" ".join(str(x) for x in a)))
+    out = "\n".join(lines)
+    assert code == 2 and "[NOT DATA]" in out                          # graceful, never "target safe"
+
+
+# --------------------------------------------- SCOPE red line: login/step client is NOT exempt
+def test_multistep_absolute_out_of_scope_step_refused_before_any_request():
+    factory = _ms_factory()
+    spec = LoginSpec(method="POST", path="/users/v1/login", username_field="username",
+                     password_field="password", token_field="auth_token",
+                     steps=(LoginStep("GET", "http://evil.example.com/csrf",
+                                      extract=Extract("csrf", "body", "csrf_token")),))
+    prov = TokenProvider(Credential("u", SecretStr("p")), spec, _TARGET, _SCOPE, session_factory=factory)
+    with pytest.raises(LoginError):
+        _asyncio.run(prov.token())
+    assert factory.created[0].requests == []                          # refused BEFORE any bytes left
+
+
+def test_multistep_step_redirect_out_of_scope_is_refused():
+    # a pre-login step that 302s to an out-of-scope host -> refused per-hop by the REAL
+    # _HttpxLoginSession reusing the engine's _follow_redirects_scoped; fail-closed to LoginError.
+    def handler(request):
+        return _httpx.Response(302, headers={"location": "http://evil.example.com/next"})
+
+    def redirecting_factory(scope):
+        client = _httpx.AsyncClient(transport=_httpx.MockTransport(handler), follow_redirects=False)
+        return _HttpxLoginSession(scope, client=client)
+
+    spec = LoginSpec(method="POST", path="/users/v1/login", username_field="username",
+                     password_field="password", token_field="auth_token",
+                     steps=(LoginStep("GET", "/csrf", extract=Extract("csrf", "body", "csrf_token")),))
+    prov = TokenProvider(Credential("u", SecretStr("p")), spec, _TARGET, _SCOPE,
+                         session_factory=redirecting_factory)
+    with pytest.raises(LoginError):
+        _asyncio.run(prov.token())
+
+
+def test_multistep_login_redirect_out_of_scope_is_refused():
+    # the FINAL login request (not just a step) is equally non-exempt: a 302 out of origin -> refused.
+    def handler(request):
+        return _httpx.Response(302, headers={"location": "https://evil.example.com/landing"})
+
+    def redirecting_factory(scope):
+        client = _httpx.AsyncClient(transport=_httpx.MockTransport(handler), follow_redirects=False)
+        return _HttpxLoginSession(scope, client=client)
+
+    spec = LoginSpec(method="POST", path="/users/v1/login", username_field="username",
+                     password_field="password", token_field="auth_token", inject=Inject())
+    prov = TokenProvider(Credential("u", SecretStr("p")), spec, _TARGET, _SCOPE,
+                         session_factory=redirecting_factory)
+    with pytest.raises(LoginError):
+        _asyncio.run(prov.token())

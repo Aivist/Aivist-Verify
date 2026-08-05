@@ -332,6 +332,7 @@ async def _verify_external_relogin(
     login_spec: relogin.LoginSpec, attacker_cred: relogin.Credential,
     owner_cred: relogin.Credential, model: Optional[str], engine: Callable,
     *, http_post=None, bystander_cred: Optional[relogin.Credential] = None,
+    session_factory=None,
 ) -> Any:
     """Obtain the tokens by INDEPENDENT logins (separate providers / clients / credentials —
     red line 1), feed them into the SAME `_verify_external` engine call the static path uses, and
@@ -341,11 +342,18 @@ async def _verify_external_relogin(
     D30: an OPTIONAL third/bystander account (default None => no bystander login, byte-identical —
     the existing attacker+owner login flow and its login-call count are unchanged). When supplied it
     logs in INDEPENDENTLY (its own TokenProvider / client / credential), and its token flows ONLY
-    into `bystander_credential` for the downgrade-only public-resource check — never an attack."""
+    into `bystander_credential` for the downgrade-only public-resource check — never an attack.
+
+    `session_factory` (OPTIONAL) is threaded to each account's TokenProvider for the multi-step
+    login path (slice 2c); default None => the real per-account httpx session. It is a test seam
+    only — each account still gets its OWN provider, so its own session/client (identity isolation)."""
     scope = ScopePolicy.from_declaration([_approved_host(target)])
-    attacker = relogin.TokenProvider(attacker_cred, login_spec, target, scope, http_post=http_post)
-    owner = relogin.TokenProvider(owner_cred, login_spec, target, scope, http_post=http_post)
-    bystander = (relogin.TokenProvider(bystander_cred, login_spec, target, scope, http_post=http_post)
+    attacker = relogin.TokenProvider(attacker_cred, login_spec, target, scope,
+                                     http_post=http_post, session_factory=session_factory)
+    owner = relogin.TokenProvider(owner_cred, login_spec, target, scope,
+                                  http_post=http_post, session_factory=session_factory)
+    bystander = (relogin.TokenProvider(bystander_cred, login_spec, target, scope,
+                                       http_post=http_post, session_factory=session_factory)
                  if bystander_cred is not None else None)
 
     attacker_tok = SecretStr(await attacker.token())      # fresh login (proactive, near-expiry aware)
