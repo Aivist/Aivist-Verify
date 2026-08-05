@@ -8,7 +8,7 @@
 > affects coverage, not the claim.
 >
 > **Method.** Ground truth built from code (trusted over docs); full suite run. **Baseline at audit:
-> backend `pytest` = 587 passed, 2 benign third-party warnings** (now **647 passed** as of 2026-08-05).
+> backend `pytest` = 587 passed, 2 benign third-party warnings** (now **662 passed** as of 2026-08-05).
 > Re-verify before relying on any line number — code moves.
 >
 > **The claim being protected:** *zero false positives on private / authorization-gated resources,
@@ -106,7 +106,7 @@ These do **not** threaten the zero-FP claim; they bound which real targets the t
 - **Rule-oracle heuristic thresholds are arbitrary.** Length-deviation cutoffs 0.05 / 0.1 / 0.15
   ([fuzzer.py:822](../backend/app/services/fuzzer.py:822) onward) are unvalidated magic numbers on the
   triage layer. Direction: DANGEROUS on the rule-oracle-only path (see Tier 1), boundary otherwise.
-- **Doc drift (test counts).** Several docs stated stale backend counts (507 / 523 / 587; actual **647**
+- **Doc drift (test counts).** Several docs stated stale backend counts (507 / 523 / 587 / 647; actual **662**
   as of 2026-08-05) and a stale lab count (14; actual 31). Corrected in companion drift-alignment commits;
   historical deltas (e.g. "Suite 507→510") left verbatim.
 

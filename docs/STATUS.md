@@ -69,16 +69,17 @@ the earlier single-target record (140 SAFE / 70 VULN, one target), kept as histo
 
 | Suite | Command (from repo root) | Result |
 |---|---|---|
-| Backend | `python -m pytest backend/tests -q` | **647 passed** |
+| Backend | `python -m pytest backend/tests -q` | **662 passed** |
 | Ground-truth target (`vulnerable_target`, integer-id) | `python -m pytest vulnerable_target -q` | **31 passed** |
 | Ground-truth target (`depot_target`, UUID-id) | `python -m pytest depot_target -q` | **23 passed** |
 
 > Re-verified against the repo 2026-08-05 (backend suite run). The backend count was **473** while
-> only the confirmer spine had landed; it is now **647** after the presentation pass, entry point,
+> only the confirmer spine had landed; it is now **662** after the presentation pass, entry point,
 > config flow, `config.py` user-config source, the external real-target path, YAML `--spec` support,
 > the `--auth` auto-relogin path, the real-target WAF/rate-limit challenge circuit breaker (Part 1) +
 > the 200-status challenge-page corroboration guard (Part 2), the presentation-deepening **cut A**
-> (claim-tiering + walkable evidence chain), and the opt-in **broken-for-all** disclosure (see below).
+> (claim-tiering + walkable evidence chain), the opt-in **broken-for-all** disclosure, and the
+> **multi-step / CSRF login** (slice 2c) below.
 
 ## Operator front door — CLI, packaging, config, external targets (code facts, re-verified 2026-08-02)
 
@@ -248,6 +249,24 @@ file touched is `config.py`, and only to ADD a settings source (below). What shi
   **VAmPI at a 60-second token TTL**: `--auth` auto-re-logged-in and CONFIRMED a real BOLA without the run
   breaking on token expiry. Known limitation (safe-direction, non-blocking): owner-view mid-run 401 —
   TECH_DEBT **D28**. Suite 510→**523**.
+- **Multi-step auth slice 2c — multi-step / CSRF login** (`backend/app/cli/relogin.py` + a `session_factory`
+  seam in `external_verify.py`, commit **`cf70d6e`**). Extends `--auth` from a single login request to an
+  OPTIONAL ordered **pre-login sequence** (fetch a CSRF token / nonce / session cookie, then POST login
+  using it). `LoginSpec` gains optional `steps` + `inject`: each step may **extract** a named value from the
+  response (`body` / `header` / `cookie` / **`regex`** of the raw HTML for a form CSRF token) and **inject**
+  earlier captures into a later request's header or body — all declared in the spec, no guessing. Empty
+  `steps` ⇒ **byte-identical to the single-request login** (test-guarded). **Identity isolation is welded
+  structurally:** the whole sequence runs in ONE **per-account** session (its own httpx client + cookie jar
+  + captured-value store), so attacker / owner / bystander never share client, cookies, or captures — a
+  bleed (which would make the owner token carry the attacker's identity → D24 corroborates trivially → false
+  positive) is IMPOSSIBLE by construction, proven by an isolation test + a shared-client negative control.
+  **Scope is not exempt:** every step + login URL is `urljoin`-normalized then `ScopePolicy.check()`-ed
+  fail-closed before bytes leave, and redirects are followed manually via the engine's reused
+  `_follow_redirects_scoped` (an out-of-scope hop is refused). A mis-declared sequence → `LoginError` → NOT
+  DATA, never a verdict; passwords AND captured values are `SecretStr`, revealed only at request-build time,
+  never logged. **No verdict/engine code changed** — it only produces the token strings that flow into the
+  same `execute_deep_verification`. OAuth authorization-code and captcha/MFA-bypass stay out (later / a
+  different tool category). Suite 647→**662**.
 
 ## The main line (three nodes)
 

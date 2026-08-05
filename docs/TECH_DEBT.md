@@ -85,7 +85,7 @@
   been removed entirely.)
 - **Where:** `backend/tests/test_api_endpoints.py` (API smoke); `test_step9_proxy.py`
   (proxy radar, Step 9); plus pruner, custody, Step D extraction in other files.
-  Total backend suite: **647 tests**. See [`STATUS.md`](./STATUS.md).
+  Total backend suite: **662 tests**. See [`STATUS.md`](./STATUS.md).
 - **Covered:** FastAPI `TestClient` over isolated per-test SQLite with Gemini and
   background fuzzing mocked — analyze (200 + 422), findings persist (201 + 422),
   verify/batch 404s, health check. **Step 9:** WriterService serialization, SSEHub
@@ -937,7 +937,7 @@
 - **Validation.** 24 offline tests with independent ground truth
   (`backend/tests/test_d30_public_resource.py`): known-public → suppressed; known-private BOLA → still
   confirmed; ambiguous / soft-deny → fails safe to private (still confirmed); the probe is proven
-  custody-free, GET-only, and scope-locked. Backend suite **587 passed** (at the D30 commit; **647** as
+  custody-free, GET-only, and scope-locked. Backend suite **587 passed** (at the D30 commit; **662** as
   of this doc update). The community-post assertion was reproduced against a **FAITHFUL crAPI-shaped
   response driving the real engine** (crAPI itself was NOT booted here): the public community post flips
   **CONFIRMED → not-confirmed**. **CORRECTION (order endpoint).** The companion fixture — "the private

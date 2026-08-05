@@ -9,13 +9,14 @@
   config source); external real-target path (`lanivist verify --target/--spec/--op`, three red lines)
   — **live-confirmed a real BOLA against VAmPI** (unfamiliar third-party target; an engineering signal,
   **not** a zero-FP claim); YAML `--spec` support.
-- **Current station:** **multi-step auth slice 1 (auto-relogin) — DONE** (commit `675835ff`; also YAML
-  `--spec` support). `--auth` logs each account in for its own token and refreshes near/at expiry, so a
-  short-TTL target (VAmPI's 60s) no longer breaks a run.
+- **Current station:** **multi-step auth slice 2c (multi-step / CSRF login) — DONE** (commit `cf70d6e`).
+  `--auth` now supports an OPTIONAL ordered pre-login sequence (fetch a CSRF token / nonce / session cookie,
+  then POST login using it), run in a per-account scope-locked, identity-isolated session. Builds on slice 1
+  (auto-relogin, `675835ff`) and slice 2b (token extraction by body/header/cookie location).
 - **Next station:** the remaining multi-step-auth work — owner-token **mid-run** refresh (needs the
-  deferred engine-level token hook, TECH_DEBT D28) and token extraction from **headers/cookies** (beyond
-  slice 1's single-JSON-field limit). **Slow-lane: plan-first, signed-off** (touches auth + identity
-  isolation), NOT an auto batch.
+  deferred engine-level token hook, TECH_DEBT D28); OAuth authorization-code flow is a heavier later slice
+  (captcha/MFA-bypass stays out — a different tool category). **Slow-lane: plan-first, signed-off** (touches
+  auth + identity isolation), NOT an auto batch.
 - Full **DONE / NEXT / PLANNED / DEFERRED / REJECTED** detail is in the **§0 status board** just below.
 
 > The single source of truth for what this project is, what it is not, and where it's going.
@@ -33,8 +34,8 @@
 > what's rejected." It owns **status, ordering, and decisions**; **code facts** (test counts, shipped
 > modules, commit hashes) live in [`STATUS.md`](./STATUS.md). Every `DONE` below was **re-verified
 > against the repo on 2026-08-03** (the multi-step-auth commit **`675835ff`** confirmed against its
-> touched files); the **backend suite is 647 passed as of 2026-08-05** (presentation cut A + WAF
-> Part 1/2 + broken-for-all disclosure landed since — see ✅ DONE). Sections §1–§8 below are the
+> touched files); the **backend suite is 662 passed as of 2026-08-05** (presentation cut A + WAF
+> Part 1/2 + broken-for-all disclosure + multi-step/CSRF login landed since — see ✅ DONE). Sections §1–§8 below are the
 > detailed rationale the board summarizes; the tags here win for status.
 
 ### ✅ DONE (re-verified against code)
@@ -69,6 +70,13 @@ Operator front door (this node's line — all re-verified 2026-08-02):
   `SecretStr`; login endpoint scope-checked); the static-token path and the engine are untouched
   (`relogin.py` + `external_verify.py`, commit **`675835ff`**). Live-proven on **VAmPI at 60s TTL**. Known
   safe-direction limit: owner-view mid-run 401 (TECH_DEBT **D28**).
+- **Multi-step auth slice 2c — multi-step / CSRF login** — `--auth` extends from a single request to an
+  OPTIONAL ordered pre-login sequence (`steps` + `inject`): each step may extract a value
+  (body/header/cookie/regex-from-HTML) and inject earlier captures into a later header/body; empty `steps`
+  ⇒ byte-identical to the single-request login. Runs in ONE **per-account** session (own client + jar +
+  captures — cross-account bleed structurally impossible; isolation-tested + shared-client negative control);
+  scope-locked fail-closed per step incl. manual per-hop redirect scope; mis-declared → NOT DATA. No
+  verdict/engine code changed (`relogin.py` + `external_verify.py`, commit **`cf70d6e`**).
 - **Real-target WAF / rate-limit robustness (downgrade-only).** **Part 1** — run-level challenge circuit
   breaker (commit **`d4b49ef`**; opt-in `challenge_break`, default OFF, so lab / measurement is
   byte-identical). **Part 2** — a 200-status WAF / challenge page can never corroborate the D24 owner-view
@@ -92,8 +100,10 @@ Operator front door (this node's line — all re-verified 2026-08-02):
 - **Multi-step auth slice 2 — the remainder.** (a) Owner-token **mid-run** refresh, which needs an
   **engine-level token hook** the engine consults per request (a deferred core change — TECH_DEBT **D28**;
   today's fail-safe is safe-direction: a missed confirmation / NOT DATA, never a false positive); and
-  (b) token extraction from **headers / cookies**, beyond slice 1's single-JSON-response-field limit.
-  Slow-lane: plan-first, signed-off. *(YAML `--spec` support — the prior NEXT — is now DONE, see above.)*
+  (b) **OAuth authorization-code flow** (a heavier redirect-based login, deliberately deferred as its own
+  slice). *(Header/cookie token extraction (slice 2b) AND multi-step / CSRF login (slice 2c, `cf70d6e`) are
+  now DONE — see ✅ above; captcha / MFA-bypass stays REJECTED as a different tool category.)* Slow-lane:
+  plan-first, signed-off.
 
 ### 📋 PLANNED (ordered)
 1. **Remote arbitrary targets + full SSRF / DNS-rebinding / rate-limit hardening** — beyond localhost.
@@ -547,8 +557,10 @@ shape, the decisive-evidence standard in the prompt must learn it too, or the tw
   confirmed** (zero-LLM): every Cloudflare mitigation is non-2xx (403 challenge / 429 rate-limit / 1010
   bot-block) → status-caught → Part-1 **NOT DATA**; Cloudflare emits no 200-status challenge, so Part 2
   guards non-Cloudflare gateways that return 200 bodies (TECH_DEBT **D31**, offline-fixture covered).
-- **Multi-step auth-macro recording** — logins that are not a single request (multi-step / MFA /
-  token exchange) cannot currently be replayed.
+- **Multi-step auth-macro recording — ✅ DONE for the declared-sequence case** (slice 2c, `cf70d6e`):
+  a login that needs a CSRF/nonce/session pre-step is expressed as an ordered `--auth` `steps` sequence
+  (scope-locked, identity-isolated). Still open: OAuth authorization-code (a later slice) and MFA/token
+  exchange that requires interactive replay (out of scope — attacking the auth mechanism, a different tool).
 - **A two-account resource-ownership baseline.** The fuzzer today holds **one shared auth custody**
   and has **no map proving `id=2` belongs to a different user** — it is inferred from the attack's own
   path shape. Real targets need an explicit two-account ownership baseline.
