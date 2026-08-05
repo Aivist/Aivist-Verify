@@ -1018,6 +1018,23 @@
 - **No fix here — deliberately.** Do NOT add heuristics (proximity, JSON-path scoping, negation parsing) to
   "fix" this: a smarter classifier is new logic that would need its own validation and could shift the direction.
   Recorded as a known boundary. **Flag for the future README "Known limitations" list.**
+- **Live-Cloudflare validation (real-WAF datapoint; zero-LLM) — the 2xx branch does not fire on Cloudflare.**
+  VAmPI was stood up behind a **live Cloudflare Tunnel + WAF** and its mitigation responses characterized.
+  ALL of Cloudflare's protective responses are **non-2xx**: the managed challenge (to a non-browser client)
+  is **HTTP 403** (`cf-mitigated: challenge`, HTML interstitial), the free rate-limit rule is **HTTP 429**
+  (`error code: 1015`), and its bot-fight / browser-integrity block is **HTTP 403 (`error code: 1010`)**.
+  **Cloudflare does NOT emit a 200-status challenge page**, so every real Cloudflare mitigation is caught by
+  the **status** branch (401/403/429) — the keyword (2xx) branch this entry is about is **never reached** on
+  Cloudflare, so D31's substring-match boundary does not bite there. Confirmed by driving ONLY the engine's
+  request layer (`fuzzer._send_request` + `_is_challenge_response` + `_CHALLENGE_ABORT_THRESHOLD`, **no
+  model call**): a real 403 and a real 429 were each flagged `is_challenge_response=True`, a clean 200 VAmPI
+  body was **not** flagged, and two challenge responses reached the abort threshold (2) → the **Part-1
+  circuit breaker trips to NOT DATA**, so the 403/429 body is never treated as data. **Implication for
+  Part 2:** the 200-body corroboration guard (Part 2, and this D31 boundary) is a safeguard for
+  **non-Cloudflare gateways that return HTTP-200 block/challenge bodies** — the case is covered by the
+  offline `test_challenge_corroboration.py` fixtures and simply **does not arise on a real Cloudflare-fronted
+  target**. Notes: rate-limit→`managed_challenge` is not entitled on the Free plan; the run was infra-only
+  (no engine verdict, no LLM spend, nothing committed).
 
 ### D32 — broken-for-all disclosure relies on the operator's owner-private assertion — LOW (SAFE-direction, opt-in)
 - **Where:** the opt-in `assert_owner_only` path in `execute_deep_verification` (`deep_verifier.py`) plus

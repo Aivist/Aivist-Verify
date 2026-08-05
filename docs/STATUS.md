@@ -195,6 +195,18 @@ file touched is `config.py`, and only to ADD a settings source (below). What shi
     legitimate 200-denial that does not corroborate (e.g. the labs' `200 {"error":"forbidden"}` SAFE
     cases) is untouched → stays `[REFUTED]`. `fetch_owner_view`, the four channels, and D19 are untouched.
     Known classifier boundary: TECH_DEBT **D31**. Tests: `test_challenge_corroboration.py`.
+  - **Live-Cloudflare validation (real-target, zero-LLM).** Confirmed against **VAmPI behind a live
+    Cloudflare Tunnel + WAF**: every Cloudflare mitigation is **non-2xx** — managed challenge **403**
+    (`cf-mitigated: challenge`), rate-limit **429**, bot-fight / browser-integrity block **403 (error
+    1010)** — so **Cloudflare emits no 200-status challenge page**, and every one is caught by the Part-1
+    **status** branch (401/403/429), never the keyword branch. Driving ONLY the request layer
+    (`fuzzer._send_request` + `_is_challenge_response`, no model): a real 403 and a real 429 were each
+    flagged as a challenge, a clean 200 VAmPI body was **not**, and two challenges reached the abort
+    threshold → the Part-1 breaker trips to **NOT DATA** (the 403/429 body is never treated as data). So
+    **Part 2's 200-body case does not arise on Cloudflare** — it stays a safeguard for non-Cloudflare
+    gateways that return 200 block/challenge bodies (offline-fixture covered). See TECH_DEBT **D31**.
+    (Infra-only run; rate-limit→`managed_challenge` not entitled on the Free plan; no LLM spend; nothing
+    committed.)
 - **Broken-for-all disclosure (opt-in `assert_owner_only`; verdict LOCKED to inconclusive; commit
   `b33e223`).** D30 cannot tell "public by design" from "broken for **every** authenticated user"
   (black-box identical). When the operator **asserts** a resource is owner-private and D30 would suppress
@@ -209,6 +221,19 @@ file touched is `config.py`, and only to ADD a settings source (below). What shi
   and the tool refuses to confirm on the assertion alone — it only mechanically evidences it. Known
   boundary: TECH_DEBT **D32**. Tests: `test_broken_for_all.py` (drives the real engine) + the
   `[INCONCLUSIVE]` render and drift guards in `test_confirm_render.py`.
+- **Multi-target behavior map (VAmPI + Juice Shop; real-target datapoint, mostly zero-LLM).**
+  Hand-classified each candidate as FOUR identities (attacker / owner / bystander / anonymous) BEFORE the
+  engine, then ran the hardened engine (real gemini-2.5-pro). **Both famous IDORs are broken-for-all** —
+  VAmPI `GET /books/v1/{title}` and Juice Shop `GET /rest/basket/{id}` (attacker + bystander + owner all
+  read the owner's object; anonymous denied) → the engine renders them **`[REFUTED]`/suppressed** (D30
+  bystander) or **`[INCONCLUSIVE]`** (opt-in `assert_owner_only`), **never `[CONFIRMED]`**. Juice Shop's
+  **per-user resources** (`/api/Cards`, `/api/Addresss`) are **properly access-controlled** — the attacker
+  is denied (`400 "Malicious activity detected"`), so they are **not a BOLA** at all. Across all **4 paid
+  runs** the model's raw verdict wanted **`verified`** and **code held the line every time**
+  (`ai_verdict_raw=verified` → `inconclusive`). **No genuine per-user BOLA (bystander denied) was found on
+  either target.** Strategic implication: practical targets often lack a clean per-user BOLA, so the honest
+  README headline is the **public-vs-shared-vs-broken discrimination + zero-FP discipline**, not a single
+  `[CONFIRMED]` shot — see [`ROADMAP.md`](./ROADMAP.md) §0. Read-only run; nothing committed.
 - **YAML `--spec` support** (`external_verify._load_spec_file`, commit `5a6cf52`). `--spec` accepts
   `.yml`/`.yaml` (parsed with `yaml.safe_load` ONLY — never the unsafe loader) as well as `.json`; JSON
   stays byte-identical and feeds the same `catalog_from_openapi`. Suite 507→510.

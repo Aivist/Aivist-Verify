@@ -73,8 +73,12 @@ Operator front door (this node's line — all re-verified 2026-08-02):
   breaker (commit **`d4b49ef`**; opt-in `challenge_break`, default OFF, so lab / measurement is
   byte-identical). **Part 2** — a 200-status WAF / challenge page can never corroborate the D24 owner-view
   gate (commit **`6fab3cc`**). Neither guard can create or strengthen a verdict. Detail in
-  [`STATUS.md`](./STATUS.md); classifier boundary TECH_DEBT **D31**. *(This is the "WAF circuit-breaker"
-  sub-part of PLANNED item 1, now done.)*
+  [`STATUS.md`](./STATUS.md); classifier boundary TECH_DEBT **D31**. **Live-Cloudflare confirmed**
+  (VAmPI behind a Cloudflare Tunnel + WAF, zero-LLM): every Cloudflare mitigation is **non-2xx** (403
+  managed challenge / 429 rate-limit / 1010 bot-block) → caught by status → Part-1 **NOT DATA**;
+  Cloudflare emits **no 200-status challenge**, so Part 2's 200-body case is a safeguard for
+  non-Cloudflare gateways (offline-fixture covered), not exercised by Cloudflare. *(This is the "WAF
+  circuit-breaker" sub-part of PLANNED item 1, now done.)*
 - **Presentation-deepening — cut A** (commit **`ad45846`**). Claim-tiering (`[CONFIRMED]` code-gated vs
   `[SIGNAL]` model-opinion, with an explicit basis line) + a walkable evidence chain, from existing record
   fields only; renderer stays pure/offline. Detailed as §0 item **11 cut A** below; **cut B pending**.
@@ -94,8 +98,9 @@ Operator front door (this node's line — all re-verified 2026-08-02):
 ### 📋 PLANNED (ordered)
 1. **Remote arbitrary targets + full SSRF / DNS-rebinding / rate-limit hardening** — beyond localhost.
    *(The "WAF circuit-breaker" sub-part is now **DONE** — run-level challenge circuit breaker `d4b49ef`
-   + the 200-status challenge-page corroboration guard `6fab3cc`, both downgrade-only; see ✅ DONE above.
-   What remains here is the broader remote-target / SSRF / DNS-rebinding work.)*
+   + the 200-status challenge-page corroboration guard `6fab3cc`, both downgrade-only, **live-Cloudflare
+   confirmed** (all mitigations non-2xx → status-caught → Part-1 NOT DATA); see ✅ DONE above. What
+   remains here is the broader remote-target / SSRF / DNS-rebinding work.)*
 2. **Passive endpoint discovery (proxy radar)** — feed observed flows into the catalog. *(This is the
    open half of **D18** "automated attack-surface discovery" ≡ the `catalog_from_har` stub,
    `backend/app/services/endpoint_catalog.py:154` — one item, not three.)*
@@ -185,13 +190,14 @@ Operator front door (this node's line — all re-verified 2026-08-02):
   change means recreating / repointing the DB by hand. *Trigger:* if schemas start churning.
 - **D25 — DNS-TOCTOU IP-pinning follow-up** (`docs/TECH_DEBT.md:829`) — a known scope-lock **residual**:
   the resolved-IP guard resolves+validates before the request, but httpx re-resolves at connect time
-  (a small time-of-check-to-time-of-use window); httpx has no clean resolver hook. *Trigger:* hardening
-  before untrusted remote rebinding scenarios.
+  (a small time-of-check-to-time-of-use window); httpx has no clean resolver hook. **SAFE-direction,
+  non-blocking → post-launch.** *Trigger:* hardening before untrusted remote rebinding scenarios.
 - **D24 — three open read-gate boundaries** (`docs/TECH_DEBT.md:426`), listed explicitly so they are not
   lost: (a) **public / shared resources** legitimately return the same content to both identities, so the
   downgrade-only owner-view gate permits them (no upstream exclusion); (b) **owner credentials are
   per-DEPLOYMENT, not per-finding** (≡ the roadmap's "per-finding ownership baseline" — one item; a real
-  target whose findings belong to different owners would need per-finding creds, which do not exist); (c)
+  target whose findings belong to different owners would need per-finding creds, which do not exist —
+  **SAFE-direction (missed coverage, never a false positive), non-blocking → post-launch**); (c)
   the **`0.95` read-gate threshold** is calibrated on deterministic lab data / raw bodies and is
   **unvalidated against real-target volatility**. *Trigger:* real-target read-semantic use.
 - **D10–D17 cluster** (`docs/TECH_DEBT.md:114-168`) — single-table inheritance (D10), single-host batch
@@ -221,6 +227,18 @@ evidence-anchoring) proved **less portable** there — they read `owner_not_foun
 were observe-only, doing no work. Implication: deepen toward the **owner-view differential and
 business-context** confirmation, not more id-shaped anchors; and the README positioning should
 **emphasize the portable owner-view confirmation**, not the id-anchors. (See also §7 strategic (a)/(b).)
+
+**Honest real-target headline (from the multi-target behavior map — VAmPI + Juice Shop, alongside crAPI).**
+Across these practical targets the famous IDORs are **broken-for-all** (any authenticated user reads any
+object; anonymous denied) → the hardened engine renders them **`[INCONCLUSIVE]`/suppressed, never
+`[CONFIRMED]`**; where a target **does** scope per-user (Juice Shop cards/addresses) the attacker is
+**properly denied** (not a BOLA); and crAPI's order endpoint is **public / missing-auth**, its community post
+**shared-by-design**. On all 4 paid runs the model's raw verdict wanted `verified` and **code held the line
+every time**. Implication: a **clean per-user BOLA (bystander denied → `[CONFIRMED]`) is rare** on practical
+targets, so the README headline should be the **public-vs-shared-vs-broken discrimination + zero-FP
+discipline** (the model wanted to confirm; code refused) — **not** a single `[CONFIRMED]` screenshot. A
+target with a genuine per-user BOLA is needed if a `[CONFIRMED]` headline is wanted (see §0 PLANNED item 3
+strategic note / item 6).
 
 > **Not yet board-tagged (recorded in §7, pending a director ruling — no status assigned):** the
 > 2-minute "magic demo" + recorded HAR sample; `run_in_executor` for the similarity compute; the
@@ -519,10 +537,16 @@ shape, the decisive-evidence standard in the prompt must learn it too, or the tw
   + resolved-IP DNS-rebinding guard; the passive proxy shares the same matcher), with the
   adversarial suite + a one-decision-tree test + SecretStr key privacy. Residual: IP-pinning
   follow-up to close a small DNS TOCTOU window (TECH_DEBT.md D25).
-- **The UUID wall** — object ids in real APIs are frequently UUIDs, which cannot be enumerated by
-  incrementing. Let the **user supply the victim's alternative IDs** rather than guessing them.
-- **WAF circuit-breaker** — detect that a WAF/rate-limiter has started blocking and stop, instead of
-  hammering a target and poisoning every subsequent verdict.
+- **The UUID wall — mechanism present; needs only real-UUID-target validation (not blocking).** Object
+  ids in real APIs are frequently UUIDs, which cannot be enumerated by incrementing; the design is that the
+  **user supplies the victim's alternative IDs** (no guessing). The engine already handles UUID object-ids
+  **end-to-end in the lab** — `depot_target` (UUID-id) has its own 23-test suite and rides the dual-lab
+  GOLDEN run — so nothing is missing mechanically. What remains is a **real-UUID-target end-to-end
+  validation**, which **folds into the later HackerOne / real-target run**; it is **not a blocking build item**.
+- **WAF circuit-breaker — ✅ DONE** (Part 1 `d4b49ef` + Part 2 `6fab3cc`, both downgrade-only). **Live-Cloudflare
+  confirmed** (zero-LLM): every Cloudflare mitigation is non-2xx (403 challenge / 429 rate-limit / 1010
+  bot-block) → status-caught → Part-1 **NOT DATA**; Cloudflare emits no 200-status challenge, so Part 2
+  guards non-Cloudflare gateways that return 200 bodies (TECH_DEBT **D31**, offline-fixture covered).
 - **Multi-step auth-macro recording** — logins that are not a single request (multi-step / MFA /
   token exchange) cannot currently be replayed.
 - **A two-account resource-ownership baseline.** The fuzzer today holds **one shared auth custody**
