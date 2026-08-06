@@ -745,3 +745,182 @@ def test_multistep_login_redirect_out_of_scope_is_refused():
                          session_factory=redirecting_factory)
     with pytest.raises(LoginError):
         _asyncio.run(prov.token())
+
+
+# ==============================================================================
+# #7 FP NAIL (re-login mode): attacker and owner must be DISTINCT accounts. Same username = same
+# account -> the D24 owner-view corroborates self-vs-self -> a false [CONFIRMED]. Refuse fail-closed:
+#   * pre-login, on identical USERNAMES (before any login leaves), and
+#   * post-login, on identical obtained TOKENS (two usernames aliasing to one identity).
+# In every case the engine must NEVER run — a test that would FAIL if a verdict were produced.
+# ==============================================================================
+def test_7_fp_nail_same_username_refused_before_any_login(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", False)
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('TARGET_ATTACKER_USERNAME = "same"\nTARGET_ATTACKER_PASSWORD = "p1"\n'
+                   'TARGET_OWNER_USERNAME = "same"\nTARGET_OWNER_PASSWORD = "p2"\n', encoding="utf-8")
+    login, spec, op = _write_files(tmp_path)
+    fake = _fake_post_factory()
+
+    class _CountingVerifiedEngine:
+        def __init__(self):
+            self.calls = 0
+
+        async def __call__(self, **kw):
+            self.calls += 1
+            return _result(ai_verdict="verified")     # would CONFIRM if the guard were removed
+
+    eng = _CountingVerifiedEngine()
+    lines = []
+    code = run_external_verify(
+        target=_TARGET, spec_path=spec, op_path=op, config_path=str(cfg), auth_spec_path=login,
+        http_post=fake, engine=eng,
+        echo=lambda *a: lines.append(" ".join(str(x) for x in a)),
+        err=lambda *a: lines.append(" ".join(str(x) for x in a)))
+    out = "\n".join(lines)
+    assert code == 2 and eng.calls == 0               # refused; engine NEVER ran (no verdict)
+    assert "SAME identity" in out
+    assert len(fake.calls) == 0                        # refused BEFORE any login left (pre-login check)
+
+
+def test_7_fp_nail_identical_tokens_refused_post_login():
+    # Two DIFFERENT usernames whose logins return the SAME token -> caught on the OBTAINED tokens ->
+    # refused, engine NEVER called (the pre-login username check can't see this; the token check does).
+    async def fake(m, u, b):
+        return 200, {"auth_token": "SAME-TOKEN-FOR-BOTH"}
+
+    eng = _FakeEngine([_result(ai_verdict="verified")])
+    atk = Credential("attackeruser", SecretStr("apw"))
+    own = Credential("victimowner", SecretStr("opw"))
+    with pytest.raises(ValueError):
+        _asyncio.run(_verify_external_relogin(
+            _TARGET, _SPEC, _OP, _LOGIN_SPEC, atk, own, None, eng, http_post=fake))
+    assert eng.calls == []                             # engine NEVER ran on a token collision
+
+
+# ==============================================================================
+# D28 — mid-run OWNER-token refresh. An owner-view 401 (owner token expired mid-run) triggers a
+# refresh of ONLY the owner provider + one engine retry. Attacker/bystander providers are UNTOUCHED,
+# and the fresh owner token flows ONLY into owner_credential (never auth_context/the attack path).
+# ==============================================================================
+def _d28_results():
+    return [
+        _result(ai_verdict="verified", owner_view_corroborated=False, owner_view_status=401),  # owner tok expired mid-run
+        _result(ai_verdict="verified", owner_view_corroborated=True, owner_view_status=200),    # after owner refresh
+    ]
+
+
+def test_d28_owner_view_401_refreshes_only_owner_and_retries_once():
+    fake = _fake_post_factory()                        # tokens TOK.<user>.<n> (non-JWT -> no proactive refresh)
+    eng = _FakeEngine(_d28_results())
+    atk = Credential("attackeruser", SecretStr("apw"))
+    own = Credential("victimowner", SecretStr("opw"))
+    result = _asyncio.run(_verify_external_relogin(
+        _TARGET, _SPEC, _OP, _LOGIN_SPEC, atk, own, None, eng, http_post=fake))
+    assert len(eng.calls) == 2                          # engine re-run EXACTLY once (owner-view 401)
+    atk_logins = [c for c in fake.calls if c["body"].get("username") == "attackeruser"]
+    own_logins = [c for c in fake.calls if c["body"].get("username") == "victimowner"]
+    assert len(own_logins) == 2                         # ONLY the owner provider refreshed
+    assert len(atk_logins) == 1                         # attacker provider UNTOUCHED
+    assert result.owner_view_corroborated is True       # retry completed with the fresh owner token
+
+
+def test_d28_isolation_fresh_owner_token_only_in_owner_credential_never_auth_context():
+    # LOAD-BEARING: after a mid-run owner refresh, the fresh owner token is present in owner_credential
+    # and ABSENT from auth_context; the attacker's session/token is untouched. A test that would FAIL
+    # if a refresh mixed the attacker's session into the owner path (or the owner token into the attack).
+    fake = _fake_post_factory()
+    eng = _FakeEngine(_d28_results())
+    atk = Credential("attackeruser", SecretStr("apw"))
+    own = Credential("victimowner", SecretStr("opw"))
+    _asyncio.run(_verify_external_relogin(
+        _TARGET, _SPEC, _OP, _LOGIN_SPEC, atk, own, None, eng, http_post=fake))
+    call0, call1 = eng.calls[0], eng.calls[1]
+    # attacker auth_context UNCHANGED across the retry (attacker provider never refreshed)
+    assert str(call0["auth_context"]) == str(call1["auth_context"])
+    assert "attackeruser" in str(call1["auth_context"])
+    # owner credential WAS refreshed (a different token on the retry)
+    fresh_owner_val = call1["owner_credential"].header_value
+    assert fresh_owner_val != call0["owner_credential"].header_value
+    # the fresh owner token lives ONLY in owner_credential — never in the attack headers (no bleed)
+    assert "victimowner" in fresh_owner_val
+    assert fresh_owner_val not in str(call1["auth_context"])
+    assert "victimowner" not in str(call1["auth_context"])
+
+
+def test_d28_owner_view_401_does_not_touch_bystander_or_attacker_providers():
+    fake = _fake_post_factory()
+    eng = _FakeEngine(_d28_results())
+    atk = Credential("attackeruser", SecretStr("apw"))
+    own = Credential("victimowner", SecretStr("opw"))
+    bys = Credential("bystanderuser", SecretStr("bpw"))
+    _asyncio.run(_verify_external_relogin(
+        _TARGET, _SPEC, _OP, _LOGIN_SPEC, atk, own, None, eng, http_post=fake, bystander_cred=bys))
+    own_logins = [c for c in fake.calls if c["body"].get("username") == "victimowner"]
+    atk_logins = [c for c in fake.calls if c["body"].get("username") == "attackeruser"]
+    bys_logins = [c for c in fake.calls if c["body"].get("username") == "bystanderuser"]
+    assert len(own_logins) == 2                         # ONLY the owner refreshed
+    assert len(atk_logins) == 1 and len(bys_logins) == 1   # attacker + bystander providers UNTOUCHED
+
+
+def test_d28_owner_refresh_login_failure_is_login_error_never_a_second_verdict():
+    # If the owner's REFRESH login itself fails -> LoginError propagates (the CLI turns this into
+    # NOT DATA). It can only turn a safe-miss into a completion OR stay NOT DATA — never a verdict.
+    calls = []
+
+    async def fake(method, url, body):
+        calls.append(dict(body))
+        user = body.get("username")
+        n_user = sum(1 for c in calls if c.get("username") == user)
+        if user == "victimowner" and n_user >= 2:      # the owner's REFRESH login fails
+            return 401, {"message": "owner re-login denied"}
+        return 200, {"auth_token": f"TOK.{user}.{len(calls)}"}
+
+    eng = _FakeEngine([_result(ai_verdict="verified", owner_view_corroborated=False, owner_view_status=401)])
+    atk = Credential("attackeruser", SecretStr("apw"))
+    own = Credential("victimowner", SecretStr("opw"))
+    with pytest.raises(LoginError):
+        _asyncio.run(_verify_external_relogin(
+            _TARGET, _SPEC, _OP, _LOGIN_SPEC, atk, own, None, eng, http_post=fake))
+    assert len(eng.calls) == 1                          # engine ran once; refresh failed -> NO 2nd verdict
+
+
+def test_d28_owner_refresh_failure_renders_notdata_via_cli(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", False)
+    cfg = _write_cfg(tmp_path)                          # atkuser / ownuser (distinct)
+    login, spec, op = _write_files(tmp_path)
+    calls = []
+
+    async def fake(method, url, body):
+        calls.append(dict(body))
+        user = body.get("username")
+        n_user = sum(1 for c in calls if c.get("username") == user)
+        if user == "ownuser" and n_user >= 2:          # owner refresh login fails
+            return 401, {"message": "denied"}
+        return 200, {"auth_token": f"TOK.{user}.{len(calls)}"}
+
+    eng = _FakeEngine([_result(ai_verdict="verified", owner_view_corroborated=False, owner_view_status=401)])
+    lines = []
+    code = run_external_verify(
+        target=_TARGET, spec_path=spec, op_path=op, config_path=cfg, auth_spec_path=login,
+        http_post=fake, engine=eng,
+        echo=lambda *a: lines.append(" ".join(str(x) for x in a)),
+        err=lambda *a: lines.append(" ".join(str(x) for x in a)))
+    out = "\n".join(lines)
+    assert code == 2 and "[NOT DATA]" in out           # graceful; never "target safe", never a verdict
+
+
+def test_d28_no_owner_view_status_is_not_degraded_byte_identical():
+    # A result that never ran the owner-view gate (owner_view_status absent) must NOT trigger a refresh:
+    # exactly one engine call, no owner refresh. Proves D28 detection is inert on the common path.
+    fake = _fake_post_factory()
+    eng = _FakeEngine([_result(ai_verdict="failed")])   # base _result has no owner_view_status
+    atk = Credential("attackeruser", SecretStr("apw"))
+    own = Credential("victimowner", SecretStr("opw"))
+    _asyncio.run(_verify_external_relogin(
+        _TARGET, _SPEC, _OP, _LOGIN_SPEC, atk, own, None, eng, http_post=fake))
+    assert len(eng.calls) == 1                          # no retry
+    own_logins = [c for c in fake.calls if c["body"].get("username") == "victimowner"]
+    assert len(own_logins) == 1                          # owner NOT refreshed

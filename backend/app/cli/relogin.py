@@ -257,9 +257,18 @@ def resolve_login_credentials(
     config_path: Optional[str],
     prompt: Callable[[str], str] = input,
     secret_prompt: Callable[[str], str] = getpass.getpass,
+    *,
+    attacker_user_key: str = _CFG_ATTACKER_USER, attacker_pass_key: str = _CFG_ATTACKER_PASS,
+    owner_user_key: str = _CFG_OWNER_USER, owner_pass_key: str = _CFG_OWNER_PASS,
 ) -> Tuple[Credential, Credential]:
     """(attacker, owner) login credentials. Read from the per-user config file if present,
-    else prompted (username plain, password masked). Passwords become SecretStr immediately."""
+    else prompted (username plain, password masked). Passwords become SecretStr immediately.
+
+    The config-key names are parameters (default: today's TARGET_ATTACKER_* / TARGET_OWNER_* keys, so
+    every existing caller is byte-identical). #7 per-finding: the caller may point a role at a DIFFERENT
+    account's keys so different findings/ops can attack different owners across separate runs. Key
+    SELECTION is the caller's; this function still resolves exactly two INDEPENDENT credentials, and
+    each still feeds its OWN TokenProvider downstream (no provider/client sharing across accounts)."""
     cfg = _read_config(config_path)
 
     def _cred(user_key: str, pass_key: str, role: str) -> Credential:
@@ -273,19 +282,26 @@ def resolve_login_credentials(
             raise ValueError(f"{role} username and password are required for --auth login")
         return Credential(username=user, password=SecretStr(pw))
 
-    return (_cred(_CFG_ATTACKER_USER, _CFG_ATTACKER_PASS, "attacker"),
-            _cred(_CFG_OWNER_USER, _CFG_OWNER_PASS, "owner"))
+    return (_cred(attacker_user_key, attacker_pass_key, "attacker"),
+            _cred(owner_user_key, owner_pass_key, "owner"))
 
 
-def resolve_bystander_login_credential(config_path: Optional[str]) -> Optional[Credential]:
+def resolve_bystander_login_credential(
+    config_path: Optional[str],
+    *,
+    user_key: str = _CFG_BYSTANDER_USER, pass_key: str = _CFG_BYSTANDER_PASS,
+) -> Optional[Credential]:
     """The OPTIONAL D30 third/bystander login credential (a principal with no ownership of the
-    attacked object). Read from the config file ONLY (keys TARGET_BYSTANDER_USERNAME /
+    attacked object). Read from the config file ONLY (default keys TARGET_BYSTANDER_USERNAME /
     TARGET_BYSTANDER_PASSWORD) — deliberately NOT prompted, so the attacker/owner login flow is
     unchanged. Returns None unless BOTH a username and password are present (partial config => no
-    bystander, byte-identical). Password becomes SecretStr immediately."""
+    bystander, byte-identical). Password becomes SecretStr immediately.
+
+    `user_key`/`pass_key` are parameters (default: today's keys) so #7 per-finding can point the
+    bystander at a different account's keys across separate runs."""
     cfg = _read_config(config_path)
-    user = str(cfg.get(_CFG_BYSTANDER_USER) or "").strip()
-    pw = str(cfg.get(_CFG_BYSTANDER_PASS) or "")
+    user = str(cfg.get(user_key) or "").strip()
+    pw = str(cfg.get(pass_key) or "")
     if not user or not pw:
         return None
     return Credential(username=user, password=SecretStr(pw))

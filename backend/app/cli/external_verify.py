@@ -64,6 +64,18 @@ _CFG_OWNER_KEY = "TARGET_OWNER_TOKEN"
 # byte-identical). It flows ONLY into `bystander_credential`, never into an attack request.
 _CFG_BYSTANDER_KEY = "TARGET_BYSTANDER_TOKEN"
 
+# ---- #7 per-finding account selection ----------------------------------------------------------
+# An op MAY declare which account each role uses via an optional `accounts` object, e.g.
+# {"accounts": {"owner": "OWNER2"}}. Each role's LABEL selects its config keys by template:
+#   static tokens: TARGET_{LABEL}_TOKEN     re-login: TARGET_{LABEL}_USERNAME / TARGET_{LABEL}_PASSWORD
+# The DEFAULT labels below reproduce today's exact keys, so an op with no `accounts` is byte-identical.
+# The engine still manages ONE (attacker, owner[, bystander]) set per run — "per-finding" is achieved
+# by pointing different ops at different accounts across SEPARATE runs (process-level isolation kept),
+# never by an in-run loop over owners.
+_ACCOUNT_ROLES = ("attacker", "owner", "bystander")
+_DEFAULT_ACCOUNT_LABELS = {"attacker": "ATTACKER", "owner": "OWNER", "bystander": "BYSTANDER"}
+_ACCOUNT_LABEL_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
 
 # ------------------------------------------------------------------------------
 # Pure input helpers (offline-testable).
@@ -177,12 +189,65 @@ def _auth_header(raw: str) -> Dict[str, str]:
     return {"Authorization": f"Bearer {text}"}
 
 
+def _account_labels(op: Dict[str, Any]) -> Dict[str, str]:
+    """Resolve each role's account LABEL from the op's optional `accounts` object, falling back to
+    the default label (= today's key). Labels are validated to `[A-Za-z0-9_]+` and upper-cased before
+    being templated into a config-key name (so a malformed label can never build a surprising key).
+    A missing/empty `accounts` yields the default labels => byte-identical to today. Raises ValueError
+    (=> the caller's NOT-DATA input path) on a malformed declaration."""
+    raw = op.get("accounts")
+    labels = dict(_DEFAULT_ACCOUNT_LABELS)
+    if raw is None:
+        return labels
+    if not isinstance(raw, dict):
+        raise ValueError("--op 'accounts' must be a JSON object mapping role -> account label")
+    for role, val in raw.items():
+        if role not in _ACCOUNT_ROLES:
+            raise ValueError(f"--op accounts: unknown role {role!r} (allowed: {list(_ACCOUNT_ROLES)})")
+        if val is None:
+            continue
+        label = str(val).strip().upper()
+        if not _ACCOUNT_LABEL_RE.match(label):
+            raise ValueError(f"--op accounts.{role} must match [A-Za-z0-9_]+, got {val!r}")
+        labels[role] = label
+    return labels
+
+
+def _identity_collision_reason(
+    attacker: str, owner: Optional[str], bystander: Optional[str],
+) -> Optional[str]:
+    """Return a human-readable refusal reason iff two DISTINCT roles resolve to the SAME identity
+    fingerprint (a username pre-login, or an obtained token), else None. The fingerprints are compared
+    only among roles that are actually present (owner/bystander may be None).
+
+    This is the #7 FP NAIL. `attacker == owner` is SEV-1: identical identities make the D24 owner-view
+    corroborate SELF-vs-SELF, manufacturing a false [CONFIRMED] with nothing erroring. `bystander ==
+    attacker` or `bystander == owner` corrupts the D30 public-resource discrimination. In every case
+    the run must FAIL CLOSED (refuse before any verdict), never silently proceed."""
+    if owner is not None and owner == attacker:
+        return ("attacker and owner resolve to the SAME identity — the D24 owner-view would corroborate "
+                "self-vs-self and manufacture a false confirmation. Refusing the run (fail-closed).")
+    if bystander is not None and bystander == attacker:
+        return ("bystander and attacker resolve to the SAME identity — the D30 public-resource check "
+                "would be corrupted. Refusing the run (fail-closed).")
+    if bystander is not None and owner is not None and bystander == owner:
+        return ("bystander and owner resolve to the SAME identity — the D30 public-resource check "
+                "would be corrupted. Refusing the run (fail-closed).")
+    return None
+
+
 def _resolve_tokens(
     config_path: str, prompt_secret: Callable[[str], str],
+    *, attacker_key: str = _CFG_ATTACKER_KEY, owner_key: str = _CFG_OWNER_KEY,
 ) -> Tuple[SecretStr, Optional[SecretStr]]:
     """Attacker (required) + owner (optional) tokens, as SecretStr. Read from the per-user
     config file if present, else a masked prompt. No raw-token CLI flag exists (avoids
-    shell-history / process-list leakage). Values become SecretStr immediately."""
+    shell-history / process-list leakage). Values become SecretStr immediately.
+
+    The config-key names are parameters (default: today's TARGET_ATTACKER_TOKEN / TARGET_OWNER_TOKEN,
+    so every existing caller is byte-identical). #7 per-finding: the caller may point a role at a
+    DIFFERENT account's key so different findings/ops can attack different owners across separate runs.
+    The two tokens stay SEPARATE variables — attacker -> auth_context, owner -> owner_credential."""
     cfg: Dict[str, Any] = {}
     try:
         if config_path and os.path.isfile(config_path):
@@ -193,30 +258,31 @@ def _resolve_tokens(
     except Exception:
         cfg = {}
 
-    attacker = str(cfg.get(_CFG_ATTACKER_KEY) or "").strip()
+    attacker = str(cfg.get(attacker_key) or "").strip()
     if not attacker:
         attacker = (prompt_secret("Attacker bearer token (input hidden): ") or "").strip()
     if not attacker:
         raise ValueError("an attacker token is required")
 
-    owner = str(cfg.get(_CFG_OWNER_KEY) or "").strip()
+    owner = str(cfg.get(owner_key) or "").strip()
     if not owner:
         owner = (prompt_secret("Owner/victim bearer token (hidden; blank to skip owner-view): ") or "").strip()
 
     return SecretStr(attacker), (SecretStr(owner) if owner else None)
 
 
-def _resolve_bystander_token(config_path: str) -> Optional[SecretStr]:
+def _resolve_bystander_token(config_path: str, *, bystander_key: str = _CFG_BYSTANDER_KEY) -> Optional[SecretStr]:
     """The D30 THIRD/bystander token as a SecretStr, or None. Read from the per-user config file
-    ONLY (key TARGET_BYSTANDER_TOKEN) — deliberately NOT prompted, so the attacker/owner masked-
-    prompt sequence stays exactly as it was. Absent / unreadable => None => no bystander probe
-    (byte-identical behavior). Never raises."""
+    ONLY (default key TARGET_BYSTANDER_TOKEN) — deliberately NOT prompted, so the attacker/owner
+    masked-prompt sequence stays exactly as it was. Absent / unreadable => None => no bystander probe
+    (byte-identical behavior). `bystander_key` is a parameter so #7 per-finding can point it at a
+    different account's key across separate runs. Never raises."""
     try:
         if config_path and os.path.isfile(config_path):
             with open(config_path, "rb") as fh:
                 loaded = tomllib.load(fh)
             if isinstance(loaded, dict):
-                val = str(loaded.get(_CFG_BYSTANDER_KEY) or "").strip()
+                val = str(loaded.get(bystander_key) or "").strip()
                 if val:
                     return SecretStr(val)
     except Exception:
@@ -327,6 +393,16 @@ def _auth_degraded(result: Any) -> bool:
     return False
 
 
+def _owner_view_auth_degraded(result: Any) -> bool:
+    """D28: True iff the D24 owner-view read returned HTTP 401 — the OWNER token expired MID-RUN.
+    Distinct from `_auth_degraded` (an attacker-side baseline/attack 401): here ONLY the owner token
+    needs refreshing, so the retry refreshes ONLY the owner provider. Mirrors `_auth_degraded`'s
+    401-only discipline (403/429 are challenge/rate-limit, not token expiry, and stay NOT DATA via
+    classify_degradation). Reads the engine's observe-only owner-view status; absent/None => not
+    degraded (byte-identical for any result that never ran the owner-view gate)."""
+    return getattr(result, "owner_view_status", None) == 401
+
+
 async def _verify_external_relogin(
     target: str, spec: Dict[str, Any], op: Dict[str, Any],
     login_spec: relogin.LoginSpec, attacker_cred: relogin.Credential,
@@ -359,14 +435,40 @@ async def _verify_external_relogin(
     attacker_tok = SecretStr(await attacker.token())      # fresh login (proactive, near-expiry aware)
     owner_tok = SecretStr(await owner.token())
     bystander_tok = SecretStr(await bystander.token()) if bystander is not None else None
+
+    # #7 FP NAIL (post-login, BEFORE any verdict): the resolved identities must be DISTINCT. Two
+    # DIFFERENT usernames that alias to the SAME token slip past the pre-login username check; catch it
+    # here on the OBTAINED tokens and FAIL CLOSED (the engine is never called on a collision, so a
+    # self-vs-self owner-view can never manufacture a false [CONFIRMED]).
+    _reason = _identity_collision_reason(
+        reveal_secret(attacker_tok),
+        reveal_secret(owner_tok) if owner_tok is not None else None,
+        reveal_secret(bystander_tok) if bystander_tok is not None else None,
+    )
+    if _reason:
+        raise ValueError(_reason)
+
     result = await _verify_external(target, spec, op, attacker_tok, owner_tok, model, engine,
                                     bystander_tok=bystander_tok)
 
-    if _auth_degraded(result):                            # 401 -> re-login + retry ONCE
-        attacker_tok = SecretStr(await attacker.refresh())
-        owner_tok = SecretStr(await owner.refresh())
-        if bystander is not None:
-            bystander_tok = SecretStr(await bystander.refresh())
+    # Re-login + retry ONCE on a token-expiry signal. TWO independent signals, each refreshing ONLY
+    # the implicated principal(s):
+    #   * attacker-side 401 (baseline/attack): refresh ALL principals (unchanged existing behavior).
+    #   * owner-view 401 ONLY (D28): the OWNER token expired mid-run -> refresh ONLY the owner provider.
+    #     The attacker/bystander providers (separate objects, own clients/sessions) are UNTOUCHED, and
+    #     the fresh owner token flows ONLY into owner_credential — never auth_context/custody. This can
+    #     only turn a safe-miss (owner-view 401 -> NOT DATA) into a completion; it never manufactures a
+    #     verdict — if the refreshed owner token ALSO 401s the gate still blocks (fail-safe).
+    attacker_side_401 = _auth_degraded(result)
+    owner_view_401 = _owner_view_auth_degraded(result)
+    if attacker_side_401 or owner_view_401:
+        if attacker_side_401:
+            attacker_tok = SecretStr(await attacker.refresh())
+            owner_tok = SecretStr(await owner.refresh())
+            if bystander is not None:
+                bystander_tok = SecretStr(await bystander.refresh())
+        else:                                             # D28: pure owner-view 401 -> refresh owner ONLY
+            owner_tok = SecretStr(await owner.refresh())
         result = await _verify_external(target, spec, op, attacker_tok, owner_tok, model, engine,
                                         bystander_tok=bystander_tok)
     return result
@@ -413,17 +515,44 @@ def run_external_verify(
         err("[NOT DATA] the --op JSON must include 'method' and 'baseline_path'.")
         return 2
 
+    # #7 per-finding: which account each role uses (default labels => today's exact keys).
+    try:
+        labels = _account_labels(op)
+    except Exception as e:
+        err(f"[NOT DATA] invalid --op accounts: {e}")
+        return 2
+
     cfg = config_path or branding.config_file_path()
 
     if auth_spec_path:
         # RE-LOGIN mode (--auth): obtain both tokens by INDEPENDENT logins (either/or vs static).
         try:
             login_spec = relogin.LoginSpec.from_file(auth_spec_path)
-            attacker_cred, owner_cred = relogin.resolve_login_credentials(cfg, prompt, prompt_secret)
+            attacker_cred, owner_cred = relogin.resolve_login_credentials(
+                cfg, prompt, prompt_secret,
+                attacker_user_key=f"TARGET_{labels['attacker']}_USERNAME",
+                attacker_pass_key=f"TARGET_{labels['attacker']}_PASSWORD",
+                owner_user_key=f"TARGET_{labels['owner']}_USERNAME",
+                owner_pass_key=f"TARGET_{labels['owner']}_PASSWORD",
+            )
             # D30: optional third/bystander login credential (config-file only; None => no bystander).
-            bystander_cred = relogin.resolve_bystander_login_credential(cfg)
+            bystander_cred = relogin.resolve_bystander_login_credential(
+                cfg,
+                user_key=f"TARGET_{labels['bystander']}_USERNAME",
+                pass_key=f"TARGET_{labels['bystander']}_PASSWORD",
+            )
         except Exception as e:
             err(f"[NOT DATA] could not set up --auth re-login: {type(e).__name__}: {e}")
+            return 2
+        # #7 FP NAIL (pre-login): DISTINCT accounts required. Same username = same account -> the D24
+        # owner-view corroborates self-vs-self -> false [CONFIRMED]. Refuse BEFORE any login / verdict.
+        # (A token-level alias check also runs post-login inside _verify_external_relogin.)
+        _reason = _identity_collision_reason(
+            attacker_cred.username, owner_cred.username,
+            bystander_cred.username if bystander_cred is not None else None,
+        )
+        if _reason:
+            err(f"[NOT DATA] {_reason}")
             return 2
         # Runtime-only enablement (committed config defaults stay False), mirroring the lab path.
         settings.AI_DEEP_VERIFY_ENABLED = True
@@ -439,11 +568,26 @@ def run_external_verify(
     else:
         # STATIC-token mode (unchanged attacker/owner; optional D30 bystander from config file).
         try:
-            attacker_tok, owner_tok = _resolve_tokens(cfg, prompt_secret)
+            attacker_tok, owner_tok = _resolve_tokens(
+                cfg, prompt_secret,
+                attacker_key=f"TARGET_{labels['attacker']}_TOKEN",
+                owner_key=f"TARGET_{labels['owner']}_TOKEN",
+            )
         except Exception as e:
             err(f"[NOT DATA] no usable attacker token: {e}")
             return 2
-        bystander_tok = _resolve_bystander_token(cfg)   # config-file only; None => no bystander probe
+        bystander_tok = _resolve_bystander_token(
+            cfg, bystander_key=f"TARGET_{labels['bystander']}_TOKEN")   # config-file only; None => no bystander
+        # #7 FP NAIL (static): DISTINCT identities required. attacker==owner -> the D24 owner-view
+        # corroborates self-vs-self -> false [CONFIRMED]. Refuse BEFORE any verdict (fail-closed).
+        _reason = _identity_collision_reason(
+            reveal_secret(attacker_tok),
+            reveal_secret(owner_tok) if owner_tok is not None else None,
+            reveal_secret(bystander_tok) if bystander_tok is not None else None,
+        )
+        if _reason:
+            err(f"[NOT DATA] {_reason}")
+            return 2
         # Runtime-only enablement (committed config defaults stay False), mirroring the lab path.
         settings.AI_DEEP_VERIFY_ENABLED = True
         try:

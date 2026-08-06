@@ -21,7 +21,7 @@ from backend.app.cli import external_verify as ev
 from backend.app.cli.external_verify import (
     run_external_verify, classify_degradation, _resolve_tokens,
     _approved_host, _build_parsed_request, _attack_path_from_op, _auth_header, _load_spec_file,
-    _split_path_query,
+    _split_path_query, _account_labels, _identity_collision_reason,
 )
 from backend.app.services.endpoint_catalog import catalog_from_openapi
 from backend.app.services import deep_verifier as dv
@@ -367,3 +367,91 @@ def test_path_segment_assembly_byte_identical_regression():
     parsed = _build_parsed_request(_OP, "u-9")
     assert parsed["path"] == "/api/users/1/gizmo" and parsed["query_params"] == {}
     assert _attack_path_from_op(_OP) == "/api/users/2/gizmo"
+
+
+# ============================================================================
+# #7 — per-finding account selection + the attacker!=owner FP nail.
+# An op may DECLARE which account each role uses (`accounts`), so different findings/ops attack
+# different owners across SEPARATE runs. The keys still resolve OUTSIDE the engine; the engine
+# still manages ONE (attacker, owner[, bystander]) set. attacker==owner is FAIL-CLOSED refused.
+# ============================================================================
+def _cfg_tokens(tmp_path, **kv):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("\n".join(f'{k} = "{v}"' for k, v in kv.items()) + "\n", encoding="utf-8")
+    return str(cfg)
+
+
+def test_account_labels_defaults_override_and_validation():
+    # no `accounts` => default labels (== today's exact keys, byte-identical)
+    assert _account_labels({}) == {"attacker": "ATTACKER", "owner": "OWNER", "bystander": "BYSTANDER"}
+    # a declared owner label is upper-cased; the other roles stay default
+    got = _account_labels({"accounts": {"owner": "owner2"}})
+    assert got["owner"] == "OWNER2" and got["attacker"] == "ATTACKER" and got["bystander"] == "BYSTANDER"
+    with pytest.raises(ValueError):
+        _account_labels({"accounts": {"owner": "bad label!"}})   # invalid chars
+    with pytest.raises(ValueError):
+        _account_labels({"accounts": {"nope": "X"}})             # unknown role
+    with pytest.raises(ValueError):
+        _account_labels({"accounts": "not-a-dict"})              # malformed declaration
+
+
+def test_7_per_finding_owner_key_selects_distinct_owner_credential(tmp_path, monkeypatch):
+    # Two runs, SAME attacker, but the op points the owner at DIFFERENT accounts -> distinct owner
+    # credentials reach owner_credential (no cross-run bleed).
+    cfg = _cfg_tokens(tmp_path,
+                      TARGET_ATTACKER_TOKEN="atk-tok",
+                      TARGET_OWNER_TOKEN="owner-default-tok",
+                      TARGET_OWNER2_TOKEN="owner-second-tok")
+    engA = _FakeEngine(_result())
+    _run(tmp_path, monkeypatch, engA, prompt=_prompts("u", "u"), op=_OP, cfg_path=cfg)
+    engB = _FakeEngine(_result())
+    _run(tmp_path, monkeypatch, engB, prompt=_prompts("u", "u"),
+         op={**_OP, "accounts": {"owner": "OWNER2"}}, cfg_path=cfg)
+
+    ownerA = engA.captured["owner_credential"].header_value
+    ownerB = engB.captured["owner_credential"].header_value
+    assert "owner-default-tok" in ownerA               # default op -> default owner account
+    assert "owner-second-tok" in ownerB                # accounts.owner=OWNER2 -> the second account
+    assert ownerA != ownerB                            # cross-run: distinct owners, NO bleed
+    # the attacker was the SAME account both runs (only the owner was redirected)
+    assert "atk-tok" in str(engA.captured["auth_context"])
+    assert "atk-tok" in str(engB.captured["auth_context"])
+
+
+def test_7_no_accounts_key_reads_default_owner_key_byte_identical(tmp_path, monkeypatch):
+    # BACK-COMPAT: an op with no `accounts` reads TARGET_OWNER_TOKEN, exactly like today.
+    cfg = _cfg_tokens(tmp_path, TARGET_ATTACKER_TOKEN="atk", TARGET_OWNER_TOKEN="owner-default")
+    eng = _FakeEngine(_result())
+    _run(tmp_path, monkeypatch, eng, prompt=_prompts("u", "u"), op=_OP, cfg_path=cfg)
+    assert "owner-default" in eng.captured["owner_credential"].header_value
+
+
+def test_identity_collision_reason_pairwise():
+    # pure helper: only DISTINCT-role collisions among PRESENT roles are flagged
+    assert _identity_collision_reason("A", None, None) is None            # attacker alone: fine
+    assert _identity_collision_reason("A", "B", "C") is None              # all distinct: fine
+    assert "SAME identity" in _identity_collision_reason("A", "A", None)  # attacker==owner
+    assert "SAME identity" in _identity_collision_reason("A", "B", "A")   # bystander==attacker
+    assert "SAME identity" in _identity_collision_reason("A", "B", "B")   # bystander==owner
+
+
+def test_7_fp_nail_attacker_equals_owner_is_refused_static(tmp_path, monkeypatch):
+    # THE FP NAIL: attacker and owner tokens IDENTICAL -> same identity -> the run must be REFUSED,
+    # never a verdict. The engine returns 'verified' — so if the guard were ABSENT this would
+    # render [CONFIRMED]. The test proves the engine NEVER runs and the exit is a fail-closed 2.
+    cfg = _cfg_tokens(tmp_path, TARGET_ATTACKER_TOKEN="IDENTICAL", TARGET_OWNER_TOKEN="IDENTICAL")
+
+    class _CountingVerifiedEngine:
+        def __init__(self):
+            self.calls = 0
+
+        async def __call__(self, **kw):
+            self.calls += 1
+            return _result(ai_verdict="verified")     # would CONFIRM if the guard were removed
+
+    eng = _CountingVerifiedEngine()
+    code, out = _run(tmp_path, monkeypatch, eng, prompt=_prompts("u", "u"), op=_OP, cfg_path=cfg)
+    assert code == 2                                  # REFUSED (fail-closed)
+    assert eng.calls == 0                             # engine NEVER ran -> no [CONFIRMED] path reachable
+    assert "[NOT DATA]" in out and "SAME identity" in out
+    assert "[CONFIRMED]" not in out                   # never a positive verdict
