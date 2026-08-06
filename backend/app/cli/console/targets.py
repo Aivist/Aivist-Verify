@@ -38,22 +38,31 @@ class Target:
     auth_spec_path: str = ""      # optional login-declaration path (auto-relogin)
 
     def to_op(self) -> Dict[str, object]:
-        """Build the op dict the engine consumes (the same shape external_verify uses).
-        path  -> baseline_path carries the attacker id in the PATH, payload=path_segment.
-        query -> baseline_path carries the attacker id in the QUERY, payload=query_param
-                 (D29: the baseline query id is carried and the attack swaps only it)."""
-        method = (self.method or "GET").upper()
-        if self.id_location == "query":
-            sep = "&" if "?" in self.path_template else "?"
-            baseline_path = f"{self.path_template}{sep}{self.id_param}={self.attacker_id}"
-            payload = {"location": "query_param", "target_param": self.id_param,
-                       "payload_string": self.victim_id, "type": "BOLA"}
-        else:
-            baseline_path = self.path_template.replace("{" + self.id_param + "}", self.attacker_id)
-            payload = {"location": "path_segment", "target_param": self.attacker_id,
-                       "payload_string": self.victim_id, "type": "BOLA"}
-        return {"method": method, "baseline_path": baseline_path, "body": None,
-                "payload": payload, "shape": f"console:{self.name}"}
+        """Build the op dict the engine consumes (the same shape external_verify uses)."""
+        return build_op(self.method, self.path_template, self.id_location, self.id_param,
+                        self.attacker_id, self.victim_id, shape=f"console:{self.name}")
+
+
+def build_op(method: str, path_template: str, id_location: str, id_param: str,
+             attacker_id: str, victim_id: str, *, shape: str) -> Dict[str, object]:
+    """Build the flat op dict the engine's `--op` consumes, from its parts. Shared by the
+    interactive `target` command and the `scan` auto-discovery onramp so BOTH produce the exact
+    same op schema (no second op-gen path).
+      path  -> baseline_path carries the attacker id in the PATH, payload=path_segment.
+      query -> baseline_path carries the attacker id in the QUERY, payload=query_param
+               (D29: the baseline query id is carried and the attack swaps only it)."""
+    method = (method or "GET").upper()
+    if id_location == "query":
+        sep = "&" if "?" in path_template else "?"
+        baseline_path = f"{path_template}{sep}{id_param}={attacker_id}"
+        payload = {"location": "query_param", "target_param": id_param,
+                   "payload_string": victim_id, "type": "BOLA"}
+    else:
+        baseline_path = path_template.replace("{" + id_param + "}", attacker_id)
+        payload = {"location": "path_segment", "target_param": attacker_id,
+                   "payload_string": victim_id, "type": "BOLA"}
+    return {"method": method, "baseline_path": baseline_path, "body": None,
+            "payload": payload, "shape": shape}
 
 
 def targets_dir() -> str:
