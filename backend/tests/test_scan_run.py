@@ -191,7 +191,7 @@ def test_do_scan_bystander_and_assert_route(tmp_path, monkeypatch):
     eng = _ScriptedEngine()
     lines = []
     ctl = ConsoleController(
-        prompt=_prompts(str(ids_path), "y"),                  # id-source file, then assert=yes
+        prompt=_prompts(str(ids_path), "", "y"),              # id-source file, login-file (blank), assert=yes
         secret_prompt=_prompts("atk-tok", "own-tok", "byst-tok"),   # attacker, owner, bystander
         echo=lambda *a: lines.append(" ".join(str(x) for x in a)),
         config_path=str(tmp_path / "no-config.toml"),

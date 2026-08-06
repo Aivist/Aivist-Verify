@@ -40,6 +40,19 @@ def _skip_record(cand: Dict[str, str], reason: str) -> Dict[str, Any]:
     }
 
 
+def _notdata_record(op: Dict[str, Any], reason: str) -> Dict[str, Any]:
+    """A NOT-DATA report row for a candidate whose confirm RUN failed (e.g. a --auth login/refresh
+    failure). The engine produced no verdict for it -> it groups under [NOT DATA], never a confirmed/
+    refuted verdict. Direction-safe: a per-candidate auth failure is a safe miss, not a verdict."""
+    return {
+        "shape": op.get("shape", "scan"),
+        "final_verdict": None, "status": "degraded", "degraded": True, "degraded_reason": reason,
+        "ground_truth": None,
+        "method": op.get("method"), "baseline_path": op.get("baseline_path"),
+        "attack_path": op.get("baseline_path"), "body": op.get("body"),
+    }
+
+
 async def run_scan(
     target: str, spec: Dict[str, Any], *,
     run_op: RunOp,
@@ -92,7 +105,14 @@ async def run_scan(
             dropped.append({"reason": "failed_op_fence", "op": op, "candidate": cand})
             logger.info("[SCAN] dropped op failing the final code fence: %r", op)
             continue
-        result = await run_op(op)                                  # the EXISTING confirm, unchanged
+        try:
+            result = await run_op(op)                              # the EXISTING confirm, unchanged
+        except Exception as ex:
+            # DIRECTION-SAFE: a per-candidate login/refresh/run failure -> NOT DATA for THIS candidate;
+            # the scan CONTINUES to the next. Auth wiring can never manufacture a verdict.
+            logger.info("[SCAN] candidate run failed (%s) -> NOT DATA, continuing", type(ex).__name__)
+            records.append(_notdata_record(op, f"{type(ex).__name__}: {ex}"))
+            continue
         records.append(_record_from_result(result, op, classify_degradation(result)))
 
     return {"records": records, "dropped": dropped, "skipped": skipped,

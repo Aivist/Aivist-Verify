@@ -516,17 +516,14 @@ class ConsoleController:
             except Exception as ex:
                 self.echo(f"  ! Could not parse the id-source file ({type(ex).__name__}); ignoring it.")
 
-        self.echo("Paste the two Bearer tokens (input hidden; the tool confirms receipt):")
-        attacker = self._confirming_secret("  Attacker token (input hidden): ")
-        owner = self._confirming_secret("  Owner/victim token (input hidden): ")
-        if not attacker or not owner:
-            self.echo("  ! scan needs BOTH an attacker and an owner token (the confirm compares them).")
-            return
-        bystander = self._ask_secret(
-            "Bystander / third-account token - OPTIONAL",
-            hint="A THIRD account that does NOT own the resource; leave blank to skip.",
-            why="Enables public-resource discrimination: without it scan can't tell a public resource "
-                "from a real cross-user leak. Used ONLY to re-read as the bystander, never to attack.")
+        # --auth (optional, 2b): a login-declaration file drives auto-relogin per candidate, so a token
+        # that expires mid-scan is refreshed (per-account, incl. D28 owner-only) and the candidate
+        # completes instead of dying to NOT DATA. Blank -> static tokens (today's scan, byte-identical).
+        auth_spec_path = self._ask_optional_login_file(
+            "Login file (optional) - auto-relogin",
+            hint="OPTIONAL path to a login-declaration JSON (multi-step / OAuth). Blank = paste tokens.",
+            why="With it, a token that expires mid-scan is re-obtained per-account so the candidate "
+                "still completes. Without it, an expired token makes that candidate NOT DATA.")
         assert_owner_only = self._ask_yes_no(
             "Treat discovered resources as owner-private (broken-for-all disclosure)?", default=False,
             why="With it, a resource EVERY authenticated user can read (but anonymous cannot) is "
@@ -535,35 +532,98 @@ class ConsoleController:
         # Lazy imports (avoid pulling the engine at module import; keep the console light).
         import asyncio
         from pydantic import SecretStr
+        from backend.app.cli import relogin
         from backend.app.cli.external_verify import (
-            _verify_external, _resolve_bystander_token,
+            _verify_external, _verify_external_relogin, _resolve_bystander_token,
+            _build_relogin_providers, _identity_collision_reason,
         )
         from backend.app.services.deep_verifier import OwnerCredential, execute_deep_verification
         from backend.app.cli.scan_run import run_scan
         from backend.app.cli.scan_report import render_scan_report
 
         settings.AI_DEEP_VERIFY_ENABLED = True                       # runtime-only, mirrors verify
-        attacker_tok, owner_tok = SecretStr(attacker), SecretStr(owner)
-        # a prompted bystander overrides the config-file one; EITHER way it routes ONLY into
-        # bystander_credential (never the attack path) via _verify_external below.
-        bystander_tok = SecretStr(bystander) if bystander else _resolve_bystander_token(self.config_path)
         engine = self.engine or execute_deep_verification
         model = settings.LLM_MODEL or None
-
-        async def run_op(op):
-            return await _verify_external(t.base_url, spec, op, attacker_tok, owner_tok, model, engine,
-                                          bystander_tok=bystander_tok)
-
         kw = {}
         if self.scan_provider_factory is not None:
             kw["provider_factory"] = self.scan_provider_factory
-        self.echo(f"Scanning {t.base_url} - discovering BOLA candidates and confirming each...")
-        try:
-            result = asyncio.run(run_scan(
+
+        if auth_spec_path:
+            # RE-LOGIN scan: the THREE per-account TokenProviders are built ONCE and REUSED across every
+            # candidate (option a) — a token obtained for candidate 1 is reused for candidate 2 and
+            # refreshed only on 401. Each account keeps its OWN provider/session (identity isolation).
+            try:
+                login_spec = relogin.LoginSpec.from_file(auth_spec_path)
+                attacker_cred, owner_cred = relogin.resolve_login_credentials(
+                    self.config_path, self.prompt, self._confirming_secret)
+                bystander_cred = relogin.resolve_bystander_login_credential(self.config_path)
+            except Exception as ex:
+                self.echo(f"  ! could not set up --auth re-login: {type(ex).__name__}: {ex}")
+                return
+            reason = _identity_collision_reason(
+                attacker_cred.username, owner_cred.username,
+                bystander_cred.username if bystander_cred is not None else None)
+            if reason:
+                self.echo(f"  ! {reason}")               # attacker == owner -> refused (fail-closed)
+                return
+            providers = _build_relogin_providers(
+                t.base_url, login_spec, attacker_cred, owner_cred, bystander_cred)
+
+            async def _orchestrate():
+                atk_p, own_p, bys_p = providers
+                atk_tok = await atk_p.token()             # login ONCE per account (primes the cache)
+                own_tok = await own_p.token()
+                bys_tok = await bys_p.token() if bys_p is not None else None
+                r = _identity_collision_reason(atk_tok, own_tok, bys_tok)
+                if r:
+                    raise ValueError(r)
+
+                async def run_op(op):
+                    # the SAME single-op relogin call verify uses, REUSING the persisted providers
+                    # (refresh-on-401 mid-scan, incl. D28 owner-only) — no re-login from scratch.
+                    return await _verify_external_relogin(
+                        t.base_url, spec, op, login_spec, attacker_cred, owner_cred, model, engine,
+                        bystander_cred=bystander_cred, providers=providers)
+
+                return await run_scan(
+                    t.base_url, spec, run_op=run_op, id_map=id_map, collections=collections,
+                    harvest_attacker_cred=OwnerCredential.from_config(atk_tok),   # attacker harvest ONLY
+                    harvest_owner_cred=OwnerCredential.from_config(own_tok),      # owner harvest ONLY
+                    model=model, assert_owner_only=assert_owner_only, **kw)
+
+            self.echo(f"Scanning {t.base_url} (auto-relogin) - discovering + confirming each candidate...")
+            run_coro = _orchestrate()
+        else:
+            # STATIC-token scan (today): paste attacker/owner tokens + an optional bystander token.
+            self.echo("Paste the two Bearer tokens (input hidden; the tool confirms receipt):")
+            attacker = self._confirming_secret("  Attacker token (input hidden): ")
+            owner = self._confirming_secret("  Owner/victim token (input hidden): ")
+            if not attacker or not owner:
+                self.echo("  ! scan needs BOTH an attacker and an owner token (the confirm compares them).")
+                return
+            bystander = self._ask_secret(
+                "Bystander / third-account token - OPTIONAL",
+                hint="A THIRD account that does NOT own the resource; leave blank to skip.",
+                why="Enables public-resource discrimination: without it scan can't tell a public resource "
+                    "from a real cross-user leak. Used ONLY to re-read as the bystander, never to attack.")
+            attacker_tok, owner_tok = SecretStr(attacker), SecretStr(owner)
+            # a prompted bystander overrides the config-file one; EITHER way it routes ONLY into
+            # bystander_credential (never the attack path) via _verify_external below.
+            bystander_tok = SecretStr(bystander) if bystander else _resolve_bystander_token(self.config_path)
+
+            async def run_op(op):
+                return await _verify_external(t.base_url, spec, op, attacker_tok, owner_tok, model,
+                                              engine, bystander_tok=bystander_tok)
+
+            self.echo(f"Scanning {t.base_url} - discovering BOLA candidates and confirming each...")
+            run_coro = run_scan(
                 t.base_url, spec, run_op=run_op, id_map=id_map, collections=collections,
                 harvest_attacker_cred=OwnerCredential.from_config(attacker),   # attacker harvest creds ONLY
                 harvest_owner_cred=OwnerCredential.from_config(owner),         # owner harvest creds ONLY
-                model=model, assert_owner_only=assert_owner_only, **kw))
+                model=model, assert_owner_only=assert_owner_only, **kw)
+
+        try:
+            result = asyncio.run(run_coro)
         except Exception as ex:
             self.echo(f"  ! scan run error against {t.base_url}: {type(ex).__name__}: {ex}")
             return

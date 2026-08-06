@@ -407,12 +407,33 @@ def _owner_view_auth_degraded(result: Any) -> bool:
     return getattr(result, "owner_view_status", None) == 401
 
 
+def _build_relogin_providers(
+    target: str, login_spec: relogin.LoginSpec, attacker_cred: relogin.Credential,
+    owner_cred: relogin.Credential, bystander_cred: Optional[relogin.Credential] = None,
+    *, http_post=None, session_factory=None,
+):
+    """Build the THREE independent per-account TokenProviders (attacker/owner/[bystander]) — each its
+    OWN provider + client + session + captured store, ZERO state shared across accounts (the identity-
+    isolation weld from relogin). Shared by the single-op relogin path (builds them per call) and the
+    scan loop (builds them ONCE and REUSES them across candidates, so a token obtained for candidate 1
+    is reused for candidate 2 and refreshed only on 401)."""
+    scope = ScopePolicy.from_declaration([_approved_host(target)])
+    attacker = relogin.TokenProvider(attacker_cred, login_spec, target, scope,
+                                     http_post=http_post, session_factory=session_factory)
+    owner = relogin.TokenProvider(owner_cred, login_spec, target, scope,
+                                  http_post=http_post, session_factory=session_factory)
+    bystander = (relogin.TokenProvider(bystander_cred, login_spec, target, scope,
+                                       http_post=http_post, session_factory=session_factory)
+                 if bystander_cred is not None else None)
+    return attacker, owner, bystander
+
+
 async def _verify_external_relogin(
     target: str, spec: Dict[str, Any], op: Dict[str, Any],
     login_spec: relogin.LoginSpec, attacker_cred: relogin.Credential,
     owner_cred: relogin.Credential, model: Optional[str], engine: Callable,
     *, http_post=None, bystander_cred: Optional[relogin.Credential] = None,
-    session_factory=None,
+    session_factory=None, providers=None,
 ) -> Any:
     """Obtain the tokens by INDEPENDENT logins (separate providers / clients / credentials —
     red line 1), feed them into the SAME `_verify_external` engine call the static path uses, and
@@ -426,15 +447,19 @@ async def _verify_external_relogin(
 
     `session_factory` (OPTIONAL) is threaded to each account's TokenProvider for the multi-step
     login path (slice 2c); default None => the real per-account httpx session. It is a test seam
-    only — each account still gets its OWN provider, so its own session/client (identity isolation)."""
-    scope = ScopePolicy.from_declaration([_approved_host(target)])
-    attacker = relogin.TokenProvider(attacker_cred, login_spec, target, scope,
-                                     http_post=http_post, session_factory=session_factory)
-    owner = relogin.TokenProvider(owner_cred, login_spec, target, scope,
-                                  http_post=http_post, session_factory=session_factory)
-    bystander = (relogin.TokenProvider(bystander_cred, login_spec, target, scope,
-                                       http_post=http_post, session_factory=session_factory)
-                 if bystander_cred is not None else None)
+    only — each account still gets its OWN provider, so its own session/client (identity isolation).
+
+    `providers` (OPTIONAL): a pre-built (attacker, owner, bystander) TokenProvider tuple to REUSE
+    across calls (the scan loop builds them ONCE via `_build_relogin_providers` so a token obtained for
+    candidate 1 is reused for candidate 2 and refreshed only on 401 — option (a)). Default None =>
+    build fresh per call (the single-op path, BYTE-IDENTICAL). EITHER way each account keeps its OWN
+    provider — never shared across accounts, so the owner token can only ever be this owner's identity."""
+    if providers is None:
+        attacker, owner, bystander = _build_relogin_providers(
+            target, login_spec, attacker_cred, owner_cred, bystander_cred,
+            http_post=http_post, session_factory=session_factory)
+    else:
+        attacker, owner, bystander = providers
 
     attacker_tok = SecretStr(await attacker.token())      # fresh login (proactive, near-expiry aware)
     owner_tok = SecretStr(await owner.token())
