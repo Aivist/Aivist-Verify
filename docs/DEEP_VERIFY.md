@@ -93,7 +93,7 @@ Only stable, side-effect-free helpers are imported from `fuzzer.py`:
 - `ScopeViolationError` for host lock enforcement
 
 No changes to the fuzzer's verdict path; the rule-oracle tests stay green (backend
-suite: **662 passed** — see [`STATUS.md`](./STATUS.md)).
+suite: **669 passed** — see [`STATUS.md`](./STATUS.md)).
 
 ---
 

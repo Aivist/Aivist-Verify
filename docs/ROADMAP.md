@@ -34,8 +34,8 @@
 > what's rejected." It owns **status, ordering, and decisions**; **code facts** (test counts, shipped
 > modules, commit hashes) live in [`STATUS.md`](./STATUS.md). Every `DONE` below was **re-verified
 > against the repo on 2026-08-03** (the multi-step-auth commit **`675835ff`** confirmed against its
-> touched files); the **backend suite is 662 passed as of 2026-08-05** (presentation cut A + WAF
-> Part 1/2 + broken-for-all disclosure + multi-step/CSRF login landed since — see ✅ DONE). Sections §1–§8 below are the
+> touched files); the **backend suite is 669 passed as of 2026-08-05** (presentation cut A + WAF
+> Part 1/2 + broken-for-all disclosure + multi-step/CSRF login + D25 IP-pinning landed since — see ✅ DONE). Sections §1–§8 below are the
 > detailed rationale the board summarizes; the tags here win for status.
 
 ### ✅ DONE (re-verified against code)
@@ -198,10 +198,10 @@ Operator front door (this node's line — all re-verified 2026-08-02):
   functional change requiring re-validation, kept separate).
 - **D1 — no Alembic migrations** (`docs/TECH_DEBT.md:28`) — a startup schema-guard exists; a schema
   change means recreating / repointing the DB by hand. *Trigger:* if schemas start churning.
-- **D25 — DNS-TOCTOU IP-pinning follow-up** (`docs/TECH_DEBT.md:829`) — a known scope-lock **residual**:
-  the resolved-IP guard resolves+validates before the request, but httpx re-resolves at connect time
-  (a small time-of-check-to-time-of-use window); httpx has no clean resolver hook. **SAFE-direction,
-  non-blocking → post-launch.** *Trigger:* hardening before untrusted remote rebinding scenarios.
+- **D25 — DNS-TOCTOU IP-pinning — ✅ RESOLVED** (commit `06bdba8`; TECH_DEBT D25). The connection is now
+  pinned to the scope-validated IP (`ScopeDecision.resolved_ips`) with `Host`/SNI preserved, so httpx does
+  NOT re-resolve at connect time — the time-of-check-to-time-of-use window is closed (redirect hops pinned
+  too). SAFE-direction: pinning can only restrict; a stale/unreachable pin → NOT DATA, never a false positive.
 - **D24 — three open read-gate boundaries** (`docs/TECH_DEBT.md:426`), listed explicitly so they are not
   lost: (a) **public / shared resources** legitimately return the same content to both identities, so the
   downgrade-only owner-view gate permits them (no upstream exclusion); (b) **owner credentials are
@@ -456,9 +456,9 @@ forced it to be narrowed** — a real false positive found and closed, not a hyp
    with it: a unified run-time `scope`+`model` declaration (`approved_host` a legacy alias);
    over-broad-wildcard rejection via a vendored Public Suffix List; port rules; the adversarial
    suite (substring / protocol-relative / userinfo / IDN / IP-encoding tricks); and SecretStr key
-   privacy so no secret leaks via repr/log/serialization. **Honest residuals (recorded, not
-   closed):** IP-pinning is a follow-up — a small DNS TOCTOU window remains (TECH_DEBT.md D25); the
-   0.95 read-gate threshold stays unvalidated against real-target volatility. *(Relates to
+   privacy so no secret leaks via repr/log/serialization. **Residuals:** IP-pinning is now **✅ DONE**
+   (the DNS TOCTOU window is closed — connection pinned to the scope-validated IP, `06bdba8` / TECH_DEBT
+   D25); the 0.95 read-gate threshold stays unvalidated against real-target volatility. *(Relates to
    TECH_DEBT.md D2 — no-auth; the scope-lock is a traffic-EGRESS guardrail, NOT authentication.)*
 
 > **Prove the shadow path (✅ done, D22, `37769b3`):** the verifier's integration is now a
@@ -545,8 +545,9 @@ shape, the decisive-evidence standard in the prompt must learn it too, or the tw
 - **Scope-lock hardening — ✅ DONE (§4 node 3):** the duplicated host-scope checks are converged
   onto one audited `ScopePolicy` (active `_send_request` chokepoint: fail-closed + per-hop redirect
   + resolved-IP DNS-rebinding guard; the passive proxy shares the same matcher), with the
-  adversarial suite + a one-decision-tree test + SecretStr key privacy. Residual: IP-pinning
-  follow-up to close a small DNS TOCTOU window (TECH_DEBT.md D25).
+  adversarial suite + a one-decision-tree test + SecretStr key privacy. IP-pinning follow-up now
+  **✅ DONE** — the connection is pinned to the scope-validated IP, closing the DNS TOCTOU window
+  (commit `06bdba8`, TECH_DEBT.md D25).
 - **The UUID wall — mechanism present; needs only real-UUID-target validation (not blocking).** Object
   ids in real APIs are frequently UUIDs, which cannot be enumerated by incrementing; the design is that the
   **user supplies the victim's alternative IDs** (no guessing). The engine already handles UUID object-ids

@@ -8,7 +8,7 @@
 > affects coverage, not the claim.
 >
 > **Method.** Ground truth built from code (trusted over docs); full suite run. **Baseline at audit:
-> backend `pytest` = 587 passed, 2 benign third-party warnings** (now **662 passed** as of 2026-08-05).
+> backend `pytest` = 587 passed, 2 benign third-party warnings** (now **669 passed** as of 2026-08-05).
 > Re-verify before relying on any line number — code moves.
 >
 > **The claim being protected:** *zero false positives on private / authorization-gated resources,
@@ -84,10 +84,12 @@ These do **not** threaten the zero-FP claim; they bound which real targets the t
 - **Per-deployment, not per-finding credentials.** Owner and now bystander creds are one-per-deployment
   ([config.py:218](../backend/app/core/config.py:218), [config.py:238](../backend/app/core/config.py:238));
   a target whose findings belong to different owners is unsupported (D24 boundary 2). Direction: SAFE.
-- **D25 — DNS-rebinding TOCTOU.** `ScopePolicy.check` resolves + validates the IP
-  ([scope.py:361](../backend/app/services/scope.py:361), [scope.py:420](../backend/app/services/scope.py:420)),
-  but httpx re-resolves at connect time — a small time-of-check/time-of-use window; no IP pinning. See
-  `TECH_DEBT.md` D25. Direction: SAFE (a containment residual, not a verdict FP).
+- **D25 — DNS-rebinding TOCTOU — ✅ RESOLVED (commit `06bdba8`).** Was: `ScopePolicy.check` resolved +
+  validated the IP but httpx re-resolved at connect time — a small time-of-check/time-of-use window; no
+  IP pinning. Now `check()` returns the validated IP(s) (`ScopeDecision.resolved_ips`) and `_send_request`
+  dials that pinned validated IP with `Host`/SNI preserved, so there is **no connect-time re-resolution**
+  and the TOCTOU window is closed (redirect hops pinned too). See `TECH_DEBT.md` D25. Direction: SAFE
+  (pinning can only restrict; a stale/unreachable pin → NOT DATA, never a verdict FP).
 - **Multi-step auth — deeper slices.** Login/relogin slice 1 is done (body/header/cookie token
   extraction, independent providers); OAuth-redirect / MFA / CSRF round-trips are out. Related: **D28** —
   a mid-run owner-view 401 is not refreshed ([external_verify.py:316](../backend/app/cli/external_verify.py:316));
@@ -106,7 +108,7 @@ These do **not** threaten the zero-FP claim; they bound which real targets the t
 - **Rule-oracle heuristic thresholds are arbitrary.** Length-deviation cutoffs 0.05 / 0.1 / 0.15
   ([fuzzer.py:822](../backend/app/services/fuzzer.py:822) onward) are unvalidated magic numbers on the
   triage layer. Direction: DANGEROUS on the rule-oracle-only path (see Tier 1), boundary otherwise.
-- **Doc drift (test counts).** Several docs stated stale backend counts (507 / 523 / 587 / 647; actual **662**
+- **Doc drift (test counts).** Several docs stated stale backend counts (507 / 523 / 587 / 647 / 662; actual **669**
   as of 2026-08-05) and a stale lab count (14; actual 31). Corrected in companion drift-alignment commits;
   historical deltas (e.g. "Suite 507→510") left verbatim.
 

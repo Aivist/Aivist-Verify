@@ -85,7 +85,7 @@
   been removed entirely.)
 - **Where:** `backend/tests/test_api_endpoints.py` (API smoke); `test_step9_proxy.py`
   (proxy radar, Step 9); plus pruner, custody, Step D extraction in other files.
-  Total backend suite: **662 tests**. See [`STATUS.md`](./STATUS.md).
+  Total backend suite: **669 tests**. See [`STATUS.md`](./STATUS.md).
 - **Covered:** FastAPI `TestClient` over isolated per-test SQLite with Gemini and
   background fuzzing mocked — analyze (200 + 422), findings persist (201 + 422),
   verify/batch 404s, health check. **Step 9:** WriterService serialization, SSEHub
@@ -810,7 +810,7 @@
 - **Why open:** hard prerequisite before pointing at anything beyond localhost / self-built
   labs (relates to D2 — no auth).
 
-### D25 — Scope-lock hardening — ✅ RESOLVED (IP-pinning follow-up open)
+### D25 — Scope-lock hardening — ✅ RESOLVED (incl. IP-pinning; DNS-rebinding TOCTOU closed)
 - **Status: ✅ RESOLVED.** Node-3 scope-lock hardening landed as six commits
   (`2b6e457` → `633c015`). ALL host-scope decisions now go through ONE audited `ScopePolicy`
   (`backend/app/services/scope.py`), replacing the former duplicated `_host_of` checks.
@@ -830,14 +830,21 @@
   protocol-relative / userinfo / trailing-dot / IDN / decimal+hex IP encodings); and SecretStr
   wrapping of the API key + owner-auth + ingest token (no repr/log/serialization leak; verifiable
   no-leak test).
-- **OPEN FOLLOW-UP — IP-pinning (the DNS TOCTOU window).** The resolved-IP guard currently does
-  *resolve+validate*: it resolves the declared name and validates the IP class BEFORE the request,
-  but httpx re-resolves at connect time, leaving a small time-of-check-to-time-of-use window a fast
-  DNS-rebinding attacker could exploit. Recorded httpx judgment: clean IP-pinning has no public
-  resolver hook and forcing it breaks TLS SNI / cert validation, so fragile pinning was deliberately
-  kept OUT of the core network path for v1. **Follow-up:** pin the validated IP for the connection
-  (a custom transport/resolver) to close the window. Not yet built. The verdict core is untouched by
-  any of the scope-lock work.
+- **✅ RESOLVED — IP-pinning (the DNS TOCTOU window is now CLOSED; commit `06bdba8`).** The resolved-IP
+  guard did *resolve+validate* before the request, but httpx re-resolved at connect time — a small
+  time-of-check-to-time-of-use window a fast DNS-rebinding attacker could exploit (validate a public IP,
+  flip DNS, connect to an internal IP). Now `ScopePolicy.check()` RETURNS the validated IP(s) it approved
+  (`ScopeDecision.resolved_ips`), and `_send_request` DIALS that pinned validated IP directly (via
+  `_pin_kwargs`) instead of letting httpx re-resolve the name — with the `Host` header and TLS SNI
+  preserved, so the app still sees the hostname (routing byte-identical). The earlier httpx concern (no
+  public resolver hook; forcing the IP breaks SNI/cert) is sidestepped by the connect-to-IP + Host/SNI-
+  preserve approach under the engine's `verify=False` posture (D13) — no fragile resolver surgery needed.
+  Each redirect hop resolves against the LOGICAL hostname and is itself pinned, so redirects are
+  TOCTOU-closed too; IP-literal / intranet / unlocked targets carry no pin (byte-identical). **Direction-
+  safe:** pinning can ONLY restrict the connection to an already-validated address — a stale/unreachable
+  pin → connection error → NOT DATA, never a false positive. The verdict core is untouched (scope/connect
+  layer only). Load-bearing test: a check-time public IP + a connect-time internal IP proves the
+  connection is pinned to the public IP and the rebind is never reached (and it FAILS for a no-pin impl).
 
 ### D26 — API_HOST default bound to ALL interfaces (N5) — ✅ RESOLVED (hardened to loopback)
 - **Status: ✅ RESOLVED.** `API_HOST` now defaults to **`127.0.0.1`** (loopback) in
@@ -937,7 +944,7 @@
 - **Validation.** 24 offline tests with independent ground truth
   (`backend/tests/test_d30_public_resource.py`): known-public → suppressed; known-private BOLA → still
   confirmed; ambiguous / soft-deny → fails safe to private (still confirmed); the probe is proven
-  custody-free, GET-only, and scope-locked. Backend suite **587 passed** (at the D30 commit; **662** as
+  custody-free, GET-only, and scope-locked. Backend suite **587 passed** (at the D30 commit; **669** as
   of this doc update). The community-post assertion was reproduced against a **FAITHFUL crAPI-shaped
   response driving the real engine** (crAPI itself was NOT booted here): the public community post flips
   **CONFIRMED → not-confirmed**. **CORRECTION (order endpoint).** The companion fixture — "the private
@@ -1101,8 +1108,8 @@
    this engine's false-positive / reproducibility rate. The "can it be sold" evidence.
 6. **Scope-lock hardening — ✅ DONE (see D25).** One audited `ScopePolicy` governs active +
    passive host decisions (fail-closed + per-hop redirect + resolved-IP guard; the proxy shares the
-   matcher); unified `scope`+`model` declaration; SecretStr key privacy. Residual: IP-pinning
-   follow-up (small DNS TOCTOU window). **D5** — keep `preview_dashboard.html`, retire `frontend/`.
+   matcher); unified `scope`+`model` declaration; SecretStr key privacy. IP-pinning follow-up (the DNS
+   TOCTOU window) now **✅ CLOSED** (commit `06bdba8`). **D5** — keep `preview_dashboard.html`, retire `frontend/`.
 
 ### Deferred — NOT in the active line (unlock condition: the benchmark above proves commercialization is worth it)
 - **D2 (auth)**, multi-tenancy, **D1 (Alembic migrations)**, hosted/enterprise deployment.

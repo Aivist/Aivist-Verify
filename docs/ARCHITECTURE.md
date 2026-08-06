@@ -96,7 +96,7 @@ anti gravity/
 │  │     └─ endpoint_catalog.py   # D18: OpenAPI → "METHOD /path [tags/operationId]" catalog + write-record queries (B-1)
 │  ├─ scripts/
 │  │  └─ deep_verify_live_check.py  # Manual Gemini+target check (not pytest)
-│  └─ tests/                      # pytest (662): pruner, step8_custody, scope (+enforcement),
+│  └─ tests/                      # pytest (669): pruner, step8_custody, scope (+enforcement),
 │                                 # step_d_hunter_link, api_endpoints, step9_proxy, verdict_oracle,
 │                                 # endpoint_catalog, d18_phase2_crosspath, d18_b22_guard, d18_b1_write_record,
 │                                 # d18_b1_shadow_integration, m1_evidence_anchoring, m12_object_scope,

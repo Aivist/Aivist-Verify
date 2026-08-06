@@ -69,17 +69,17 @@ the earlier single-target record (140 SAFE / 70 VULN, one target), kept as histo
 
 | Suite | Command (from repo root) | Result |
 |---|---|---|
-| Backend | `python -m pytest backend/tests -q` | **662 passed** |
+| Backend | `python -m pytest backend/tests -q` | **669 passed** |
 | Ground-truth target (`vulnerable_target`, integer-id) | `python -m pytest vulnerable_target -q` | **31 passed** |
 | Ground-truth target (`depot_target`, UUID-id) | `python -m pytest depot_target -q` | **23 passed** |
 
 > Re-verified against the repo 2026-08-05 (backend suite run). The backend count was **473** while
-> only the confirmer spine had landed; it is now **662** after the presentation pass, entry point,
+> only the confirmer spine had landed; it is now **669** after the presentation pass, entry point,
 > config flow, `config.py` user-config source, the external real-target path, YAML `--spec` support,
 > the `--auth` auto-relogin path, the real-target WAF/rate-limit challenge circuit breaker (Part 1) +
 > the 200-status challenge-page corroboration guard (Part 2), the presentation-deepening **cut A**
-> (claim-tiering + walkable evidence chain), the opt-in **broken-for-all** disclosure, and the
-> **multi-step / CSRF login** (slice 2c) below.
+> (claim-tiering + walkable evidence chain), the opt-in **broken-for-all** disclosure, the
+> **multi-step / CSRF login** (slice 2c), and **D25 IP-pinning** (DNS-rebinding TOCTOU closed) below.
 
 ## Operator front door — CLI, packaging, config, external targets (code facts, re-verified 2026-08-02)
 
@@ -278,7 +278,7 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
 |---|---|---|
 | **1. Judge correctly (= M1)** | Never a false verdict; confirm the hard case across *shapes* | **✅ COMPLETE — 5 shapes confirmed, 0 FP.** See the M1 breakdown below. |
 | **2. Act** (`D19`) | Promote the AI verdict from observe-only/log to **authoritative** | **✅ IMPLEMENTED, default OFF, acceptance-passed.** Promotion writes `suspicious→verified` only under a deterministic authorizer (four channels or the D24 owner-view corroboration); clean 430/430 vs the golden record, 0 SAFE promoted. Not on by default — shadow stays shipped; enabling on real targets still gated on Node 3. |
-| **3. Be safe on real targets** | Consolidate scope-lock checks + adversarial tests before any non-localhost use | **✅ SCOPE-LOCK HARDENING COMPLETE.** One audited `ScopePolicy` governs ALL host decisions — active (`_send_request`: fail-closed + per-hop redirect + resolved-IP rebinding guard) AND passive (proxy/pruner share the SAME matcher). Unified `scope`+`model` declaration; SecretStr key privacy; adversarial + one-decision-tree tests. **Residuals (recorded, not closed):** IP-pinning is a follow-up (small DNS TOCTOU window remains — TECH_DEBT D25); the 0.95 read-gate threshold is still unvalidated against real-target volatility. Enabling promotion on a real target still also waits on model/target diversity. |
+| **3. Be safe on real targets** | Consolidate scope-lock checks + adversarial tests before any non-localhost use | **✅ SCOPE-LOCK HARDENING COMPLETE.** One audited `ScopePolicy` governs ALL host decisions — active (`_send_request`: fail-closed + per-hop redirect + resolved-IP rebinding guard) AND passive (proxy/pruner share the SAME matcher). Unified `scope`+`model` declaration; SecretStr key privacy; adversarial + one-decision-tree tests. **IP-pinning now ✅ DONE** — the connection is pinned to the scope-validated IP (Host/SNI preserved; no connect-time re-resolution), closing the DNS-rebinding TOCTOU window (commit `06bdba8`, TECH_DEBT D25). **Remaining residual:** the 0.95 read-gate threshold is still unvalidated against real-target volatility; enabling promotion on a real target still also waits on model/target diversity. |
 
 ### M1 — Verifiable benchmark & reference engine (generalize across shapes, zero FP)
 
@@ -533,5 +533,6 @@ deployment — parked until a benchmark justifies them.
    (`_send_request`: fail-closed + per-hop redirect + resolved-IP DNS-rebinding guard) AND
    passive (proxy/pruner) host decisions; unified `scope`+`model` declaration; over-broad-wildcard
    rejection (vendored PSL); SecretStr key privacy; adversarial + one-decision-tree tests.
-   Residual: IP-pinning follow-up (small DNS TOCTOU window) — see TECH_DEBT D25. Still before a
+   IP-pinning follow-up now **✅ DONE** — the connection is pinned to the scope-validated IP, closing
+   the DNS TOCTOU window (commit `06bdba8`, TECH_DEBT D25). Still before a
    real target: model/target diversity; retire the legacy `frontend/` (D5).
