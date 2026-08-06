@@ -492,6 +492,7 @@ def run_external_verify(
     err: Optional[Callable[..., None]] = None,
     auth_spec_path: Optional[str] = None,
     http_post=None,
+    bystander_token: Optional[str] = None,
 ) -> int:
     """Run `verify` against a locally-run external real target. Returns a process exit code
     (0 nothing confirmed · 1 confirmed · 2 NOT DATA / input error). I/O is injectable for
@@ -580,8 +581,12 @@ def run_external_verify(
         except Exception as e:
             err(f"[NOT DATA] no usable attacker token: {e}")
             return 2
-        bystander_tok = _resolve_bystander_token(
-            cfg, bystander_key=f"TARGET_{labels['bystander']}_TOKEN")   # config-file only; None => no bystander
+        # A prompted bystander token (interactive `verify`/`scan`) overrides the config-file one; when
+        # absent, the config-file bystander (label-keyed) is used. EITHER way it routes ONLY into
+        # bystander_credential below (never auth_context / owner_credential) — the same D30 path.
+        bystander_tok = (SecretStr(bystander_token.strip()) if (bystander_token or "").strip()
+                         else _resolve_bystander_token(
+                             cfg, bystander_key=f"TARGET_{labels['bystander']}_TOKEN"))
         # #7 FP NAIL (static): DISTINCT identities required. attacker==owner -> the D24 owner-view
         # corroborates self-vs-self -> false [CONFIRMED]. Refuse BEFORE any verdict (fail-closed).
         _reason = _identity_collision_reason(

@@ -233,7 +233,8 @@ def test_verify_confirms_and_confirms_token_receipt(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("k"))
     monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", False)
     (tmp_path / "s.json").write_text('{"openapi":"3.0.0","paths":{}}', encoding="utf-8")
-    c, lines = _ctrl(tmp_path, monkeypatch, secret=_scripted(["Bearer atk", "Bearer own"]),
+    # secret order (2a): bystander (blank -> skip), then attacker, then owner.
+    c, lines = _ctrl(tmp_path, monkeypatch, secret=_scripted(["", "Bearer atk", "Bearer own"]),
                      engine=_fake_engine())
     c.selected = tg.Target(name="t", base_url="http://localhost:8888", spec_path=str(tmp_path / "s.json"),
                            method="GET", path_template="/api/orders/{id}", id_location="path",
@@ -242,6 +243,111 @@ def test_verify_confirms_and_confirms_token_receipt(tmp_path, monkeypatch):
     out = "\n".join(lines)
     assert "CONFIRMED" in out and "verified" in out.lower()  # verdict from the engine
     assert "received (" in out                               # token receipt confirmed (masked)
+
+
+# ------------------------------------------------------------------ 2a: bystander / assert_owner_only / #7 labels
+def _capturing_engine(**over):
+    """A fake engine that RECORDS the kwargs of its last call (for asserting routing)."""
+    cap = {}
+    base = dict(
+        status="completed", ai_verdict="verified", ai_verdict_raw="verified", guard_override=None,
+        degraded_reason=None, caller_identity_anchor=None, payload_causality_anchor=None,
+        state_jump_anchor=None, negative_assertion_anchor=None, anchoring_result=None,
+        pre_flight_status=None, owner_view_corroborated=True, owner_view_status=None,
+        owner_view_body=None, follow_up_response=None, follow_up_request=None,
+        baseline={"response": {"status_code": 200}}, attack={"response": {"status_code": 200}})
+    base.update(over)
+
+    async def eng(**kw):
+        cap.clear()
+        cap.update(kw)
+        return types.SimpleNamespace(**base)
+
+    eng.captured = cap
+    return eng
+
+
+def _verify_target(tmp_path):
+    (tmp_path / "s.json").write_text('{"openapi":"3.0.0","paths":{}}', encoding="utf-8")
+    return tg.Target(name="t", base_url="http://localhost:8888", spec_path=str(tmp_path / "s.json"),
+                     method="GET", path_template="/api/orders/{id}", id_location="path",
+                     id_param="id", attacker_id="8", victim_id="7")
+
+
+def test_verify_bystander_prompt_masked_and_routes_to_bystander_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("k"))
+    monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", False)
+    from backend.app.services.deep_verifier import OwnerCredential
+    eng = _capturing_engine()
+    # secret order: bystander, attacker, owner
+    c, lines = _ctrl(tmp_path, monkeypatch,
+                     secret=_scripted(["BYST-CANARY-999", "Bearer atk", "Bearer own"]), engine=eng)
+    c.selected = _verify_target(tmp_path)
+    c.dispatch("verify")
+    out = "\n".join(lines)
+    bys = eng.captured["bystander_credential"]
+    assert isinstance(bys, OwnerCredential) and "BYST-CANARY-999" in bys.header_value  # -> bystander_credential
+    assert "BYST-CANARY-999" not in str(eng.captured["auth_context"])                  # NEVER the attack path
+    assert "BYST-CANARY-999" not in eng.captured["owner_credential"].header_value      # nor owner
+    assert "BYST-CANARY-999" not in out                                                # masked, never echoed
+
+
+def test_verify_assert_owner_only_yes_sets_op_flag(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("k"))
+    monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", False)
+    eng = _capturing_engine()
+    c, lines = _ctrl(tmp_path, monkeypatch, prompt=_scripted(["y"]),   # assert=yes; account-labels="" -> no
+                     secret=_scripted(["", "Bearer atk", "Bearer own"]), engine=eng)
+    c.selected = _verify_target(tmp_path)
+    c.dispatch("verify")
+    assert eng.captured["assert_owner_only"] is True
+
+
+def test_verify_defaults_are_byte_identical(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("k"))
+    monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", False)
+    eng = _capturing_engine()
+    c, lines = _ctrl(tmp_path, monkeypatch, secret=_scripted(["", "Bearer atk", "Bearer own"]), engine=eng)
+    c.selected = _verify_target(tmp_path)
+    c.dispatch("verify")
+    assert eng.captured["assert_owner_only"] is False          # default No
+    assert eng.captured["bystander_credential"] is None        # blank bystander -> none (D30 off)
+
+
+def test_verify_cli_selected_attacker_equals_owner_label_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("k"))
+    monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", False)
+    # both roles point at the SAME label -> the SAME config key -> the SAME token -> must be REFUSED.
+    (tmp_path / "config.toml").write_text('TARGET_SAME_TOKEN = "identical-tok"\n', encoding="utf-8")
+    (tmp_path / "s.json").write_text('{"openapi":"3.0.0","paths":{}}', encoding="utf-8")
+
+    calls = {"n": 0}
+    base = _fake_engine()
+
+    async def eng(**kw):
+        calls["n"] += 1
+        return await base(**kw)
+
+    # prompt: assert=n, use-labels=y, attacker label=SAME, owner label=SAME, bystander label=blank
+    c, lines = _ctrl(tmp_path, monkeypatch,
+                     prompt=_scripted(["n", "y", "SAME", "SAME", ""]),
+                     secret=_scripted([""]), engine=eng)   # tokens come from config; only bystander prompt (blank)
+    c.selected = tg.Target(name="t", base_url="http://localhost:8888", spec_path=str(tmp_path / "s.json"),
+                           method="GET", path_template="/api/orders/{id}", id_location="path",
+                           id_param="id", attacker_id="8", victim_id="7")
+    c.dispatch("verify")
+    out = "\n".join(lines)
+    assert calls["n"] == 0                                  # REFUSED -> the engine NEVER ran (no verdict)
+    assert "SAME identity" in out and "NOT DATA" in out     # the fail-closed guard fired via the CLI labels
+
+
+def test_help_documents_the_new_capability_options(tmp_path, monkeypatch):
+    c, lines = _ctrl(tmp_path, monkeypatch)
+    c.dispatch("help")
+    out = "\n".join(lines).lower()
+    assert "scan" in out
+    assert "bystander" in out                               # discoverable without reading code
+    assert "broken-for-all" in out and "account label" in out
 
 
 # ------------------------------------------------------------------ THE confused-first-user walk (unit)

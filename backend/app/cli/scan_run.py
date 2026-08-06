@@ -52,6 +52,7 @@ async def run_scan(
     control_view: Callable[..., Awaitable[Any]] = fetch_control_view,
     client_factory: Optional[Callable[[], Any]] = None,
     raw_candidates: Optional[List[Any]] = None,
+    assert_owner_only: bool = False,
 ) -> Dict[str, Any]:
     """Run the scan onramp and return a structured result:
       {records, dropped, skipped, accepted, catalog}.
@@ -84,6 +85,8 @@ async def run_scan(
         attacker_id, victim_id = ids
         op = build_op(cand["method"], cand["path_template"], cand["id_location"], cand["id_param"],
                       attacker_id, victim_id, shape=cand["shape"])
+        if assert_owner_only:
+            op["assert_owner_only"] = True   # run-level broken-for-all disclosure opt-in (D30)
         if not validate_op(op, catalog):
             # final CODE FENCE failed -> DROP, never run (defense in depth on the concrete op)
             dropped.append({"reason": "failed_op_fence", "op": op, "candidate": cand})

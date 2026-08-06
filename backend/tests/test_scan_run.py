@@ -116,6 +116,23 @@ def test_run_scan_never_calls_engine_on_skip_or_failed_fence():
     assert len(res["skipped"]) == 3
 
 
+def test_run_scan_assert_owner_only_applies_to_generated_ops():
+    seen = []
+
+    async def run_op(op):
+        seen.append(dict(op))
+        return _result(ai_verdict="failed")
+
+    # default OFF -> no op carries the flag (byte-identical)
+    asyncio.run(run_scan("http://t", _SPEC, run_op=run_op, id_map=_ID_MAP, raw_candidates=_CANDS))
+    assert seen and all("assert_owner_only" not in op for op in seen)
+
+    seen.clear()
+    asyncio.run(run_scan("http://t", _SPEC, run_op=run_op, id_map=_ID_MAP, raw_candidates=_CANDS,
+                         assert_owner_only=True))
+    assert seen and all(op.get("assert_owner_only") is True for op in seen)   # every generated op carries it
+
+
 # ------------------------------------------------------------------ CLI command (end-to-end, offline)
 def _prompts(*vals):
     it = iter(vals)
@@ -152,3 +169,40 @@ def test_do_scan_cli_end_to_end(tmp_path, monkeypatch):
     assert "[CONFIRMED]" in out and "[SKIPPED - needs manual id]" in out
     assert "attacker-token" not in out and "owner-token" not in out   # tokens never printed
     assert len(eng.calls) == 2                           # reports + users ran; orders skipped
+
+
+def test_do_scan_bystander_and_assert_route(tmp_path, monkeypatch):
+    # 2a: the scan CLI wires a masked bystander token (-> bystander_credential ONLY) and a run-level
+    # assert_owner_only (-> every generated op).
+    monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", False)
+    monkeypatch.setattr(settings, "LLM_MODEL", "test-model")
+    from backend.app.cli.console import targets as targets_mod
+    from backend.app.services.deep_verifier import OwnerCredential
+
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text(json.dumps(_SPEC), encoding="utf-8")
+    ids_path = tmp_path / "ids.json"
+    ids_path.write_text(json.dumps({"ids": _ID_MAP}), encoding="utf-8")
+    sel = targets_mod.Target(name="scan-t", base_url="http://localhost:8888", spec_path=str(spec_path),
+                             method="GET", path_template="/api/reports/{report_id}", id_location="path",
+                             id_param="report_id", attacker_id="1", victim_id="2")
+
+    eng = _ScriptedEngine()
+    lines = []
+    ctl = ConsoleController(
+        prompt=_prompts(str(ids_path), "y"),                  # id-source file, then assert=yes
+        secret_prompt=_prompts("atk-tok", "own-tok", "byst-tok"),   # attacker, owner, bystander
+        echo=lambda *a: lines.append(" ".join(str(x) for x in a)),
+        config_path=str(tmp_path / "no-config.toml"),
+        engine=eng, scan_provider_factory=_stub_provider(_CANDS))
+    ctl.selected = sel
+    ctl.do_scan()
+    assert len(eng.calls) == 2
+    for kw in eng.calls:
+        assert kw["assert_owner_only"] is True                          # run-level broken-for-all opt-in
+        bys = kw["bystander_credential"]
+        assert isinstance(bys, OwnerCredential) and "byst-tok" in bys.header_value
+        assert "byst-tok" not in str(kw["auth_context"])                # bystander NEVER in the attack path
+    out = "\n".join(lines)
+    assert "byst-tok" not in out and "atk-tok" not in out               # tokens masked, never echoed

@@ -21,9 +21,12 @@ _HELP = [
     ("targets", "List saved targets and select one.",
      "To switch between targets you've created."),
     ("verify",  "Run the confirmation on the selected target and show the evidence chain.",
-     "After selecting a target; you'll paste the two tokens (hidden)."),
+     "After selecting a target; you'll paste the two tokens (hidden). Optional prompts: a third/"
+     "bystander token (public-resource discrimination), an owner-private assertion (broken-for-all), "
+     "and non-default account labels (#7 - a different configured account set)."),
     ("scan",    "Auto-discover BOLA candidates from the target's spec and confirm each (aggregated report).",
-     "After selecting a target; the AI proposes candidates, code vets them, the engine judges each."),
+     "After selecting a target; the AI proposes candidates, code vets them, the engine judges each. "
+     "Optional prompts: a bystander token and an owner-private assertion (broken-for-all)."),
     ("status",  "Show what's configured (API key redacted) and the selected target.",
      "To check your setup."),
     ("quit",    "Leave the console.",

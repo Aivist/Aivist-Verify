@@ -193,6 +193,38 @@ class ConsoleController:
             self.echo(f"    received ({len(v)} characters).")
         return v
 
+    def _ask_yes_no(self, label: str, default: bool = False, **g) -> bool:
+        """A y/N prompt. Blank -> `default`. Re-prompts on anything unrecognized."""
+        self._guide(**g)
+        suffix = "[Y/n]" if default else "[y/N]"
+        while True:
+            v = self._ask(f"{label} {suffix}").lower()
+            if not v:
+                return default
+            if v in ("y", "yes"):
+                return True
+            if v in ("n", "no"):
+                return False
+            self.echo("  ! Please answer y or n.")
+
+    def _ask_account_labels(self) -> dict:
+        """#7 (optional): point this run at a DIFFERENT configured account set by label — the
+        TARGET_<LABEL>_TOKEN keys — instead of the default ATTACKER/OWNER/BYSTANDER, WITHOUT hand-
+        writing an op. Returns op['accounts'] (role -> label); {} = default keys (byte-identical).
+        The attacker!=owner fail-closed guard still fires on whatever labels are chosen."""
+        if not self._ask_yes_no(
+                "Use non-default account labels?", default=False,
+                hint="OPTIONAL. Select a different configured account set (the TARGET_<LABEL>_TOKEN "
+                     "keys) for one or more roles. Blank/No = the default ATTACKER/OWNER/BYSTANDER.",
+                why="Same attacker and owner is REFUSED - a self-vs-self compare would false-confirm."):
+            return {}
+        accounts = {}
+        for role in ("attacker", "owner", "bystander"):
+            v = self._ask(f"{role} account label (blank = default {role.upper()})")
+            if v:
+                accounts[role] = v
+        return accounts
+
     # -- commands ----------------------------------------------------------
     def do_help(self) -> None:
         for line in intro.help_lines():
@@ -383,24 +415,44 @@ class ConsoleController:
             return
         t = self.selected
         self.echo(f"Confirming on {t.base_url}: can the attacker reach the victim's resource?")
+
+        # -- optional capabilities (2a): all default OFF/blank => byte-identical to before --
+        assert_owner_only = self._ask_yes_no(
+            "Assert this resource should be owner-private?", default=False,
+            why="With it, a resource EVERY authenticated user can read (but anonymous cannot) is "
+                "surfaced as [INCONCLUSIVE broken-for-all / human review] instead of suppressed.")
+        accounts = self._ask_account_labels()
+
         if not t.auth_spec_path:
-            self.echo("  You'll be asked for two Bearer tokens (input hidden; the tool confirms receipt):")
-            self.echo("    - Attacker token: from logging in as the ATTACKER account "
-                      "(the tool sends the attack as the attacker).")
-            self.echo("    - Owner token:    from logging in as the VICTIM/owner "
-                      "(used ONLY to re-read as the owner; press Enter to skip).")
+            self.echo("  You'll be asked for the Bearer tokens (input hidden; the tool confirms receipt):")
+            self.echo("    - Attacker token: the ATTACKER account (the attack is sent as the attacker).")
+            self.echo("    - Owner token:    the VICTIM/owner (re-read ONLY as the owner; Enter to skip).")
             self.echo("    Example value: Bearer eyJhbGciOi...")
+            bystander_token = self._ask_secret(
+                "Bystander / third-account token - OPTIONAL",
+                hint="A THIRD account that does NOT own the resource; leave blank to skip.",
+                why="Enables public-resource discrimination: without it the tool can't tell a public "
+                    "resource from a real cross-user leak. It is used ONLY to re-read as the bystander.")
         else:
             self.echo(f"  Using the login file for auto-relogin: {t.auth_spec_path}")
+            bystander_token = ""   # --auth bystander comes from config (login creds), unchanged
+
+        op = t.to_op()
+        if assert_owner_only:
+            op["assert_owner_only"] = True         # broken-for-all disclosure opt-in (D30)
+        if accounts:
+            op["accounts"] = accounts              # #7 per-role account labels (config-key selection)
+
         tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
         try:
-            json.dump(t.to_op(), tmp)
+            json.dump(op, tmp)
             tmp.close()
             kwargs = dict(
                 target=t.base_url, spec_path=t.spec_path, op_path=tmp.name,
                 config_path=self.config_path, prompt=self.prompt,
                 prompt_secret=self._confirming_secret, echo=self.echo, err=self.echo,
                 auth_spec_path=(t.auth_spec_path or None),
+                bystander_token=(bystander_token or None),   # masked; routes ONLY to bystander_credential
             )
             if self.engine is not None:
                 kwargs["engine"] = self.engine
@@ -470,6 +522,15 @@ class ConsoleController:
         if not attacker or not owner:
             self.echo("  ! scan needs BOTH an attacker and an owner token (the confirm compares them).")
             return
+        bystander = self._ask_secret(
+            "Bystander / third-account token - OPTIONAL",
+            hint="A THIRD account that does NOT own the resource; leave blank to skip.",
+            why="Enables public-resource discrimination: without it scan can't tell a public resource "
+                "from a real cross-user leak. Used ONLY to re-read as the bystander, never to attack.")
+        assert_owner_only = self._ask_yes_no(
+            "Treat discovered resources as owner-private (broken-for-all disclosure)?", default=False,
+            why="With it, a resource EVERY authenticated user can read (but anonymous cannot) is "
+                "surfaced as [INCONCLUSIVE broken-for-all / human review] instead of suppressed.")
 
         # Lazy imports (avoid pulling the engine at module import; keep the console light).
         import asyncio
@@ -483,7 +544,9 @@ class ConsoleController:
 
         settings.AI_DEEP_VERIFY_ENABLED = True                       # runtime-only, mirrors verify
         attacker_tok, owner_tok = SecretStr(attacker), SecretStr(owner)
-        bystander_tok = _resolve_bystander_token(self.config_path)   # config-file only (D30), optional
+        # a prompted bystander overrides the config-file one; EITHER way it routes ONLY into
+        # bystander_credential (never the attack path) via _verify_external below.
+        bystander_tok = SecretStr(bystander) if bystander else _resolve_bystander_token(self.config_path)
         engine = self.engine or execute_deep_verification
         model = settings.LLM_MODEL or None
 
@@ -500,7 +563,7 @@ class ConsoleController:
                 t.base_url, spec, run_op=run_op, id_map=id_map, collections=collections,
                 harvest_attacker_cred=OwnerCredential.from_config(attacker),   # attacker harvest creds ONLY
                 harvest_owner_cred=OwnerCredential.from_config(owner),         # owner harvest creds ONLY
-                model=model, **kw))
+                model=model, assert_owner_only=assert_owner_only, **kw))
         except Exception as ex:
             self.echo(f"  ! scan run error against {t.base_url}: {type(ex).__name__}: {ex}")
             return

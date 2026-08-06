@@ -370,6 +370,58 @@ def test_path_segment_assembly_byte_identical_regression():
 
 
 # ============================================================================
+# 2a — a PROMPTED bystander token (interactive verify/scan) routes ONLY into bystander_credential.
+# ============================================================================
+def test_bystander_token_param_routes_to_bystander_credential_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("k"))
+    monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", False)
+    eng = _FakeEngine(_result())
+    spec_path = _write(tmp_path, "spec.json", _SPEC)
+    op_path = _write(tmp_path, "op.json", _OP)
+    run_external_verify(
+        target="http://localhost:8888", spec_path=spec_path, op_path=op_path,
+        prompt_secret=_prompts("ATTACKER-CANARY-111", "OWNER-CANARY-222"),
+        config_path=str(tmp_path / "no-config.toml"), engine=eng,
+        echo=lambda *a: None, err=lambda *a: None,
+        bystander_token="BYSTANDER-CANARY-333")
+    auth = str(eng.captured["auth_context"])
+    owner = eng.captured["owner_credential"]
+    bys = eng.captured["bystander_credential"]
+    # the bystander token is present ONLY in bystander_credential — never the attack headers / owner
+    assert isinstance(bys, OwnerCredential) and "BYSTANDER-CANARY-333" in bys.header_value
+    assert "BYSTANDER-CANARY-333" not in auth
+    assert "BYSTANDER-CANARY-333" not in owner.header_value
+    assert "ATTACKER-CANARY-111" in auth and "OWNER-CANARY-222" in owner.header_value
+
+
+def test_bystander_equal_to_attacker_is_refused(tmp_path, monkeypatch):
+    # the identity-collision guard covers the bystander too: bystander == attacker -> refused, no run.
+    monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("k"))
+    monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", False)
+
+    class _CountingEngine:
+        def __init__(self):
+            self.calls = 0
+
+        async def __call__(self, **kw):
+            self.calls += 1
+            return _result(ai_verdict="verified")
+
+    eng = _CountingEngine()
+    lines = []
+    code = run_external_verify(
+        target="http://localhost:8888",
+        spec_path=_write(tmp_path, "spec.json", _SPEC), op_path=_write(tmp_path, "op.json", _OP),
+        prompt_secret=_prompts("IDENTICAL-TOK", "OWNER-DISTINCT"),
+        config_path=str(tmp_path / "no-config.toml"), engine=eng,
+        echo=lambda *a: lines.append(" ".join(str(x) for x in a)),
+        err=lambda *a: lines.append(" ".join(str(x) for x in a)),
+        bystander_token="IDENTICAL-TOK")
+    assert code == 2 and eng.calls == 0                      # refused, engine never ran
+    assert "SAME identity" in "\n".join(lines)
+
+
+# ============================================================================
 # #7 — per-finding account selection + the attacker!=owner FP nail.
 # An op may DECLARE which account each role uses (`accounts`), so different findings/ops attack
 # different owners across SEPARATE runs. The keys still resolve OUTSIDE the engine; the engine
