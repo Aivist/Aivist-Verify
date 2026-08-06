@@ -22,6 +22,8 @@ _HELP = [
      "To switch between targets you've created."),
     ("verify",  "Run the confirmation on the selected target and show the evidence chain.",
      "After selecting a target; you'll paste the two tokens (hidden)."),
+    ("scan",    "Auto-discover BOLA candidates from the target's spec and confirm each (aggregated report).",
+     "After selecting a target; the AI proposes candidates, code vets them, the engine judges each."),
     ("status",  "Show what's configured (API key redacted) and the selected target.",
      "To check your setup."),
     ("quit",    "Leave the console.",

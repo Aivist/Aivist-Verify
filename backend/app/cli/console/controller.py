@@ -52,12 +52,15 @@ class ConsoleController:
         echo: Callable[..., None] = print,
         config_path: Optional[str] = None,
         engine: Optional[Callable] = None,
+        scan_provider_factory: Optional[Callable] = None,
     ) -> None:
         self.prompt = prompt
         self.secret_prompt = secret_prompt
         self.echo = echo
         self.config_path = config_path or branding.config_file_path()
         self.engine = engine                       # None -> run_external_verify's default
+        # scan discovery provider (None -> the configured LLM provider); a test seam for offline scans.
+        self.scan_provider_factory = scan_provider_factory
         self.selected: Optional[targets.Target] = None
 
     # -- REPL entry points -------------------------------------------------
@@ -76,7 +79,7 @@ class ConsoleController:
         handler = {
             "help": self.do_help, "config": self.do_config, "target": self.do_target,
             "targets": self.do_targets, "verify": self.do_verify, "status": self.do_status,
-            "demo": self.do_demo,
+            "demo": self.do_demo, "scan": self.do_scan,
         }.get(c)
         if handler:
             handler()
@@ -409,6 +412,99 @@ class ConsoleController:
                 os.unlink(tmp.name)
             except OSError:
                 pass
+
+    def _ask_optional_existing_file(self, label: str, **g) -> str:
+        self._guide(**g)
+        while True:
+            v = self._ask(label)
+            if not v:
+                return ""
+            if os.path.isfile(v):
+                return v
+            self.echo(f"  ! That file wasn't found: {v}. Leave blank to skip, or enter a valid path.")
+
+    def do_scan(self) -> None:
+        """Auto-discovery onramp: from the selected target's base URL + spec, the AI proposes BOLA
+        candidates, CODE vets each, ids are sourced (id map / declared collections), and the SAME
+        zero-FP confirm runs on every op. Prints one aggregated, tier-grouped report. AI never widens
+        what gets confirmed — code vets every op and the engine judges each one."""
+        if self.selected is None:
+            self.echo("  No target selected. Use 'target' to create one (scan uses its base URL + spec), "
+                      "or 'targets' to pick one.")
+            return
+        if not (reveal_secret(settings.LLM_API_KEY) or reveal_secret(settings.GEMINI_API_KEY)):
+            self.echo("  No API key configured - scan needs one for candidate discovery AND for the "
+                      "confirm judge. Run 'config' first. Nothing was sent.")
+            return
+        t = self.selected
+        try:
+            spec = _load_spec_file(t.spec_path)
+        except Exception as ex:
+            self.echo(f"  ! Could not read the target's spec ({type(ex).__name__}). "
+                      f"Re-create the target with a valid spec path.")
+            return
+
+        # id source (optional): a JSON file {"ids": {path_template: {attacker_id, victim_id}},
+        # "collections": {path_template: collection_path}}. Tier a (ids) needs no reads; tier b
+        # (collections) harvests each account's OWN list with its own creds.
+        id_map: dict = {}
+        collections: dict = {}
+        src = self._ask_optional_existing_file(
+            "Id-source file (optional JSON)",
+            hint="{\"ids\": {\"/path/{id}\": {\"attacker_id\": \"7\", \"victim_id\": \"6\"}}, "
+                 "\"collections\": {\"/path/{id}\": \"/list-endpoint\"}}",
+            why="Supplies each candidate's attacker/victim ids (tier a) or a 'list my objects' "
+                "endpoint to harvest them per-account (tier b). No id -> that candidate is SKIPPED.")
+        if src:
+            try:
+                with open(src, encoding="utf-8") as fh:
+                    d = json.load(fh)
+                id_map = dict(d.get("ids") or {})
+                collections = dict(d.get("collections") or {})
+            except Exception as ex:
+                self.echo(f"  ! Could not parse the id-source file ({type(ex).__name__}); ignoring it.")
+
+        self.echo("Paste the two Bearer tokens (input hidden; the tool confirms receipt):")
+        attacker = self._confirming_secret("  Attacker token (input hidden): ")
+        owner = self._confirming_secret("  Owner/victim token (input hidden): ")
+        if not attacker or not owner:
+            self.echo("  ! scan needs BOTH an attacker and an owner token (the confirm compares them).")
+            return
+
+        # Lazy imports (avoid pulling the engine at module import; keep the console light).
+        import asyncio
+        from pydantic import SecretStr
+        from backend.app.cli.external_verify import (
+            _verify_external, _resolve_bystander_token,
+        )
+        from backend.app.services.deep_verifier import OwnerCredential, execute_deep_verification
+        from backend.app.cli.scan_run import run_scan
+        from backend.app.cli.scan_report import render_scan_report
+
+        settings.AI_DEEP_VERIFY_ENABLED = True                       # runtime-only, mirrors verify
+        attacker_tok, owner_tok = SecretStr(attacker), SecretStr(owner)
+        bystander_tok = _resolve_bystander_token(self.config_path)   # config-file only (D30), optional
+        engine = self.engine or execute_deep_verification
+        model = settings.LLM_MODEL or None
+
+        async def run_op(op):
+            return await _verify_external(t.base_url, spec, op, attacker_tok, owner_tok, model, engine,
+                                          bystander_tok=bystander_tok)
+
+        kw = {}
+        if self.scan_provider_factory is not None:
+            kw["provider_factory"] = self.scan_provider_factory
+        self.echo(f"Scanning {t.base_url} - discovering BOLA candidates and confirming each...")
+        try:
+            result = asyncio.run(run_scan(
+                t.base_url, spec, run_op=run_op, id_map=id_map, collections=collections,
+                harvest_attacker_cred=OwnerCredential.from_config(attacker),   # attacker harvest creds ONLY
+                harvest_owner_cred=OwnerCredential.from_config(owner),         # owner harvest creds ONLY
+                model=model, **kw))
+        except Exception as ex:
+            self.echo(f"  ! scan run error against {t.base_url}: {type(ex).__name__}: {ex}")
+            return
+        self.echo(render_scan_report(result, t.base_url))
 
     def do_demo(self) -> None:
         """Zero-setup example against the built-in lab (no Docker/target/tokens). Delegates to
