@@ -161,6 +161,29 @@ def test_X_EQUIV_VULN_still_verified(monkeypatch):
 
 
 # -----------------------------------------------------------------------------
+# Cut B: the owner-view read-back BODY is surfaced READ-ONLY (mirror of D28's status/reason). It is
+# the SAME value the gate already computed — the verdict and the gate decision are UNCHANGED.
+# -----------------------------------------------------------------------------
+def test_owner_view_body_surfaced_readonly_on_verified(monkeypatch):
+    d = _depot()
+    res = _run_case(d.app, f"/depot/waybills/{d.ACCOUNT_BOB}", DEPOT_ATTACKER, DEPOT_OWNER, monkeypatch)
+    assert res.ai_verdict == "verified"                        # gate logic UNCHANGED (still verified)
+    assert res.owner_view_status == 200
+    assert isinstance(res.owner_view_body, str) and res.owner_view_body.strip()   # victim read-back surfaced
+
+
+def test_owner_view_body_surfaced_even_when_gate_blocks(monkeypatch):
+    # observation is independent of the verdict: on a SAFE case the gate still downgrades (unchanged),
+    # and the owner-view body is surfaced anyway (read-only).
+    d = _depot()
+    res = _run_case(d.app, f"/depot/dockets/{d.ACCOUNT_BOB}", DEPOT_ATTACKER, DEPOT_OWNER, monkeypatch)
+    assert res.ai_verdict != "verified"                        # gate STILL downgrades (unchanged)
+    assert res.guard_override == OWNER_VIEW_NOT_CORROBORATED_REASON
+    assert res.owner_view_status == 200
+    assert isinstance(res.owner_view_body, str)                # body surfaced regardless of the verdict
+
+
+# -----------------------------------------------------------------------------
 # Unset owner credential => today's behavior, NOT blocking everything
 # -----------------------------------------------------------------------------
 

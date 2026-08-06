@@ -47,7 +47,7 @@ from backend.app.cli import relogin
 from backend.app.cli.confirm_render import render_tree, exit_code_for
 from backend.app.services.endpoint_catalog import catalog_from_openapi
 from backend.app.services.scope import ScopePolicy
-from backend.app.services.deep_verifier import OwnerCredential, execute_deep_verification
+from backend.app.services.deep_verifier import OwnerCredential, execute_deep_verification, flatten_evidence
 
 # A challenged / auth-failed / rate-limited response is NOT a security signal -> NOT DATA.
 _CHALLENGE_STATUSES = frozenset({401, 403, 429})
@@ -340,6 +340,10 @@ def _record_from_result(result: Any, op: Dict[str, Any], deg_reason: Optional[st
         "baseline_path": op.get("baseline_path"),
         "attack_path": _attack_path_from_op(op),
         "body": op.get("body"),
+        # Cut B: the flattened, ALREADY-redacted physical evidence (baseline/attack/follow-up/owner-view
+        # bytes). None when the run captured no exchange. Every byte passed through the credential
+        # redactor in flatten_evidence — this record carries NO live secret.
+        "evidence": flatten_evidence(result),
     }
 
 

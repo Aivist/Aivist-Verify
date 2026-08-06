@@ -395,6 +395,15 @@ class DeepVerificationResult:
     # verdict != 'verified', or a follow-up occurred so the read-semantic branch is out of scope).
     owner_view_status: Optional[int] = None
     owner_view_reason: Optional[str] = None
+    # Cut-B observability (additive; set ONLY at the D24 owner-view gate's existing branch, from the
+    # OwnerViewResult already computed there). The owner-view read-back BODY — "what the victim
+    # actually saw" — surfaced so the record/renderer can show the physical cross-user evidence chain.
+    # ALREADY-truncated (<= _EVIDENCE_BODY_MAX) exactly like the baseline/attack response bodies; it is
+    # credential-redacted at flatten time (flatten_evidence), never written raw to a shared record.
+    # OBSERVATION ONLY: it records a value the gate already produced and changes NO verdict, NO gate
+    # decision, NO channel. None when the gate did not run (no owner credential, verdict != 'verified',
+    # or a follow-up occurred).
+    owner_view_body: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -798,6 +807,119 @@ def _summarize_response(result: Dict[str, Any]) -> Dict[str, Any]:
         "body": (result.get("response_body") or "")[:_EVIDENCE_BODY_MAX],
         "url": result.get("url"),
     }
+
+
+# ==============================================================================
+# Cut B — flatten the ALREADY-captured, truncated HTTP evidence into a record the renderer can walk.
+#
+# SECRET-LEAKAGE RED LINE (the load-bearing concern): a record is a file that may be shared — treat
+# it as public. EVERY flattened byte passes through `redact_secrets` before it enters the record, so
+# no live token / bearer / cookie / password can appear in any flattened header or body. `_redact_headers`
+# already name-masks the known auth carriers on the trail; `redact_secrets` adds pattern masking for a
+# token echoed inside a response body (a JWT, a "Bearer …", or a secret-bearing JSON/kv key). This is
+# the record-layer analogue of confirm_render._redact (two independent layers — keep them in sync).
+# It ONLY masks; it never reveals, and it NEVER re-fetches (it only reshapes what the engine captured).
+# ==============================================================================
+_EVIDENCE_REDACT = "***REDACTED***"
+_BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=\-]+")
+_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+")
+_SECRET_KEYS = (
+    "authorization", "auth[_-]?token", "access[_-]?token", "refresh[_-]?token", "id[_-]?token",
+    "api[_-]?key", "apikey", "client[_-]?secret", "password", "passwd", "pwd", "secret",
+    "session[_-]?id", "sessionid", "session", "set-cookie", "cookie", "csrf[_-]?token",
+    "xsrf[_-]?token", "token",
+)
+_SECRET_KV_RE = re.compile(
+    r'(?i)(["\']?\b(?:' + "|".join(_SECRET_KEYS) + r')["\']?\s*[:=]\s*["\']?)([^"\'\s,;}&]+)')
+# Auth SCHEME words are not themselves the secret — leaving them lets the Bearer/JWT pass mask the
+# actual token exactly once (so `authorization: Bearer <jwt>` -> `authorization: Bearer ***REDACTED***`,
+# not a double marker). An already-redacted value is likewise left intact (idempotent).
+_AUTH_SCHEMES = frozenset({"bearer", "basic", "digest", "negotiate"})
+
+
+def _mask_kv(m: "re.Match") -> str:
+    value = m.group(2)
+    if value.lower() in _AUTH_SCHEMES or "REDACTED" in value.upper():
+        return m.group(0)                              # scheme word / already redacted -> leave as-is
+    return m.group(1) + _EVIDENCE_REDACT
+
+
+def redact_secrets(text: Optional[str]) -> Optional[str]:
+    """Mask credential-looking substrings in an evidence byte string. Catches a bare JWT, a
+    "Bearer <token>", and a secret-bearing key in JSON or key=value form. Returns the input unchanged
+    when there is nothing to mask; None passes through as None. It only ever MASKS (never reveals)."""
+    if not text:
+        return text
+    text = _BEARER_RE.sub("Bearer " + _EVIDENCE_REDACT, text)
+    text = _JWT_RE.sub(_EVIDENCE_REDACT, text)
+    text = _SECRET_KV_RE.sub(_mask_kv, text)
+    return text
+
+
+def _flatten_request(req: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not req:
+        return None
+    body = req.get("body")
+    body_s = body if isinstance(body, str) else (
+        json.dumps(body, ensure_ascii=False) if body is not None else None)
+    return {
+        "method": req.get("method"),
+        # name-mask the known auth carriers, then pattern-redact every remaining value (defense in depth)
+        "headers": {k: redact_secrets(str(v)) for k, v in _redact_headers(req.get("headers") or {}).items()},
+        "url": (redact_secrets(str(req.get("url") or req.get("path") or "")) or None),
+        "body": (redact_secrets(body_s[:_EVIDENCE_BODY_MAX]) if body_s is not None else None),
+    }
+
+
+def _flatten_response(resp: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not resp:
+        return None
+    body = resp.get("body")
+    return {
+        "status_code": resp.get("status_code"),
+        "content_length": resp.get("content_length"),
+        "url": (redact_secrets(str(resp.get("url"))) if resp.get("url") else None),
+        "body": (redact_secrets((body or "")[:_EVIDENCE_BODY_MAX]) if body is not None else None),
+    }
+
+
+def _flatten_exchange(trail: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not trail:
+        return None
+    return {"request": _flatten_request(trail.get("request")),
+            "response": _flatten_response(trail.get("response"))}
+
+
+def flatten_evidence(result: Any) -> Optional[Dict[str, Any]]:
+    """Flatten the result's ALREADY-captured, truncated HTTP evidence into a record-embeddable dict,
+    running EVERY byte through `redact_secrets` first (no live secret may enter a shared record).
+    Nothing is re-fetched — this only reshapes the baseline/attack trails, the follow-up request/
+    response, and the owner-view read-back the engine already produced. Returns None when the result
+    carries no captured exchange (a degraded / pre-request failure), so the renderer degrades to the
+    narrative chain."""
+    baseline = getattr(result, "baseline", None)
+    attack = getattr(result, "attack", None)
+    fu_req = getattr(result, "follow_up_request", None)
+    fu_resp = getattr(result, "follow_up_response", None)
+    ov_status = getattr(result, "owner_view_status", None)
+    ov_body = getattr(result, "owner_view_body", None)
+    if not any([baseline, attack, fu_req, fu_resp, ov_status is not None, ov_body is not None]):
+        return None
+    ev: Dict[str, Any] = {}
+    if baseline:
+        ev["baseline"] = _flatten_exchange(baseline)
+    if attack:
+        ev["attack"] = _flatten_exchange(attack)
+    if fu_req or fu_resp:
+        ev["follow_up"] = {"request": _flatten_request(fu_req), "response": _flatten_response(fu_resp)}
+    if ov_status is not None or ov_body is not None:
+        ev["owner_view"] = {
+            "status": ov_status,
+            "reason": getattr(result, "owner_view_reason", None),
+            "corroborated": getattr(result, "owner_view_corroborated", None),
+            "body": (redact_secrets(ov_body) if ov_body is not None else None),
+        }
+    return ev or None
 
 
 def _fmt_exchange(label: str, method: str, url: str, headers: dict, body: Any, result: Dict[str, Any]) -> str:
@@ -2036,6 +2158,9 @@ async def execute_deep_verification(
             # here to refresh the OWNER token and retry once).
             _owner_view_status: Optional[int] = None
             _owner_view_reason: Optional[str] = None
+            # Cut-B observability: the owner-view read-back BODY (truncated like the other bodies).
+            # OBSERVATION ONLY — read straight off the OwnerViewResult below; touches no gate decision.
+            _owner_view_body: Optional[str] = None
             # D30 observability: None until/unless the bystander probe actually runs below.
             _bystander_view_available: Optional[bool] = None
             _resource_public: Optional[bool] = None
@@ -2048,6 +2173,8 @@ async def execute_deep_verification(
                 )
                 _owner_view_status = _owner_view.status      # observe-only (D28): raw owner-view outcome
                 _owner_view_reason = _owner_view.reason       # ditto — never feeds the gate decision
+                _owner_view_body = (                          # observe-only (cut B): the victim's read-back body
+                    (_owner_view.body or "")[:_EVIDENCE_BODY_MAX] if _owner_view.body is not None else None)
                 _corroborated = _owner_view.available and _owner_view_corroborates(
                     _anchor_body, _owner_view.body
                 )
@@ -2228,6 +2355,7 @@ async def execute_deep_verification(
                 owner_view_corroborated=_owner_view_corroborated,
                 owner_view_status=_owner_view_status,          # D28 observe-only
                 owner_view_reason=_owner_view_reason,          # D28 observe-only
+                owner_view_body=_owner_view_body,              # cut-B observe-only (read-back body)
                 bystander_view_available=_bystander_view_available,
                 resource_is_public=_resource_public,
                 broken_for_all_suspected=_broken_for_all,

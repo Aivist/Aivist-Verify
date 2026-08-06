@@ -56,6 +56,7 @@ from backend.app.services.deep_verifier import (  # noqa: E402
     execute_deep_verification,
     OwnerCredential,
     fetch_owner_view,
+    flatten_evidence,
 )
 from backend.app.services.fuzzer import (  # noqa: E402
     _compute_similarity,
@@ -230,6 +231,9 @@ async def _run_one(case, caseset, model, run_index, n, curated_fh):
             "degraded": degraded,
             "degraded_reason": res.degraded_reason,
             "error": None,
+            # Cut B: flattened, ALREADY-redacted physical evidence bytes (baseline/attack/follow-up/
+            # owner-view). New golden rows carry it; existing golden rows (no key) render via cut A.
+            "evidence": flatten_evidence(res),
         })
 
         # Independent owner-view similarity for the record (read-semantic only; local
@@ -259,6 +263,7 @@ async def _run_one(case, caseset, model, run_index, n, curated_fh):
             "would_promote": False,
             "degraded": True, "degraded_reason": None,
             "error": f"{type(e).__name__}: {e}",
+            "evidence": None,                              # cut B: no exchange captured on an error row
         })
         ok, note = None, f"error: {row['error']}"
 
