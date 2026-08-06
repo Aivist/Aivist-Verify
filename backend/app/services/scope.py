@@ -91,6 +91,12 @@ class ScopeDecision:
     host: Optional[str] = None
     port: Optional[int] = None
     matched_entry: Optional[str] = None
+    # The scope-VALIDATED IP(s) this decision approved, for the caller to PIN the connection to
+    # (closing the DNS-rebinding TOCTOU — TECH_DEBT D25). Populated ONLY for a public registrable
+    # name that was resolved + validated (every IP global); None for an unlocked pass-through, an
+    # IP-literal target (no DNS), or an intranet name the rebinding guard never resolves. It can
+    # ONLY restrict the connection to an already-validated address — never widen scope.
+    resolved_ips: Optional[Tuple[str, ...]] = None
 
     def __bool__(self) -> bool:      # so `if policy.check(url):` reads naturally
         return self.allowed
@@ -429,7 +435,10 @@ class ScopePolicy:
             # A public, registrable domain resolving to loopback/private/reserved is the
             # DNS rebinding signature — refuse even though the NAME is in scope.
             return ScopeDecision(False, "rebinding_private_ip", nhost, port, matched.raw)
-        return ScopeDecision(True, "ok", nhost, port, matched.raw)
+        # Every resolved IP is global + validated. Return them so the active caller can PIN the
+        # connection to a validated IP instead of re-resolving the name at connect time (D25 TOCTOU).
+        return ScopeDecision(True, "ok", nhost, port, matched.raw,
+                             resolved_ips=tuple(ip for ip, c in zip(ips, classes) if c == "global"))
 
     @staticmethod
     def _entry_host_matches(entry: ScopeEntry, nhost: str) -> bool:

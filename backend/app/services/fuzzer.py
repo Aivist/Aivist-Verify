@@ -19,7 +19,7 @@ import asyncio
 import random
 import difflib
 from typing import Dict, Any, Optional, List
-from urllib.parse import urlencode, urlparse, urlunparse, urljoin, parse_qsl
+from urllib.parse import urlencode, urlparse, urlunparse, urljoin, parse_qsl, urlsplit, urlunsplit
 
 import httpx
 from sqlalchemy import select
@@ -591,21 +591,69 @@ def _build_request_kwargs(
     return kwargs
 
 
+def _pin_kwargs(
+    method: str, logical_url: str, headers: dict, body: Any, decision: Any, follow_redirects: bool
+) -> Dict[str, Any]:
+    """httpx kwargs that CONNECT to a scope-VALIDATED pinned IP (no connect-time re-resolution),
+    preserving Host-header + TLS-SNI routing so the app still sees the hostname. Closes the
+    DNS-rebinding TOCTOU (TECH_DEBT **D25**): `ScopePolicy.check()` validates and returns the IP(s),
+    and we dial ONE of them directly instead of letting httpx re-resolve the name at connect time.
+
+    DIRECTION-SAFE by construction: pinning can only make the connection MORE restrictive — the
+    dialed address is one the scope guard ALREADY validated as global/in-scope; a stale/unreachable
+    pinned IP just fails the connection (-> NOT DATA), it can NEVER turn an out-of-scope target
+    in-scope. A decision with no pinned IP (unlocked pass-through, an IP-literal target with no DNS,
+    or an intranet name the rebinding guard never resolves) -> byte-identical hostname kwargs."""
+    pinned = None
+    if decision is not None:
+        ips = getattr(decision, "resolved_ips", None)
+        if ips:
+            pinned = ips[0]
+    if not pinned:
+        return _build_request_kwargs(method, logical_url, headers, body, follow_redirects)
+    parts = urlsplit(logical_url)
+    scheme = (parts.scheme or "").lower()
+    default_port = {"http": 80, "https": 443, "ws": 80, "wss": 443}.get(scheme)
+    ip_host = f"[{pinned}]" if ":" in pinned else pinned            # bracket IPv6
+    # Keep a non-default explicit port; omit a scheme-default port from BOTH the dialed netloc and the
+    # Host header, mirroring httpx's own normalization so routing is byte-identical to the no-pin build.
+    if parts.port is not None and parts.port != default_port:
+        ip_netloc = f"{ip_host}:{parts.port}"
+        host_header = f"{parts.hostname or ''}:{parts.port}"
+    else:
+        ip_netloc = ip_host
+        host_header = parts.hostname or ""
+    connect_url = urlunsplit((parts.scheme, ip_netloc, parts.path or "", parts.query, parts.fragment))
+    hdrs = {**(headers or {}), "Host": host_header}                 # preserve HTTP routing (app sees the name)
+    kwargs = _build_request_kwargs(method, connect_url, hdrs, body, follow_redirects)
+    if scheme == "https":
+        kwargs["extensions"] = {"sni_hostname": parts.hostname}     # preserve TLS SNI routing
+    return kwargs
+
+
 async def _follow_redirects_scoped(
     client: httpx.AsyncClient, response: "httpx.Response",
     method: str, headers: dict, body: Any, policy: "ScopePolicy",
+    *, logical_url: Optional[str] = None,
 ) -> "httpx.Response":
     """Per-hop redirect enforcement (LOCKED scope only). httpx auto-follow is disabled
     for a locked scope; instead each redirect Location is re-validated against the SAME
     policy (host + resolved-IP) BEFORE it is followed, and the FIRST out-of-scope hop is
     refused. Redirect method/body semantics mirror httpx: 307/308 preserve; 301/302/303
-    become GET with no body. Bounded by `_MAX_REDIRECTS`."""
+    become GET with no body. Bounded by `_MAX_REDIRECTS`.
+
+    When `logical_url` is given (the active `_send_request` path), each hop is (a) resolved
+    against the LOGICAL hostname URL — not the pinned-IP URL we dialed — and (b) PINNED to its own
+    scope-validated IP (D25), so redirects are TOCTOU-closed too. When absent (e.g. the relogin
+    login session, which dials by hostname), behavior is byte-identical to before: resolve against
+    the request URL and dial by hostname (no pin)."""
     hops = 0
+    base = logical_url if logical_url is not None else str(response.request.url)
     while response.status_code in (301, 302, 303, 307, 308) and hops < _MAX_REDIRECTS:
         location = response.headers.get("location")
         if not location:
             break
-        next_url = urljoin(str(response.request.url), location)
+        next_url = urljoin(base, location)
         decision = policy.check(next_url)
         if not decision.allowed:
             raise ScopeViolationError(
@@ -615,11 +663,11 @@ async def _follow_redirects_scoped(
             next_method, next_body = method, body
         else:
             next_method, next_body = "GET", None
+        pin = decision if logical_url is not None else None         # pin only on the active send path
         response = await client.request(
-            **_build_request_kwargs(next_method, next_url, headers, next_body,
-                                    follow_redirects=False)
+            **_pin_kwargs(next_method, next_url, headers, next_body, pin, follow_redirects=False)
         )
-        method, body, hops = next_method, next_body, hops + 1
+        method, body, base, hops = next_method, next_body, next_url, hops + 1
     return response
 
 
@@ -654,6 +702,7 @@ async def _send_request(
     # --- Scope lock: fail-closed gate on the initial URL, before anything else ------
     policy = _effective_scope_policy(scope, custody)
     locked = policy is not None and policy.locked
+    decision = None                       # carries the scope-validated pinned IP(s) when LOCKED
     if locked:
         decision = policy.check(url)
         if not decision.allowed:
@@ -668,8 +717,10 @@ async def _send_request(
 
     # Build httpx-compatible kwargs. follow_redirects stays True (httpx auto-follow,
     # byte-identical) when UNLOCKED; a LOCKED scope disables it so redirects are
-    # validated per-hop below.
-    kwargs = _build_request_kwargs(method, url, headers, body, follow_redirects=not locked)
+    # validated per-hop below. When LOCKED with a public-name target, the connection is PINNED to
+    # the scope-validated IP (D25 TOCTOU) with Host/SNI routing preserved; unlocked / IP-literal /
+    # intranet targets carry no pin -> byte-identical hostname kwargs.
+    kwargs = _pin_kwargs(method, url, headers, body, decision, follow_redirects=not locked)
 
     start_time = time.monotonic()
     response = await client.request(**kwargs)
@@ -691,9 +742,12 @@ async def _send_request(
         start_time = time.monotonic()
         response = await client.request(**kwargs)
 
-    # Per-hop redirect enforcement (LOCKED scope only; unlocked already auto-followed).
+    # Per-hop redirect enforcement (LOCKED scope only; unlocked already auto-followed). Pass the
+    # LOGICAL url so each hop resolves against the hostname (not the pinned-IP url we dialed) and is
+    # itself pinned to its scope-validated IP (D25 TOCTOU closed on redirects too).
     if locked:
-        response = await _follow_redirects_scoped(client, response, method, headers, body, policy)
+        response = await _follow_redirects_scoped(client, response, method, headers, body, policy,
+                                                  logical_url=url)
 
     elapsed_ms = round((time.monotonic() - start_time) * 1000, 2)
 
