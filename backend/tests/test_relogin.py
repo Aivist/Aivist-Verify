@@ -23,7 +23,7 @@ from backend.app.cli.external_verify import (
 )
 from backend.app.cli.relogin import (
     LoginSpec, Credential, TokenProvider, resolve_login_credentials, LoginError, _jwt_exp,
-    LoginResponse, _extract_token, _as_login_response,
+    LoginResponse, _extract_token, _as_login_response, OAuthConfig,
 )
 from backend.app.services.deep_verifier import OwnerCredential
 from backend.app.services.scope import ScopePolicy
@@ -924,3 +924,330 @@ def test_d28_no_owner_view_status_is_not_degraded_byte_identical():
     assert len(eng.calls) == 1                          # no retry
     own_logins = [c for c in fake.calls if c["body"].get("username") == "victimowner"]
     assert len(own_logins) == 1                          # owner NOT refreshed
+
+
+# ==============================================================================
+# Slice 3 — OAuth 2.0 login (authorization_code + PKCE, and resource-owner-password). The obtained
+# access token flows into the SAME three-variable routing as every other login; the verdict core is
+# untouched. The four invariants hold: SCOPE fail-closed per hop, IDENTITY ISOLATION (own session per
+# account, zero shared client/PKCE/code/token), secrecy, and direction-safety (broken -> NOT DATA).
+# ==============================================================================
+class _FakeOAuthSession:
+    """Fake per-account OAuth session. Mimics an IdP: `request` = the account login (records the
+    username), `oauth_get_no_follow` = the authorize endpoint (302 -> redirect_uri?code=CODE.<user>.<sid>),
+    `oauth_post_form` = the token endpoint (records code_verifier/code, returns TOK.<user>.<sid>). Its
+    own state (sid/username/verifier) is LOCAL — never shared across accounts."""
+    _seq = 0
+
+    def __init__(self, expires_in=3600):
+        type(self)._seq += 1
+        self.sid = type(self)._seq
+        self.expires_in = expires_in
+        self.requests = []
+        self.username = None
+        self.verifier = None
+        self.closed = False
+
+    async def request(self, method, url, *, json_body=None, headers=None):
+        self.username = (json_body or {}).get("username", self.username)
+        self.requests.append({"kind": "login", "url": url, "body": dict(json_body or {})})
+        return LoginResponse(200, {"ok": True}, {}, {})       # login established the session
+
+    async def oauth_get_no_follow(self, url, headers=None):
+        self.requests.append({"kind": "authorize", "url": url})
+        code = f"CODE.{self.username}.{self.sid}"              # a code identifying THIS session
+        return LoginResponse(302, {}, {"location": f"http://app.local/callback?code={code}&state=s"}, {})
+
+    async def oauth_post_form(self, url, data, headers=None):
+        self.verifier = data.get("code_verifier")
+        self.requests.append({"kind": "token", "url": url, "data": dict(data)})
+        user = data.get("username") or self.username          # password grant carries username in the body
+        return LoginResponse(200, {"access_token": f"TOK.{user}.{self.sid}",
+                                   "expires_in": self.expires_in}, {}, {})
+
+    async def aclose(self):
+        self.closed = True
+
+
+def _oauth_factory(expires_in=3600):
+    created = []
+
+    def factory(scope):
+        s = _FakeOAuthSession(expires_in=expires_in)
+        created.append(s)
+        return s
+
+    factory.created = created
+    return factory
+
+
+def _oauth_authcode_spec():
+    return LoginSpec(
+        method="POST", path="/account/login", username_field="username", password_field="password",
+        token_field="access_token", grant="authorization_code",
+        oauth=OAuthConfig(grant="authorization_code", token_url="/oauth/token", client_id="cid",
+                          authorize_url="/oauth/authorize", redirect_uri="http://app.local/callback",
+                          pkce=True))
+
+
+def _oauth_password_spec():
+    return LoginSpec(
+        method="POST", path="", username_field="username", password_field="password",
+        token_field="access_token", grant="password",
+        oauth=OAuthConfig(grant="password", token_url="/oauth/token", client_id="cid",
+                          client_secret=SecretStr("csecret"), scope="read"))
+
+
+# --------------------------------------------- happy paths (fake IdP session)
+def test_oauth_authcode_pkce_obtains_code_then_token():
+    factory = _oauth_factory()
+    prov = TokenProvider(Credential("alice", SecretStr("pw")), _oauth_authcode_spec(), _TARGET, _SCOPE,
+                         session_factory=factory)
+    tok = _asyncio.run(prov.token())
+    s = factory.created[0]
+    assert tok == f"TOK.alice.{s.sid}"
+    assert [r["kind"] for r in s.requests] == ["login", "authorize", "token"]   # login -> authorize -> token
+    authorize_url = [r["url"] for r in s.requests if r["kind"] == "authorize"][0]
+    assert "code_challenge=" in authorize_url and "code_challenge_method=S256" in authorize_url  # PKCE S256
+    token_data = [r["data"] for r in s.requests if r["kind"] == "token"][0]
+    assert token_data["grant_type"] == "authorization_code"
+    assert token_data["code"] == f"CODE.alice.{s.sid}"                          # the captured code
+    assert token_data["code_verifier"] and len(token_data["code_verifier"]) >= 40  # PKCE verifier sent
+    assert s.closed                                                             # session cleaned up
+
+
+def test_oauth_password_grant_sets_token_and_sends_client_secret():
+    factory = _oauth_factory()
+    prov = TokenProvider(Credential("bob", SecretStr("pw")), _oauth_password_spec(), _TARGET, _SCOPE,
+                         session_factory=factory)
+    tok = _asyncio.run(prov.token())
+    s = factory.created[0]
+    assert tok == f"TOK.bob.{s.sid}"
+    assert [r["kind"] for r in s.requests] == ["token"]                         # single form POST, no authorize
+    data = s.requests[0]["data"]
+    assert data["grant_type"] == "password" and data["username"] == "bob"
+    assert data["client_secret"] == "csecret" and "code_verifier" not in data   # secret sent; no PKCE
+
+
+def test_oauth_expires_in_drives_proactive_refresh():
+    factory = _oauth_factory(expires_in=5)                    # token TTL 5s
+    now = {"t": 1000.0}
+    prov = TokenProvider(Credential("alice", SecretStr("pw")), _oauth_authcode_spec(), _TARGET, _SCOPE,
+                         session_factory=factory, refresh_margin=10, clock=lambda: now["t"])
+    tok1 = _asyncio.run(prov.token())                         # grant #1: exp = 1000 + 5 = 1005
+    tok2 = _asyncio.run(prov.token())                         # exp-now (5) <= margin (10) -> re-grant
+    assert len(factory.created) == 2 and tok1 != tok2         # expires_in drove a proactive refresh
+
+
+# --------------------------------------------- SCOPE (load-bearing): off-scope redirect refused per-hop
+def test_oauth_offscope_authorize_redirect_is_refused_per_hop_never_followed():
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        if request.method == "POST" and request.url.path == "/account/login":
+            return _httpx.Response(200, json={"ok": True})
+        if request.url.path == "/oauth/authorize":                              # 302 to an OUT-OF-SCOPE IdP
+            return _httpx.Response(302, headers={"location": "http://evil.example.com/steal?code=X"})
+        return _httpx.Response(404)
+
+    def factory(scope):
+        client = _httpx.AsyncClient(transport=_httpx.MockTransport(handler), follow_redirects=False)
+        return _HttpxLoginSession(scope, client=client)
+
+    prov = TokenProvider(Credential("u", SecretStr("p")), _oauth_authcode_spec(), _TARGET, _SCOPE,
+                         session_factory=factory)
+    with pytest.raises(LoginError):
+        _asyncio.run(prov.token())
+    # the off-scope host was NEVER contacted (refused BEFORE the bytes left, not auto-followed)
+    assert not any("evil.example.com" in u for u in seen)
+
+
+def test_oauth_offscope_token_url_is_refused_before_any_request():
+    # the token endpoint itself is not exempt: a token_url that leaves the target origin is refused.
+    spec = LoginSpec(method="POST", path="", username_field="username", password_field="password",
+                     token_field="access_token", grant="password",
+                     oauth=OAuthConfig(grant="password", token_url="http://evil.example.com/oauth/token",
+                                       client_id="cid"))
+    calls = []
+
+    def factory(scope):
+        class _NoNet:
+            async def oauth_post_form(self, url, data, headers=None):
+                calls.append(url)                                              # must NOT be reached
+                return LoginResponse(200, {"access_token": "X"}, {}, {})
+            async def aclose(self):
+                pass
+        return _NoNet()
+
+    prov = TokenProvider(Credential("u", SecretStr("p")), spec, _TARGET, _SCOPE, session_factory=factory)
+    with pytest.raises(LoginError):
+        _asyncio.run(prov.token())
+    assert calls == []                                                        # refused before any bytes left
+
+
+# --------------------------------------------- ISOLATION (load-bearing): zero cross-account OAuth state
+def test_oauth_isolation_owner_token_reads_as_owner_not_attacker():
+    factory = _oauth_factory()
+    eng = _FakeEngine([
+        _result(ai_verdict=None, attack={"response": {"status_code": 401}}),   # force a relogin
+        _result(ai_verdict="verified"),
+    ])
+    atk = Credential("attackeruser", SecretStr("apw"))
+    own = Credential("victimowner", SecretStr("opw"))
+    _asyncio.run(_verify_external_relogin(
+        _TARGET, _SPEC, _OP, _oauth_authcode_spec(), atk, own, None, eng, session_factory=factory))
+    assert len(eng.calls) == 2
+    # the OAuth owner token flows ONLY through owner_credential; never into the attack headers
+    for kw in eng.calls:
+        auth = str(kw["auth_context"])
+        assert "attackeruser" in auth and "victimowner" not in auth
+        oc = kw["owner_credential"]
+        assert isinstance(oc, OwnerCredential)
+        assert "victimowner" in oc.header_value and "attackeruser" not in oc.header_value
+    # STRUCTURAL: every session served EXACTLY ONE account (a shared client would serve both)
+    for s in factory.created:
+        users = {r["body"].get("username") for r in s.requests if r["kind"] == "login"}
+        assert len(users) == 1
+    # owner sessions carry NONE of the attacker sessions' PKCE verifiers / codes (zero cross-account bleed)
+    atk_sess = [s for s in factory.created if s.username == "attackeruser"]
+    own_sess = [s for s in factory.created if s.username == "victimowner"]
+    atk_secrets = {s.verifier for s in atk_sess} | {
+        r["data"].get("code") for s in atk_sess for r in s.requests if r["kind"] == "token"}
+    for s in own_sess:
+        own_secrets = {s.verifier} | {
+            r["data"].get("code") for r in s.requests if r["kind"] == "token"}
+        assert not (own_secrets & atk_secrets)
+
+
+def test_oauth_isolation_assertion_is_sensitive_to_a_shared_session():
+    # NEGATIVE CONTROL: one shared session across accounts -> it serves BOTH usernames, which the
+    # isolation assertion above forbids. Proves that assertion would FAIL if a client were shared.
+    shared = _FakeOAuthSession()
+
+    def shared_factory(scope):
+        return shared
+
+    atk = TokenProvider(Credential("attackeruser", SecretStr("p")), _oauth_authcode_spec(), _TARGET,
+                        _SCOPE, session_factory=shared_factory)
+    own = TokenProvider(Credential("victimowner", SecretStr("p")), _oauth_authcode_spec(), _TARGET,
+                        _SCOPE, session_factory=shared_factory)
+    _asyncio.run(atk.token())
+    _asyncio.run(own.token())
+    users = {r["body"].get("username") for r in shared.requests if r["kind"] == "login"}
+    assert users == {"attackeruser", "victimowner"}            # one session, two accounts -> detectable
+
+
+# --------------------------------------------- from_file parsing / back-compat / direction-safety
+def test_oauth_from_file_parsing_and_validation(tmp_path):
+    def _w(d):
+        p = tmp_path / "l.json"
+        p.write_text(json.dumps(d), encoding="utf-8")
+        return str(p)
+
+    s = LoginSpec.from_file(_w({"grant": "password",
+                                "oauth": {"token_url": "/oauth/token", "client_id": "cid", "scope": "read"}}))
+    assert s.grant == "password" and s.oauth.token_url == "/oauth/token" and s.oauth.client_id == "cid"
+
+    s2 = LoginSpec.from_file(_w({"grant": "authorization_code", "path": "/login",
+                                 "username_field": "u", "password_field": "p",
+                                 "oauth": {"token_url": "/t", "client_id": "c",
+                                           "authorize_url": "/oauth/authorize",
+                                           "redirect_uri": "http://app/cb"}}))
+    assert s2.grant == "authorization_code" and s2.oauth.authorize_url == "/oauth/authorize"
+
+    with pytest.raises(ValueError):                            # missing token_url
+        LoginSpec.from_file(_w({"grant": "password", "oauth": {"client_id": "cid"}}))
+    with pytest.raises(ValueError):                            # auth-code missing redirect_uri
+        LoginSpec.from_file(_w({"grant": "authorization_code",
+                                "oauth": {"token_url": "/t", "client_id": "c", "authorize_url": "/a"}}))
+    with pytest.raises(ValueError):                            # unknown grant
+        LoginSpec.from_file(_w({"grant": "implicit", "oauth": {"token_url": "/t", "client_id": "c"}}))
+
+
+def test_oauth_client_secret_is_secretstr_never_plaintext(tmp_path):
+    p = tmp_path / "l.json"
+    p.write_text(json.dumps({"grant": "password",
+                             "oauth": {"token_url": "/t", "client_id": "c", "client_secret": "SEKRET"}}),
+                 encoding="utf-8")
+    s = LoginSpec.from_file(str(p))
+    assert isinstance(s.oauth.client_secret, SecretStr)
+    assert "SEKRET" not in repr(s.oauth) and "SEKRET" not in str(s.oauth)   # masked in repr
+
+
+def test_oauth_back_compat_form_spec_is_byte_identical(tmp_path):
+    # a form login.json (no grant/oauth) -> grant="form", oauth=None, and logs in via the unchanged
+    # single-request http_post path.
+    p = tmp_path / "login.json"
+    p.write_text(json.dumps({"path": "/users/v1/login", "username_field": "username",
+                             "password_field": "password", "token_field": "auth_token"}), encoding="utf-8")
+    spec = LoginSpec.from_file(str(p))
+    assert spec.grant == "form" and spec.oauth is None and spec.token_field == "auth_token"
+
+    def _boom_factory(scope):
+        raise AssertionError("a form spec must NOT use the OAuth/session path")
+
+    fake = _fake_post_factory()
+    prov = TokenProvider(Credential("u", SecretStr("p")), spec, _TARGET, _SCOPE,
+                         http_post=fake, session_factory=_boom_factory)
+    tok = _asyncio.run(prov.token())
+    assert tok.startswith("TOK.u.") and len(fake.calls) == 1   # single POST via http_post; no session used
+
+
+def test_oauth_broken_grant_is_login_error_not_a_verdict():
+    class _BadTokenSession:
+        async def request(self, method, url, *, json_body=None, headers=None):
+            return LoginResponse(200, {"ok": True}, {}, {})
+        async def oauth_post_form(self, url, data, headers=None):
+            return LoginResponse(400, {"error": "invalid_client"}, {}, {})      # token endpoint rejects
+        async def aclose(self):
+            pass
+
+    prov = TokenProvider(Credential("u", SecretStr("p")), _oauth_password_spec(), _TARGET, _SCOPE,
+                         session_factory=lambda scope: _BadTokenSession())
+    with pytest.raises(LoginError):
+        _asyncio.run(prov.token())
+
+
+def test_oauth_authorize_error_redirect_is_login_error():
+    # an authorize redirect carrying ?error=access_denied (not a code) -> LoginError -> NOT DATA.
+    class _DeniedSession:
+        async def request(self, method, url, *, json_body=None, headers=None):
+            return LoginResponse(200, {"ok": True}, {}, {})
+        async def oauth_get_no_follow(self, url, headers=None):
+            return LoginResponse(302, {}, {"location": "http://app.local/callback?error=access_denied"}, {})
+        async def aclose(self):
+            pass
+
+    prov = TokenProvider(Credential("u", SecretStr("p")), _oauth_authcode_spec(), _TARGET, _SCOPE,
+                         session_factory=lambda scope: _DeniedSession())
+    with pytest.raises(LoginError):
+        _asyncio.run(prov.token())
+
+
+def test_oauth_token_and_secret_never_printed_via_cli(tmp_path, monkeypatch):
+    # end-to-end secrecy: an OAuth --auth run never prints the obtained token or the client_secret.
+    monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", False)
+    cfg = _write_cfg(tmp_path)                                 # atkuser / ownuser (distinct)
+    login = tmp_path / "login.json"
+    login.write_text(json.dumps({"grant": "password",
+                                 "oauth": {"token_url": "/oauth/token", "client_id": "cid",
+                                           "client_secret": "SECRET-CANARY-DO-NOT-LEAK"}}), encoding="utf-8")
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps(_SPEC), encoding="utf-8")
+    op = tmp_path / "op.json"
+    op.write_text(json.dumps(_OP), encoding="utf-8")
+
+    from backend.app.cli import relogin as _relogin
+    monkeypatch.setattr(_relogin, "_default_session_factory", lambda scope: _FakeOAuthSession())
+    eng = _FakeEngine([_result(ai_verdict="failed")])
+    lines = []
+    code = run_external_verify(
+        target=_TARGET, spec_path=str(spec), op_path=str(op), config_path=cfg, auth_spec_path=str(login),
+        engine=eng,
+        echo=lambda *a: lines.append(" ".join(str(x) for x in a)),
+        err=lambda *a: lines.append(" ".join(str(x) for x in a)))
+    out = "\n".join(lines)
+    assert "SECRET-CANARY-DO-NOT-LEAK" not in out              # client_secret never printed
+    assert "TOK.atkuser" not in out and "TOK.ownuser" not in out   # obtained tokens never printed

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import base64
 import getpass
+import hashlib
 import json
 import os
 import re
@@ -41,7 +42,7 @@ import time
 import tomllib
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit, urlencode, parse_qsl
 
 import httpx
 from pydantic import SecretStr
@@ -113,6 +114,11 @@ _TOKEN_LOCATIONS = frozenset({"body", "header", "cookie"})
 # group from the raw HTML/text body, for form CSRF tokens — read-only).
 _EXTRACT_LOCATIONS = frozenset({"body", "header", "cookie", "regex"})
 
+# Slice 3 — login GRANT kind. "form" is today's username/password login (single-request or
+# multi-step); the two OAuth grants produce a token via the operator's OWN authorized flow.
+_GRANTS = frozenset({"form", "password", "authorization_code"})
+_OAUTH_GRANTS = frozenset({"password", "authorization_code"})
+
 
 @dataclass(frozen=True)
 class Extract:
@@ -183,6 +189,62 @@ def _step_from(raw: Any) -> "LoginStep":
         raise ValueError(f"--auth step missing required field: {e}") from e
 
 
+# ==============================================================================
+# OAuth 2.0 authorization (slice 3): the operator AUTOMATES a login THEY are authorized to perform —
+# supplying their OWN client credentials + the resource-owner (account) credentials for a target they
+# may test. It only produces a token string, which flows into the SAME three-variable routing as every
+# other login (attacker->auth_context, owner->owner_credential, bystander->bystander_credential); it
+# changes NOTHING in the verdict core.
+#
+# EXPLICIT NON-GOAL — a DIFFERENT tool category, NOT built here: anything that DEFEATS an auth
+# challenge — captcha solving, MFA/2FA bypass, third-party consent-screen scraping, or credential
+# brute-force. OAuth here means walking the operator's OWN authorized flow, never breaking someone's
+# auth. A failed / misconfigured flow -> LoginError -> no token -> NOT DATA, never a verdict.
+# ==============================================================================
+@dataclass(frozen=True)
+class OAuthConfig:
+    """OAuth grant parameters. `grant`: "password" (resource-owner-password) or "authorization_code"
+    (+ PKCE). Secrets (`client_secret`) are SecretStr, revealed only at request-build time, never
+    logged. `token_field` names the access-token field in the token response (default "access_token").
+    The auth-code-only fields (`authorize_url`, `redirect_uri`, `pkce`, `code_param`) are unused by the
+    password grant."""
+    grant: str
+    token_url: str
+    client_id: str
+    client_secret: Optional[SecretStr] = None
+    scope: str = ""
+    token_field: str = "access_token"
+    authorize_url: str = ""
+    redirect_uri: str = ""
+    pkce: bool = True
+    code_param: str = "code"
+
+    @staticmethod
+    def from_dict(grant: str, raw: Any) -> "OAuthConfig":
+        if not isinstance(raw, dict):
+            raise ValueError("--auth 'oauth' must be a JSON object")
+        try:
+            token_url = str(raw["token_url"])
+            client_id = str(raw["client_id"])
+        except KeyError as e:
+            raise ValueError(f"--auth oauth missing required field: {e}") from e
+        secret = raw.get("client_secret")
+        cfg = OAuthConfig(
+            grant=grant, token_url=token_url, client_id=client_id,
+            client_secret=(SecretStr(str(secret)) if secret else None),
+            scope=str(raw.get("scope", "")),
+            token_field=str(raw.get("token_field", "access_token")),
+            authorize_url=str(raw.get("authorize_url", "")),
+            redirect_uri=str(raw.get("redirect_uri", "")),
+            pkce=bool(raw.get("pkce", True)),
+            code_param=str(raw.get("code_param", "code")),
+        )
+        if grant == "authorization_code" and not (cfg.authorize_url and cfg.redirect_uri):
+            raise ValueError(
+                "--auth oauth authorization_code requires 'authorize_url' and 'redirect_uri'")
+        return cfg
+
+
 @dataclass(frozen=True)
 class LoginSpec:
     """The `--auth login.json` declaration: how to log in and where the token is.
@@ -204,6 +266,12 @@ class LoginSpec:
     token_location: str = "body"
     steps: Tuple[LoginStep, ...] = ()
     inject: Optional[Inject] = None
+    # Slice 3 — OAuth. `grant` selects the login mode: "form" (default; today's byte-identical form
+    # login) or an OAuth grant, whose parameters live in `oauth`. When `grant != "form"`, `oauth` is
+    # present; the form fields above default (auth-code reuses them for the operator's account login,
+    # the password grant ignores them).
+    grant: str = "form"
+    oauth: Optional[OAuthConfig] = None
 
     @staticmethod
     def from_file(path: str) -> "LoginSpec":
@@ -220,15 +288,38 @@ class LoginSpec:
             steps_raw = d.get("steps") or []
             if not isinstance(steps_raw, list):
                 raise ValueError("--auth 'steps' must be a JSON array")
+            grant = str(d.get("grant", "form")).lower()
+            if grant not in _GRANTS:
+                raise ValueError(f"--auth grant must be one of {sorted(_GRANTS)}, got {grant!r}")
+            steps = tuple(_step_from(s) for s in steps_raw)
+            inject = _inject_from(d.get("inject"))
+            if grant == "form":
+                # Byte-identical to today: the form fields are REQUIRED.
+                return LoginSpec(
+                    method=str(d.get("method", "POST")).upper(),
+                    path=str(d["path"]),
+                    username_field=str(d["username_field"]),
+                    password_field=str(d["password_field"]),
+                    token_field=str(d["token_field"]),
+                    token_location=location,
+                    steps=steps,
+                    inject=inject,
+                )
+            # OAuth grant: OAuth params in `oauth`; the form fields are OPTIONAL (auth-code reuses
+            # them for the operator's account login via the SAME form-login sequence; the password
+            # grant ignores them and uses the standard OAuth "username"/"password" body fields).
+            oauth = OAuthConfig.from_dict(grant, d.get("oauth") or {})
             return LoginSpec(
                 method=str(d.get("method", "POST")).upper(),
-                path=str(d["path"]),
-                username_field=str(d["username_field"]),
-                password_field=str(d["password_field"]),
-                token_field=str(d["token_field"]),
+                path=str(d.get("path", "")),
+                username_field=str(d.get("username_field", "username")),
+                password_field=str(d.get("password_field", "password")),
+                token_field=str(d.get("token_field", "access_token")),
                 token_location=location,
-                steps=tuple(_step_from(s) for s in steps_raw),
-                inject=_inject_from(d.get("inject")),
+                steps=steps,
+                inject=inject,
+                grant=grant,
+                oauth=oauth,
             )
         except KeyError as e:
             raise ValueError(f"--auth login spec missing required field: {e}") from e
@@ -415,6 +506,17 @@ class LoginSession:
                       headers: Optional[Dict[str, str]] = None) -> "LoginResponse":
         raise NotImplementedError
 
+    async def oauth_get_no_follow(self, url: str,
+                                  headers: Optional[Dict[str, str]] = None) -> "LoginResponse":
+        """OAuth: a SINGLE GET with redirects NOT auto-followed — the caller inspects the Location to
+        capture the authorization code or to scope-check the next hop manually."""
+        raise NotImplementedError
+
+    async def oauth_post_form(self, url: str, data: Dict[str, str],
+                              headers: Optional[Dict[str, str]] = None) -> "LoginResponse":
+        """OAuth: a form-urlencoded POST — the token endpoint requires form encoding (RFC 6749)."""
+        raise NotImplementedError
+
     async def aclose(self) -> None:
         pass
 
@@ -437,6 +539,18 @@ class _HttpxLoginSession(LoginSession):
             **_build_request_kwargs(method, url, hdrs, json_body, follow_redirects=False))
         if self._scope is not None and getattr(self._scope, "locked", False):
             resp = await _follow_redirects_scoped(self._client, resp, method, hdrs, json_body, self._scope)
+        return _httpx_to_login_response(resp)
+
+    async def oauth_get_no_follow(self, url, headers=None) -> "LoginResponse":
+        # Redirects NOT auto-followed (the client is constructed follow_redirects=False): the OAuth
+        # code capture inspects the Location and scope-checks each hop MANUALLY (see _oauth_capture_code).
+        resp = await self._client.request("GET", url, headers=dict(headers or {}))
+        return _httpx_to_login_response(resp)
+
+    async def oauth_post_form(self, url, data, headers=None) -> "LoginResponse":
+        # Form-urlencoded (httpx sets Content-Type from `data=`), no auto-follow (token endpoints
+        # return a JSON body, not a redirect).
+        resp = await self._client.request("POST", url, data=dict(data), headers=dict(headers or {}))
         return _httpx_to_login_response(resp)
 
     async def aclose(self) -> None:
@@ -558,6 +672,158 @@ async def _run_login_sequence(
     return resp
 
 
+# ==============================================================================
+# OAuth 2.0 grant execution (slice 3). Reuses the per-account isolation weld (ONE LoginSession per
+# account via session_factory -> own client + cookie jar + PKCE verifier + captured code/token) and
+# the SAME fail-closed scope gate (`_scope_check_login_url` -> ScopePolicy.check) the step machinery
+# uses. The authorize-chain redirects are handled MANUALLY, per hop, each scope-checked BEFORE bytes
+# leave; an out-of-scope hop (e.g. a redirect to an external IdP NOT in the declared scope) is REFUSED
+# (LoginError), never followed. The ONLY declared exception is the operator's OWN redirect_uri: the
+# flow STOPS there and READS the code from the Location — it never sends bytes to redirect_uri, so it
+# cannot leave scope. This is NOT a weaker parallel scope check; it is the same policy, per hop.
+# ==============================================================================
+_OAUTH_MAX_REDIRECTS = 10
+
+
+def _pkce_pair() -> Tuple[str, str]:
+    """A fresh PKCE (verifier, S256 challenge). Generated PER ACCOUNT, per grant — a local pair,
+    never shared across accounts. The verifier is high-entropy and is NEVER logged."""
+    verifier = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode("ascii")
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return verifier, challenge
+
+
+def _rand_state() -> str:
+    """A fresh anti-CSRF `state` value (per authorize request)."""
+    return base64.urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode("ascii")
+
+
+def _matches_redirect_uri(target: str, redirect_uri: str) -> bool:
+    """True iff `target` is the operator's declared redirect_uri (scheme + host + port + path; the
+    query is ignored because the authorization code lives IN the query)."""
+    t, r = urlsplit(target), urlsplit(redirect_uri)
+    return (t.scheme.lower(), (t.hostname or "").lower(), t.port, t.path) == \
+           (r.scheme.lower(), (r.hostname or "").lower(), r.port, r.path)
+
+
+def _build_authorize_url(base_url: str, oauth: "OAuthConfig", challenge: str) -> str:
+    """The authorization-endpoint URL with the standard query params (+ PKCE S256 challenge when
+    enabled). urljoin-normalized against base_url; the RESULT is ScopePolicy.check()-ed by the caller
+    before any bytes leave."""
+    url = _join_login_url(base_url, oauth.authorize_url)
+    params = {"response_type": "code", "client_id": oauth.client_id,
+              "redirect_uri": oauth.redirect_uri, "state": _rand_state()}
+    if oauth.scope:
+        params["scope"] = oauth.scope
+    if oauth.pkce:
+        params["code_challenge"] = challenge
+        params["code_challenge_method"] = "S256"
+    sep = "&" if urlsplit(url).query else "?"
+    return url + sep + urlencode(params)
+
+
+async def _oauth_capture_code(session: "LoginSession", authorize_url: str, oauth: "OAuthConfig",
+                              scope: Optional[ScopePolicy]) -> str:
+    """Drive the authorize request and capture the authorization `code` from the redirect to the
+    declared redirect_uri. Each hop is scope-checked fail-closed BEFORE bytes leave (the SAME gate as
+    the step machinery); an out-of-scope hop is REFUSED, never followed. The code is READ from the
+    redirect_uri Location — redirect_uri itself is never REQUESTED (so the flow cannot leave scope)."""
+    url = authorize_url
+    for _ in range(_OAUTH_MAX_REDIRECTS):
+        _scope_check_login_url(scope, url)                        # fail-closed BEFORE any bytes leave
+        resp = await session.oauth_get_no_follow(url)
+        if 300 <= resp.status < 400:
+            loc = _header_lookup(resp.headers, "location")
+            if not loc:
+                raise LoginError("OAuth authorize: redirect had no Location header")
+            target = urljoin(url, loc)
+            if _matches_redirect_uri(target, oauth.redirect_uri):
+                q = dict(parse_qsl(urlsplit(target).query))
+                if q.get("error"):                                # e.g. access_denied — a real signal, not a code
+                    raise LoginError(f"OAuth authorize returned error {q.get('error')!r} (no code)")
+                code = q.get(oauth.code_param)
+                if not code:
+                    raise LoginError(f"OAuth authorize redirect carried no {oauth.code_param!r}")
+                return code                                       # READ the code; never REQUEST redirect_uri
+            url = target                                          # in-scope intermediate hop -> loop (scope-checked next)
+            continue
+        raise LoginError(f"OAuth authorize did not redirect to redirect_uri (HTTP {resp.status})")
+    raise LoginError("OAuth authorize exceeded the redirect budget")
+
+
+def _extract_oauth_token(oauth: "OAuthConfig", resp: "LoginResponse") -> Tuple[str, Optional[float]]:
+    """Read (access_token, ttl_seconds) from the token response. `ttl` is `expires_in` (relative
+    seconds) when present, else None (the caller falls back to the JWT `exp`). The token is NEVER
+    logged; a non-2xx / missing token -> LoginError (NOT DATA)."""
+    if not (200 <= resp.status < 300):
+        raise LoginError(f"OAuth token endpoint failed: HTTP {resp.status}")
+    tok = resp.body.get(oauth.token_field)
+    if not tok or not isinstance(tok, str):
+        raise LoginError(f"OAuth token response had no token in field {oauth.token_field!r}")
+    ei = resp.body.get("expires_in")
+    ttl = float(ei) if isinstance(ei, (int, float)) and not isinstance(ei, bool) and ei > 0 else None
+    return tok.strip(), ttl
+
+
+async def _oauth_password_grant(
+    cred: "Credential", oauth: "OAuthConfig", base_url: str,
+    scope: Optional[ScopePolicy], session: "LoginSession",
+) -> Tuple[str, Optional[float]]:
+    """Resource-owner-password grant: ONE form POST to token_url. Secrets revealed only here."""
+    data = {"grant_type": "password", "client_id": oauth.client_id,
+            "username": cred.username, "password": reveal_secret(cred.password)}   # revealed only here
+    if oauth.scope:
+        data["scope"] = oauth.scope
+    if oauth.client_secret is not None:
+        data["client_secret"] = reveal_secret(oauth.client_secret)                 # revealed only here
+    url = _join_login_url(base_url, oauth.token_url)
+    _scope_check_login_url(scope, url)
+    resp = await session.oauth_post_form(url, data)
+    return _extract_oauth_token(oauth, resp)
+
+
+async def _oauth_authcode_grant(
+    cred: "Credential", spec: "LoginSpec", oauth: "OAuthConfig", base_url: str,
+    scope: Optional[ScopePolicy], session: "LoginSession",
+) -> Tuple[str, Optional[float]]:
+    """Authorization-code grant (+ PKCE), all on ONE per-account session:
+      1. authenticate the operator's OWN account (reuse the form-login sequence: steps + login POST),
+      2. GET authorize_url and capture the `code` from the redirect_uri (per-hop scope-checked),
+      3. exchange code (+ PKCE verifier) at token_url (form POST).
+    The PKCE verifier is generated per account and is never shared or logged."""
+    verifier, challenge = _pkce_pair() if oauth.pkce else ("", "")
+    # 1. Establish the authenticated account session (its response is NOT the token here).
+    await _run_login_sequence(cred, spec, base_url, scope, session)
+    # 2. Authorize -> capture the code (stop+read at the declared redirect_uri).
+    authorize_url = _build_authorize_url(base_url, oauth, challenge)
+    code = await _oauth_capture_code(session, authorize_url, oauth, scope)
+    # 3. Token exchange.
+    data = {"grant_type": "authorization_code", "code": code,
+            "client_id": oauth.client_id, "redirect_uri": oauth.redirect_uri}
+    if oauth.pkce:
+        data["code_verifier"] = verifier
+    if oauth.client_secret is not None:
+        data["client_secret"] = reveal_secret(oauth.client_secret)                 # revealed only here
+    token_url = _join_login_url(base_url, oauth.token_url)
+    _scope_check_login_url(scope, token_url)
+    resp = await session.oauth_post_form(token_url, data)
+    return _extract_oauth_token(oauth, resp)
+
+
+async def _run_oauth_grant(
+    cred: "Credential", spec: "LoginSpec", base_url: str,
+    scope: Optional[ScopePolicy], session: "LoginSession",
+) -> Tuple[str, Optional[float]]:
+    """Dispatch the OAuth grant on ONE per-account session. Returns (access_token, ttl_seconds)."""
+    oauth = spec.oauth
+    if oauth is None:   # defensive: refresh() only routes here when grant is an OAuth grant
+        raise LoginError("OAuth grant selected but no 'oauth' config present")
+    if oauth.grant == "password":
+        return await _oauth_password_grant(cred, oauth, base_url, scope, session)
+    return await _oauth_authcode_grant(cred, spec, oauth, base_url, scope, session)
+
+
 class TokenProvider:
     """Obtains and refreshes ONE account's token via login. Holds no other account's state.
 
@@ -590,8 +856,14 @@ class TokenProvider:
         return await self.refresh()
 
     async def refresh(self) -> str:
-        tok = await self._login()
-        self._cached = (tok, _jwt_exp(tok))
+        if self._spec.grant in _OAUTH_GRANTS:
+            # OAuth grant: the token's expiry comes from `expires_in` (absolute-ized via THIS
+            # provider's clock, for consistency with proactive refresh) or, absent that, the JWT exp.
+            tok, ttl = await self._login_oauth()
+            self._cached = (tok, (self._clock() + ttl) if ttl is not None else _jwt_exp(tok))
+        else:
+            tok = await self._login()                                # form path — unchanged
+            self._cached = (tok, _jwt_exp(tok))
         return tok
 
     async def _login(self) -> str:
@@ -621,3 +893,13 @@ class TokenProvider:
         finally:
             await session.aclose()
         return _extract_token(self._spec, resp)   # body / header / cookie — value never logged
+
+    async def _login_oauth(self) -> Tuple[str, Optional[float]]:
+        """OAuth grant on a FRESH per-account session (its OWN client + cookie jar + PKCE verifier +
+        captured code/token). Nothing is shared with any other account's provider — identical to the
+        multi-step isolation weld — so the obtained token can only be THIS account's identity."""
+        session = self._session_factory(self._scope)
+        try:
+            return await _run_oauth_grant(self._cred, self._spec, self._base_url, self._scope, session)
+        finally:
+            await session.aclose()
