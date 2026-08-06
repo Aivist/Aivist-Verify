@@ -386,6 +386,15 @@ class DeepVerificationResult:
     # `guard_override` reason drive a conditional, human-review rendering. It NEVER contributes to a
     # `verified` verdict and is NOT a promotion channel.
     broken_for_all_suspected: Optional[bool] = None
+    # D28 observability (additive; set ONLY at the D24 owner-view gate's existing branch, from the
+    # OwnerViewResult already computed there). The owner-view read's RAW HTTP outcome — status code
+    # and reason — surfaced so the OUTER re-login layer can detect an owner-token expiry mid-run (an
+    # owner-view 401) and refresh the OWNER token + retry once. This is OBSERVATION ONLY: it records a
+    # value the gate already produced and changes NO verdict, NO gate decision, NO channel, NO
+    # owner_view_corroborated. Both default None when the gate did not run (no owner credential,
+    # verdict != 'verified', or a follow-up occurred so the read-semantic branch is out of scope).
+    owner_view_status: Optional[int] = None
+    owner_view_reason: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -2021,6 +2030,12 @@ async def execute_deep_verification(
             # an unverifiable claim must never be the one that gets to stand.
             # D19 observability: None until/unless the gate actually runs below.
             _owner_view_corroborated: Optional[bool] = None
+            # D28 observability: the owner-view read's RAW HTTP outcome (status + reason). None until/
+            # unless the gate runs. OBSERVATION ONLY — read straight off the OwnerViewResult below and
+            # surfaced on the result; it touches no gate decision (the outer re-login layer uses a 401
+            # here to refresh the OWNER token and retry once).
+            _owner_view_status: Optional[int] = None
+            _owner_view_reason: Optional[str] = None
             # D30 observability: None until/unless the bystander probe actually runs below.
             _bystander_view_available: Optional[bool] = None
             _resource_public: Optional[bool] = None
@@ -2031,6 +2046,8 @@ async def execute_deep_verification(
                     client, attack_req.get("path", ""), base_url, owner_credential,
                     approved_host=approved, query_params=attack_req.get("query_params"),
                 )
+                _owner_view_status = _owner_view.status      # observe-only (D28): raw owner-view outcome
+                _owner_view_reason = _owner_view.reason       # ditto — never feeds the gate decision
                 _corroborated = _owner_view.available and _owner_view_corroborates(
                     _anchor_body, _owner_view.body
                 )
@@ -2209,6 +2226,8 @@ async def execute_deep_verification(
                     ) if pre_flight_result is not None else None
                 ),
                 owner_view_corroborated=_owner_view_corroborated,
+                owner_view_status=_owner_view_status,          # D28 observe-only
+                owner_view_reason=_owner_view_reason,          # D28 observe-only
                 bystander_view_available=_bystander_view_available,
                 resource_is_public=_resource_public,
                 broken_for_all_suspected=_broken_for_all,
