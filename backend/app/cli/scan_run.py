@@ -90,7 +90,8 @@ async def run_scan(
         ids = await source_ids(
             cand, base_url=target, approved_host=approved, id_map=id_map, collections=collections,
             attacker_cred=harvest_attacker_cred, owner_cred=harvest_owner_cred,
-            control_view=control_view, **kw)
+            control_view=control_view, catalog=catalog, model=model,   # tier-c: AI collection proposal
+            provider_factory=provider_factory, **kw)
         if ids is None:
             skipped.append(cand)
             records.append(_skip_record(cand, "needs manual id (no id could be sourced)"))

@@ -204,3 +204,109 @@ def discover_candidate_parts(
             dropped.append(r)
             logger.info("[SCAN·DISCOVERY] dropped invalid candidate (failed code fence): %r", r)
     return accepted, dropped
+
+
+# ==============================================================================
+# Tier-c (2c) — AI proposes the COLLECTION endpoint that lists a resource's objects, so id sourcing can
+# harvest ids without an operator-declared collection. CATALOG-BASED ONLY (the AI sees the templated
+# paths, never a real response body — so this does NOT depend on the target's response shape; the
+# response-body parser stays the deferred hook in scan_ids._extract_ids). AI proposes; CODE vets; the
+# existing per-account _harvest + _extract_ids do the sourcing. A failed fence -> no ids -> SKIP.
+# ==============================================================================
+_COLLECTION_SYSTEM_PROMPT = (
+    "You are selecting the COLLECTION endpoint that lists a resource's objects, for id harvesting. "
+    "Given a target BOLA candidate (an endpoint that reads/writes ONE object identified by an id) and "
+    "the endpoint catalog, pick the GET endpoint that lists the CALLER'S OWN objects of that SAME "
+    "resource — the collection form of the candidate's path: same resource, NO id/{template} segment "
+    "(a list endpoint, not a single-object one). Use ONLY a path present in the catalog, VERBATIM. "
+    "Return STRICT JSON {\"collection_path\": \"/...\"} — or {\"collection_path\": null} if none fits — "
+    "and nothing else."
+)
+
+
+def _build_collection_prompt(candidate: Dict[str, str], catalog: List[str]) -> str:
+    listing = "\n".join(f"  {e}" for e in catalog)
+    return (f"BOLA candidate: {candidate.get('method')} {candidate.get('path_template')} "
+            f"(object id in the {candidate.get('id_location')} as {candidate.get('id_param')!r}).\n\n"
+            f"Endpoint catalog:\n{listing}\n\n"
+            "Return {\"collection_path\": \"/...\"} naming the GET that lists this resource's objects.")
+
+
+async def propose_collection(
+    candidate: Dict[str, str], catalog: List[str], *, model: Optional[str] = None,
+    provider_factory: Callable[[], Any] = _default_provider_factory, timeout: float = 30.0,
+) -> Optional[str]:
+    """Ask the model to name the collection endpoint (from the catalog) that lists the candidate's
+    resource. Returns the RAW proposed path (to be code-vetted by `validate_collection`), or None on
+    any failure / no provider (graceful — a miss yields no collection, never a crash or a guess)."""
+    if not catalog:
+        return None
+    try:
+        provider = provider_factory()
+    except Exception as e:
+        logger.warning("[SCAN·DISCOVERY] collection provider unavailable (%s).", type(e).__name__)
+        return None
+    if provider is None or not getattr(provider, "is_configured", lambda: False)():
+        return None
+    model_name = model or getattr(provider, "default_model", "") or ""
+    if model_name.startswith("models/"):
+        model_name = model_name[len("models/"):]
+    try:
+        raw_text = (await provider.generate(
+            messages=[{"role": "user", "text": _build_collection_prompt(candidate, catalog)}],
+            system=_COLLECTION_SYSTEM_PROMPT, json_mode=True, temperature=0.1,
+            model=model_name, timeout=timeout, max_attempts=1,
+        )).strip()
+        data = json.loads(raw_text)
+    except Exception as e:
+        logger.warning("[SCAN·DISCOVERY] collection proposal failed (%s).", type(e).__name__)
+        return None
+    cp = data.get("collection_path") if isinstance(data, dict) else None
+    return cp if isinstance(cp, str) and cp.strip() else None
+
+
+def _norm_noun(seg: str) -> str:
+    """Crude singular/plural fold so a candidate's 'report' matches a collection's 'reports'."""
+    s = (seg or "").lower()
+    if s.endswith("ies") and len(s) > 3:
+        return s[:-3] + "y"
+    if s.endswith("s") and not s.endswith("ss") and len(s) > 1:
+        return s[:-1]
+    return s
+
+
+def _candidate_resource_noun(candidate: Dict[str, str]) -> Optional[str]:
+    """The resource NOUN a candidate is about: for a path id, the segment BEFORE the {id}; for a query
+    id, the last non-template path segment."""
+    segs = [s for s in (candidate.get("path_template", "") or "").strip("/").split("/") if s]
+    if candidate.get("id_location") == "path":
+        idseg = "{" + candidate.get("id_param", "") + "}"
+        if idseg in segs:
+            i = segs.index(idseg)
+            return segs[i - 1] if i > 0 else None
+    for s in reversed(segs):
+        if not (s.startswith("{") and s.endswith("}")):
+            return s
+    return None
+
+
+def validate_collection(proposed: Any, candidate: Dict[str, str], catalog: List[str]) -> Optional[str]:
+    """CODE FENCE on an AI-proposed collection. Returns the vetted path or None (=> tier-c yields no
+    ids => SKIP). A plausible collection is: a GET that EXISTS in the catalog (verbatim), with NO
+    id/{template} segment (it lists MANY objects), whose LAST segment is the candidate's resource noun
+    (singular/plural-insensitive) and which SHARES the candidate's parent prefix (same resource
+    lineage). This never lets the AI point id-harvesting at an unrelated / non-existent endpoint."""
+    if not isinstance(proposed, str) or not proposed.startswith("/"):
+        return None
+    if ("GET", proposed) not in _catalog_pairs(catalog):        # must be a real GET in the catalog
+        return None
+    psegs = [s for s in proposed.strip("/").split("/") if s]
+    if not psegs or any(s.startswith("{") and s.endswith("}") for s in psegs):
+        return None                                             # a collection has NO id/template segment
+    noun = _candidate_resource_noun(candidate)
+    if noun is None or _norm_noun(psegs[-1]) != _norm_noun(noun):
+        return None                                             # the collection must be ABOUT this resource
+    cand_segs = [s for s in (candidate.get("path_template", "") or "").strip("/").split("/") if s]
+    if psegs[:-1] != cand_segs[:len(psegs) - 1]:                # same parent lineage (no cross-resource)
+        return None
+    return proposed
