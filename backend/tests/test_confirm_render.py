@@ -335,3 +335,82 @@ def test_drift_guard_broken_for_all_reason_matches_engine_and_is_not_a_code_chan
     assert _BROKEN_FOR_ALL_REASON == BROKEN_FOR_ALL_ASSERTION_REASON
     assert _BROKEN_FOR_ALL_REASON not in _CODE_CONFIRMED_CHANNELS
     assert _BROKEN_FOR_ALL_REASON not in _FOUR_CHANNELS
+
+
+# ==============================================================================
+# Cut B, commit 2 — the renderer walks the PHYSICAL chain from the record's flattened, ALREADY-
+# redacted bytes and emits a re-runnable evidence package (credentials as <REDACTED> placeholders,
+# never a live token). Absent "evidence" -> renders EXACTLY as cut A (graceful degradation).
+# ==============================================================================
+_LIVE_JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhbGljZSJ9.SIGabc123"
+_VICTIM_SSN = "999-11-2222"
+
+
+def _enriched_record(**over):
+    ev = {
+        "baseline": {
+            "request": {"method": "GET", "url": "http://t/api/records/1",
+                        "headers": {"Authorization": "***REDACTED***"}, "body": None},
+            "response": {"status_code": 200, "content_length": 24,
+                         "body": '{"id":1,"owner":"alice"}', "url": "http://t/api/records/1"}},
+        "attack": {
+            "request": {"method": "GET", "url": "http://t/api/records/2",
+                        "headers": {"Authorization": "***REDACTED***"}, "body": None},
+            "response": {"status_code": 200, "content_length": 42,
+                         "body": '{"id":2,"owner":"bob","ssn":"' + _VICTIM_SSN + '"}',
+                         "url": "http://t/api/records/2"}},
+        "owner_view": {"status": 200, "reason": "ok", "corroborated": True,
+                       "body": '{"id":2,"owner":"bob","ssn":"' + _VICTIM_SSN + '"}'},
+    }
+    rec = {
+        "shape": "read_semantic", "final_verdict": "verified", "owner_view_corroborated": True,
+        "guard_override": None, "status": "completed", "ground_truth": None, "degraded": False,
+        "method": "GET", "baseline_path": "/api/records/1", "attack_path": "/api/records/2", "body": None,
+        "evidence": ev,
+    }
+    rec.update(over)
+    return rec
+
+
+def test_renderer_byte_chain_shows_victim_data_and_rerunnable_package():
+    out = render_tree(_enriched_record(), color=False)
+    # the ordered PHYSICAL chain with real bytes
+    assert "physical bytes the engine actually exchanged" in out
+    assert "Sent as the attacker" in out
+    assert "Attack response received" in out
+    assert "SAME object re-read AS THE VICTIM" in out            # step 3: the owner-view read-back
+    assert _VICTIM_SSN in out                                    # the victim's data IS shown (the evidence)
+    # the re-runnable evidence package with placeholders
+    assert "Re-runnable evidence package" in out
+    assert "curl -X GET 'http://t/api/records/2'" in out
+    assert "<REDACTED>" in out                                   # credential placeholder, never a live token
+
+
+def test_renderer_poc_never_contains_a_live_secret():
+    # even if a live token slipped into the record's evidence (simulating a commit-1 miss), the
+    # render-layer redactor MUST catch it — a test that FAILS if a live secret reaches the output.
+    rec = _enriched_record()
+    rec["evidence"]["attack"]["response"]["body"] = '{"token":"' + _LIVE_JWT + '","balance":4200}'
+    out = render_tree(rec, color=False)
+    assert _LIVE_JWT not in out                                  # live token never rendered
+    assert "***REDACTED***" in out
+    assert "4200" in out                                         # non-secret data still shown
+
+
+def test_renderer_without_evidence_degrades_to_cut_a():
+    rec = _enriched_record()
+    rec.pop("evidence")                                          # a stale golden row: no bytes
+    out = render_tree(rec, color=False)
+    assert "physical bytes the engine actually exchanged" not in out   # NOT the byte chain
+    assert "Evidence chain (the engine's own run)" in out       # the cut-A narrative chain
+    assert "Reproduce:" in out                                   # the cut-A one-line reproduce
+    assert "Re-runnable evidence package" not in out
+
+
+def test_renderer_refuted_and_notdata_unaffected_by_evidence_key():
+    # evidence is only walked in the confirming/signal chains; a refuted/not-data record is unchanged.
+    refuted = _enriched_record(final_verdict="failed", owner_view_corroborated=False)
+    out = render_tree(refuted, color=False)
+    assert "[REFUTED]" in out
+    notdata = _enriched_record(final_verdict=None, degraded=True, status="degraded")
+    assert "[NOT DATA]" in render_tree(notdata, color=False)

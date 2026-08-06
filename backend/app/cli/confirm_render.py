@@ -72,13 +72,35 @@ def _painter(color: Optional[bool]):
     return paint
 
 
+# Robust credential redactor for rendered output (defense in depth — records are ALREADY redacted at
+# flatten time by deep_verifier.redact_secrets; this is the render-layer analogue, kept in sync).
+# Catches a bare JWT, a "Bearer <token>", and a secret-bearing key in JSON or key=value form. It is
+# IDEMPOTENT and placeholder-preserving: a value already carrying "REDACTED" (the ***REDACTED*** marker
+# or a <REDACTED> PoC placeholder) is left intact, so re-redaction never mangles a placeholder.
+_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+")
+_SECRET_KV_RE = re.compile(
+    r'(?i)(["\']?\b(?:authorization|auth[_-]?token|access[_-]?token|refresh[_-]?token|id[_-]?token|'
+    r'api[_-]?key|apikey|client[_-]?secret|password|passwd|pwd|secret|session[_-]?id|sessionid|'
+    r'session|set-cookie|cookie|csrf[_-]?token|xsrf[_-]?token|token)["\']?\s*[:=]\s*["\']?)'
+    r'([^"\'\s,;}&]+)')
+
+
+_AUTH_SCHEMES = frozenset({"bearer", "basic", "digest", "negotiate"})
+
+
 def _redact(text: str) -> str:
     """Mask anything that looks like a credential in rendered output (defense in depth)."""
-    text = re.sub(r"(?i)\bbearer\s+\S+", "Bearer " + _REDACT, text)
-    text = re.sub(
-        r"(?i)\b(authorization|cookie|x-token|api[_-]?key|token|secret)(\s*[:=]\s*)\S+",
-        lambda m: m.group(1) + m.group(2) + _REDACT, text,
-    )
+    def _mask(prefix: str, value: str) -> str:
+        # leave an auth SCHEME word (Bearer/Basic/…) and an already-redacted value / <REDACTED>
+        # placeholder untouched — so the actual token masks exactly once, idempotently.
+        if value.lower() in _AUTH_SCHEMES or "REDACTED" in value.upper():
+            return prefix + value
+        return prefix + _REDACT
+
+    text = re.sub(r"(?i)\b(bearer\s+)([A-Za-z0-9._~+/=\-]+)",
+                  lambda m: _mask(m.group(1), m.group(2)), text)
+    text = _JWT_RE.sub(_REDACT, text)
+    text = _SECRET_KV_RE.sub(lambda m: _mask(m.group(1), m.group(2)), text)
     return text
 
 
@@ -372,8 +394,18 @@ def _ruled_out_steps(record: dict, tier: str):
 
 
 def _append_chain(lines, record: dict, paint, tier: str) -> None:
-    """Emit the ordered, walkable evidence chain into `lines`. Steps with no backing field are
-    omitted; the numbering counts only the steps actually shown."""
+    """Emit the ordered, walkable evidence chain. When the record carries flattened `evidence`
+    (real, ALREADY-redacted bytes), render the PHYSICAL chain (cut B); otherwise fall back to the
+    field-backed NARRATIVE chain (cut A) — graceful degradation for stale golden rows."""
+    if record.get("evidence"):
+        _append_evidence_chain(lines, record, record["evidence"], paint, tier)
+    else:
+        _append_narrative_chain(lines, record, paint, tier)
+
+
+def _append_narrative_chain(lines, record: dict, paint, tier: str) -> None:
+    """Cut A: the ordered, walkable evidence chain from field-backed anchors (no raw bytes). Steps
+    with no backing field are omitted; the numbering counts only the steps actually shown."""
     lines.append(paint("  Evidence chain (the engine's own run):", "bold"))
     n = 0
     s1 = _attacker_step(record)
@@ -398,6 +430,148 @@ def _append_chain(lines, record: dict, paint, tier: str) -> None:
             lines.append("       - " + r)
     if n == 0:
         lines.append("    (no per-step evidence fields were recorded on this row)")
+
+
+# ------------------------------------------------------------------------------
+# Cut B — the walkable PHYSICAL chain from the record's flattened, ALREADY-redacted bytes, plus a
+# re-runnable evidence package. This renderer only DISPLAYS bytes the record carries (which passed the
+# credential redactor at flatten time) and, belt-and-suspenders, re-redacts the whole output via
+# `_redact`. Credentials in the PoC are shown as <REDACTED> placeholders — never a live token.
+# ------------------------------------------------------------------------------
+_POC_PLACEHOLDER = "<REDACTED>"
+_AUTH_HEADERS = frozenset({"authorization", "cookie", "x-token"})
+
+
+def _is_auth_header(name: str) -> bool:
+    return str(name).lower() in _AUTH_HEADERS
+
+
+def _fmt_http_request(req: dict):
+    """Request as HTTP lines: method+url, redacted headers, body (already redacted)."""
+    out = [f"{req.get('method', '?')} {req.get('url', '')}"]
+    for k, v in (req.get("headers") or {}).items():
+        out.append(f"{k}: {v}")
+    body = req.get("body")
+    if body is not None:
+        out.append("Body: " + str(body))
+    return out
+
+
+def _fmt_http_response(resp: dict):
+    """Response as HTTP lines: status + content-length, then the (already redacted) body."""
+    out = [f"-> HTTP {resp.get('status_code')} | Content-Length: {resp.get('content_length')}"]
+    body = resp.get("body")
+    if body is not None and str(body).strip():
+        out.append(str(body))
+    return out
+
+
+def _byte_comparison_lines(record: dict, ev: dict, paint):
+    """Step 4: the byte-level comparison that decided it (owner-view match) + the field-backed
+    anchors the engine recorded."""
+    out = []
+    ov = ev.get("owner_view") or {}
+    corr = ov.get("corroborated")
+    if corr is True:
+        out.append("the attack response and the victim's owner-view read-back carried the SAME object "
+                   "bytes - the attacker read the victim's private data across the boundary  "
+                   + _tok(paint, "owner_view_corroborated", True))
+    elif corr is False:
+        out.append("the attack response did NOT match the victim's owner-view read-back - no cross-user "
+                   "read was confirmed  " + _tok(paint, "owner_view_corroborated", False))
+    for c in _evidence_lines(record, paint):
+        # avoid duplicating the owner_view_corroborated line already stated above in byte terms
+        if "owner_view_corroborated" in c and corr is not None:
+            continue
+        out.append(c)
+    return out
+
+
+def _append_evidence_chain(lines, record: dict, ev: dict, paint, tier: str) -> None:
+    lines.append(paint("  Evidence chain (physical bytes the engine actually exchanged):", "bold"))
+    n = 0
+    atk = ev.get("attack") or {}
+    atk_req = atk.get("request")
+    if atk_req:
+        n += 1
+        lines.append(f"    {n}. Sent as the attacker:")
+        for l in _fmt_http_request(atk_req):
+            lines.append("       " + l)
+    atk_resp = atk.get("response")
+    if atk_resp:
+        n += 1
+        lines.append(f"    {n}. Attack response received:")
+        for l in _fmt_http_response(atk_resp):
+            lines.append("       " + l)
+    ov = ev.get("owner_view") or {}
+    if ov.get("body") is not None and str(ov.get("body")).strip():
+        n += 1
+        lines.append(f"    {n}. The SAME object re-read AS THE VICTIM (owner-view - a different identity than the attack):")
+        lines.append(f"       -> HTTP {ov.get('status')}")
+        lines.append("       " + str(ov.get("body")))
+    comps = _byte_comparison_lines(record, ev, paint)
+    if comps:
+        n += 1
+        lines.append(f"    {n}. What decided it (byte-level):")
+        for c in comps:
+            lines.append("       - " + c)
+    ruled = _ruled_out_steps(record, tier)
+    if ruled:
+        n += 1
+        lines.append(f"    {n}. Not taken as proof:")
+        for r in ruled:
+            lines.append("       - " + r)
+    if n == 0:
+        lines.append("    (no physical evidence bytes were recorded on this row)")
+
+
+def _curl_lines(req: dict):
+    """A copy-pasteable curl for `req`, credentials shown as <REDACTED> placeholders (NEVER a live
+    token). Multi-line with backslash continuations."""
+    method = req.get("method", "GET")
+    url = req.get("url", "")
+    pieces = [f"curl -X {method} '{url}'"]
+    for k, v in (req.get("headers") or {}).items():
+        val = _POC_PLACEHOLDER if (_is_auth_header(k) or (isinstance(v, str) and "REDACTED" in v.upper())) else v
+        pieces.append(f"-H '{k}: {val}'")
+    body = req.get("body")
+    if body is not None:
+        pieces.append(f"--data '{body}'")
+    return [pieces[i] + (" \\" if i < len(pieces) - 1 else "") for i in range(len(pieces))]
+
+
+def _evidence_package(record: dict, ev: dict, paint):
+    """The re-runnable evidence package: the exact attack request as curl (credentials as <REDACTED>
+    placeholders the operator fills from THEIR OWN config), plus the owner-view read-back that proves
+    whose data it is. Contains NO live secret."""
+    out = []
+    atk_req = (ev.get("attack") or {}).get("request")
+    if not atk_req:
+        return out
+    out.append(paint("  Re-runnable evidence package (fill <REDACTED> from YOUR config; never a live token):", "bold"))
+    out.append("    # 1) The attack request - reproduces the cross-user access AS THE ATTACKER:")
+    for l in _curl_lines(atk_req):
+        out.append("    " + l)
+    ov = ev.get("owner_view") or {}
+    if ov.get("body") is not None and str(ov.get("body")).strip():
+        url = atk_req.get("url") or record.get("attack_path") or record.get("baseline_path") or ""
+        out.append("    # 2) The owner-view read-back - the SAME resource read AS THE VICTIM (proves whose data it is):")
+        out.append(f"    curl -X GET '{url}' \\")
+        out.append(f"      -H 'Authorization: {_POC_PLACEHOLDER}'    # the VICTIM/owner's own token")
+    return out
+
+
+def _append_reproduce_or_package(lines, record: dict, paint) -> None:
+    """The re-runnable package (cut B) when the record carries attack-request bytes; otherwise the
+    one-line Reproduce (cut A) — graceful degradation."""
+    ev = record.get("evidence")
+    if ev and (ev.get("attack") or {}).get("request"):
+        lines.extend(_evidence_package(record, ev, paint))
+        return
+    rep = _reproduce_line(record)
+    if rep:
+        lines.append(paint("  Reproduce:", "bold"))
+        lines.append("    " + rep)
 
 
 def _why_not_lines(record: dict, paint):
@@ -502,10 +676,7 @@ def render_tree(record: dict, *, color: Optional[bool] = None) -> str:
                 "Real target: no ground truth. The deterministic gate fired (on the two labs that "
                 "meant zero false positives), but zero-FP is a lab-measured property and is NOT "
                 "claimed on this target.", width=80, initial_indent="  ", subsequent_indent="  "))
-        rep = _reproduce_line(record)
-        if rep:
-            lines.append(paint("  Reproduce:", "bold"))
-            lines.append("    " + rep)
+        _append_reproduce_or_package(lines, record, paint)
     elif tier == "signal":
         # Verified, but NO deterministic code channel authorized it - the model's opinion / triage
         # heuristics alone. A calmer marker (NOT bold red): this is a lead, not a zero-FP confirmation.
@@ -519,10 +690,7 @@ def render_tree(record: dict, *, color: Optional[bool] = None) -> str:
             "NOT a zero-false-positive confirmation. Treat it as a lead to verify, not a confirmed "
             "finding.", width=80, initial_indent="  ", subsequent_indent="  "))
         _append_chain(lines, record, paint, tier)
-        rep = _reproduce_line(record)
-        if rep:
-            lines.append(paint("  Reproduce:", "bold"))
-            lines.append("    " + rep)
+        _append_reproduce_or_package(lines, record, paint)
     elif record.get("guard_override") == _BROKEN_FOR_ALL_REASON:
         # A LOCKED-inconclusive conditional finding (opt-in `assert_owner_only`). NOT a confirmation:
         # by black-box design a broken-for-all gap and an all-authenticated-shared feature are
