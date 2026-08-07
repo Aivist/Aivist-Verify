@@ -135,6 +135,26 @@ class ConsoleController:
                 continue
             return v
 
+    def _ask_optional_spec_path(self, label: str, **g) -> str:
+        """Like `_ask_spec_path` but BLANK is allowed => a spec-less target (scan runs from an
+        endpoints list instead). A non-blank value must be a readable OpenAPI file (re-prompt otherwise)."""
+        self._guide(**g)
+        while True:
+            v = self._ask(label)
+            if not v:
+                return ""                       # spec-less target — endpoints provided at scan time
+            if not os.path.isfile(v):
+                self.echo(f"  ! That file wasn't found: {v}. Leave BLANK for a spec-less target, "
+                          f"or enter a valid path.")
+                continue
+            try:
+                _load_spec_file(v)
+            except Exception as ex:
+                self.echo(f"  ! That file couldn't be read as OpenAPI JSON/YAML ({type(ex).__name__}). "
+                          f"Leave BLANK, or enter a valid spec path.")
+                continue
+            return v
+
     def _ask_menu(self, label: str, options: List[str], **g) -> int:
         """Numbered pick. Returns the 0-based index; re-prompts on non-numeric/out-of-range."""
         self._guide(**g)
@@ -339,10 +359,12 @@ class ConsoleController:
                                  hint="The target's base URL (localhost only).",
                                  example="http://localhost:8888",
                                  why="Every request is scope-locked to this host.")
-        spec_path = self._ask_spec_path("OpenAPI spec path",
-                                        hint="Path to the target's OpenAPI/Swagger file (.json or .yml).",
-                                        example=r"C:\Users\you\crapi-openapi-spec.json",
-                                        why="Used to list endpoints and describe the API to the verifier.")
+        spec_path = self._ask_optional_spec_path(
+            "OpenAPI spec path (blank if the target has none)",
+            hint="Path to the target's OpenAPI/Swagger file (.json or .yml), or BLANK.",
+            example=r"C:\Users\you\crapi-openapi-spec.json",
+            why="Used to list endpoints. Blank => a spec-less target; `scan` runs from an endpoints "
+                "list you provide at scan time.")
         method, path_template = self._pick_endpoint(spec_path)
         loc_idx = self._ask_menu("Where is the object id?",
                                  ["path  - e.g. /orders/{id}", "query - e.g. ?report_id=123"],
@@ -489,12 +511,36 @@ class ConsoleController:
                       "confirm judge. Run 'config' first. Nothing was sent.")
             return
         t = self.selected
-        try:
-            spec = _load_spec_file(t.spec_path)
-        except Exception as ex:
-            self.echo(f"  ! Could not read the target's spec ({type(ex).__name__}). "
-                      f"Re-create the target with a valid spec path.")
-            return
+        # Endpoint source: the target's OpenAPI spec if it loads (BYTE-IDENTICAL to today), ELSE a
+        # user-provided endpoints list (scan works WITHOUT a spec). `confirm_spec` is a spec dict fed to
+        # the confirm so it gets the SAME catalog whichever source produced it.
+        spec = None
+        endpoints = None
+        confirm_spec = None
+        if t.spec_path and os.path.isfile(t.spec_path):
+            try:
+                spec = confirm_spec = _load_spec_file(t.spec_path)
+            except Exception:
+                spec = confirm_spec = None
+        if spec is None:
+            self.echo("  This target has no usable OpenAPI spec - scan can run from an ENDPOINTS LIST")
+            self.echo("  (a plain 'METHOD /path' list; templated paths like /orders/{id} detect best).")
+            ep_path = self._ask_optional_existing_file(
+                "Endpoints file (METHOD /path list)",
+                hint="A JSON array of \"GET /path/{id}\" strings, OR newline-delimited METHOD /path lines.",
+                why="Lets scan discover candidates WITHOUT an OpenAPI spec; templated {id} paths detect best.")
+            if not ep_path:
+                self.echo("  ! scan needs either an OpenAPI spec (on the target) or an endpoints file. "
+                          "Nothing to scan.")
+                return
+            try:
+                from backend.app.cli.external_verify import _load_endpoints_file
+                from backend.app.services.endpoint_catalog import spec_from_endpoints
+                endpoints = _load_endpoints_file(ep_path)
+                confirm_spec = spec_from_endpoints(endpoints)
+            except Exception as ex:
+                self.echo(f"  ! [NOT DATA] could not read the endpoints file ({type(ex).__name__}): {ex}")
+                return
 
         # id source (optional): a JSON file {"ids": {path_template: {attacker_id, victim_id}},
         # "collections": {path_template: collection_path}}. Tier a (ids) needs no reads; tier b
@@ -582,11 +628,12 @@ class ConsoleController:
                     # the SAME single-op relogin call verify uses, REUSING the persisted providers
                     # (refresh-on-401 mid-scan, incl. D28 owner-only) — no re-login from scratch.
                     return await _verify_external_relogin(
-                        t.base_url, spec, op, login_spec, attacker_cred, owner_cred, model, engine,
+                        t.base_url, confirm_spec, op, login_spec, attacker_cred, owner_cred, model, engine,
                         bystander_cred=bystander_cred, providers=providers)
 
                 return await run_scan(
-                    t.base_url, spec, run_op=run_op, id_map=id_map, collections=collections,
+                    t.base_url, spec, run_op=run_op, endpoints=endpoints, id_map=id_map,
+                    collections=collections,
                     harvest_attacker_cred=OwnerCredential.from_config(atk_tok),   # attacker harvest ONLY
                     harvest_owner_cred=OwnerCredential.from_config(own_tok),      # owner harvest ONLY
                     model=model, assert_owner_only=assert_owner_only, **kw)
@@ -612,12 +659,12 @@ class ConsoleController:
             bystander_tok = SecretStr(bystander) if bystander else _resolve_bystander_token(self.config_path)
 
             async def run_op(op):
-                return await _verify_external(t.base_url, spec, op, attacker_tok, owner_tok, model,
-                                              engine, bystander_tok=bystander_tok)
+                return await _verify_external(t.base_url, confirm_spec, op, attacker_tok, owner_tok,
+                                              model, engine, bystander_tok=bystander_tok)
 
             self.echo(f"Scanning {t.base_url} - discovering BOLA candidates and confirming each...")
             run_coro = run_scan(
-                t.base_url, spec, run_op=run_op, id_map=id_map, collections=collections,
+                t.base_url, spec, run_op=run_op, endpoints=endpoints, id_map=id_map, collections=collections,
                 harvest_attacker_cred=OwnerCredential.from_config(attacker),   # attacker harvest creds ONLY
                 harvest_owner_cred=OwnerCredential.from_config(owner),         # owner harvest creds ONLY
                 model=model, assert_owner_only=assert_owner_only, **kw)

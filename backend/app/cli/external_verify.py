@@ -45,7 +45,7 @@ from backend.app.core.config import settings, reveal_secret
 from backend.app.cli import branding
 from backend.app.cli import relogin
 from backend.app.cli.confirm_render import render_tree, exit_code_for
-from backend.app.services.endpoint_catalog import catalog_from_openapi
+from backend.app.services.endpoint_catalog import catalog_from_openapi, _parse_endpoint_line
 from backend.app.services.scope import ScopePolicy
 from backend.app.services.deep_verifier import OwnerCredential, execute_deep_verification, flatten_evidence
 
@@ -105,6 +105,31 @@ def _load_spec_file(path: str) -> Dict[str, Any]:
     except json.JSONDecodeError:
         import yaml                            # courtesy: a YAML spec under a non-yaml name still loads
         return yaml.safe_load(text)
+
+
+def _load_endpoints_file(path: str) -> List[str]:
+    """Read a user endpoint list for scan's NO-SPEC path. Accepts EITHER a JSON array of
+    "METHOD /path" strings, OR a plain newline-delimited "METHOD /path" text file ('#'-comment and
+    blank lines ignored). Returns the usable string list (normalized to the catalog format downstream
+    by `catalog_from_endpoints`).
+
+    Fail-safe, mirroring `_load_spec_file`: a malformed / empty / no-usable-endpoint file RAISES a
+    clear error (the caller turns it into the graceful '[NOT DATA] could not read the endpoints file'
+    path), never a crash. It NEVER executes anything — plain text / a JSON array of strings only."""
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    stripped = text.strip()
+    if stripped.startswith("["):
+        data = json.loads(stripped)                       # a JSON array of "METHOD /path" strings
+        if not isinstance(data, list):
+            raise ValueError('endpoints JSON must be an array of "METHOD /path" strings')
+        items = [str(x) for x in data]
+    else:
+        items = text.splitlines()                         # newline-delimited "METHOD /path" lines
+    usable = [e for e in items if _parse_endpoint_line(e) is not None]
+    if not usable:
+        raise ValueError('no usable "METHOD /path" endpoints found in the file')
+    return usable
 
 
 def _approved_host(base_url: str) -> str:

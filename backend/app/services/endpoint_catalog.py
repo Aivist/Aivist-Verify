@@ -151,6 +151,58 @@ def catalog_from_openapi(spec: Dict[str, Any]) -> List[str]:
     return _normalize(entries)
 
 
+def _parse_endpoint_line(entry: str) -> Optional[tuple]:
+    """Parse a user-provided 'METHOD /path [optional annotation]' into (METHOD, /path), or None if
+    unusable. Tolerant of a copied '  [tags: ...]' annotation, '#' comment lines, and blank lines.
+    Rejects non-HTTP methods and non-'/' paths (so junk lines are dropped, never crash)."""
+    s = (entry or "").strip()
+    if not s or s.startswith("#"):
+        return None
+    head = s.split("  [", 1)[0].strip()          # drop any trailing catalog-style annotation
+    parts = head.split(None, 1)                   # 'METHOD' + '/path'
+    if len(parts) != 2:
+        return None
+    method, path = parts[0].upper(), parts[1].strip()
+    if method.lower() not in _OPENAPI_HTTP_METHODS or not path.startswith("/"):
+        return None
+    return method, path
+
+
+def catalog_from_endpoints(endpoints: List[str]) -> List[str]:
+    """Build a normalized endpoint catalog from a USER-PROVIDED endpoint list — the SAME de-duplicated,
+    sorted `["METHOD /path", ...]` format `catalog_from_openapi` produces, so ALL downstream discovery
+    is byte-identical regardless of whether the catalog came from a spec or a hand-written list.
+
+    Each usable entry becomes 'METHOD /path' (METHOD upper-cased; /path verbatim — templated `{id}` or
+    concrete). Blank / '#'-comment / non-HTTP-method / non-'/'-path lines are DROPPED (never raise).
+    An empty or degenerate list yields an empty catalog, never a crash. NOTE (documented): templated
+    paths ('/orders/{order_id}') give the best BOLA-candidate detection — a concrete '/orders/7' still
+    works but the id segment is less obvious to discovery."""
+    if not isinstance(endpoints, (list, tuple)):
+        return []
+    entries: List[str] = []
+    for e in endpoints:
+        parsed = _parse_endpoint_line(e if isinstance(e, str) else str(e))
+        if parsed:
+            entries.append(f"{parsed[0]} {parsed[1]}")
+    return _normalize(entries)
+
+
+def spec_from_endpoints(endpoints: List[str]) -> Dict[str, Any]:
+    """A MINIMAL synthetic OpenAPI dict from a user endpoint list, so a spec-less scan can hand the
+    confirm engine the SAME catalog: `catalog_from_openapi(spec_from_endpoints(eps))` equals
+    `catalog_from_endpoints(eps)`. Operation objects are empty — NOTHING is invented (no tags/summary/
+    description); it exists only to carry the METHOD/path structure through the spec-shaped interfaces."""
+    paths: Dict[str, Any] = {}
+    for e in (endpoints or []):
+        parsed = _parse_endpoint_line(e if isinstance(e, str) else str(e))
+        if not parsed:
+            continue
+        method, path = parsed
+        paths.setdefault(path, {})[method.lower()] = {}
+    return {"openapi": "3.0.0", "paths": paths}
+
+
 def catalog_from_har(har: Dict[str, Any]) -> List[str]:
     """Build a catalog from a HAR / proxy-capture inventory.
 

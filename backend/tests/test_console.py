@@ -156,6 +156,30 @@ def test_target_happy_path_saves_selects_no_tokens(tmp_path, monkeypatch):
     assert c.selected.to_op()["baseline_path"] == "/api/orders/8"
 
 
+def test_target_allows_blank_spec_for_spec_less_target(tmp_path, monkeypatch):
+    # scan "1": a target can be created with NO spec (blank) -> endpoints provided at scan time.
+    monkeypatch.setattr(branding, "config_dir", lambda: str(tmp_path))
+    c, lines = _ctrl(tmp_path, monkeypatch, prompt=_scripted([
+        "specless", "http://localhost:8888", "",   # name, url, BLANK spec (spec-less)
+        "1",                                         # method menu -> GET (manual entry, no spec)
+        "/api/orders/{order_id}",                    # path template (manual)
+        "1",                                         # id location -> path
+        "8", "7", "",                                # attacker id, victim id, login (blank)
+    ]))
+    c.dispatch("target")
+    assert c.selected and c.selected.name == "specless"
+    d = tomllib.loads((tmp_path / "targets" / "specless.toml").read_text(encoding="utf-8"))
+    assert d["spec_path"] == ""                       # spec-less target persisted
+    assert c.selected.to_op()["baseline_path"] == "/api/orders/8"
+
+
+def test_help_documents_scan_without_a_spec(tmp_path, monkeypatch):
+    c, lines = _ctrl(tmp_path, monkeypatch)
+    c.dispatch("help")
+    out = "\n".join(lines).lower()
+    assert "without an openapi spec" in out and "endpoints" in out   # discoverable no-spec scan
+
+
 def test_target_bad_spec_path_reprompts(tmp_path, monkeypatch):
     spec = _spec(tmp_path)
     c, lines = _ctrl(tmp_path, monkeypatch, prompt=_scripted([

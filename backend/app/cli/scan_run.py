@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-from backend.app.services.endpoint_catalog import catalog_from_openapi
+from backend.app.services.endpoint_catalog import catalog_from_openapi, catalog_from_endpoints
 from backend.app.cli.console.targets import build_op
 from backend.app.cli.scan_discovery import (
     propose_candidates, discover_candidate_parts, validate_op, _default_provider_factory,
@@ -54,8 +54,9 @@ def _notdata_record(op: Dict[str, Any], reason: str) -> Dict[str, Any]:
 
 
 async def run_scan(
-    target: str, spec: Dict[str, Any], *,
+    target: str, spec: Optional[Dict[str, Any]] = None, *,
     run_op: RunOp,
+    endpoints: Optional[List[str]] = None,
     id_map: Optional[Dict[str, Dict[str, str]]] = None,
     collections: Optional[Dict[str, str]] = None,
     harvest_attacker_cred: Any = None,
@@ -69,9 +70,18 @@ async def run_scan(
 ) -> Dict[str, Any]:
     """Run the scan onramp and return a structured result:
       {records, dropped, skipped, accepted, catalog}.
+
+    The endpoint catalog comes from EXACTLY ONE source: `spec` (an OpenAPI dict, today's path) OR
+    `endpoints` (a user-provided "METHOD /path" list, for a target that publishes no spec). Both or
+    neither -> ValueError (a clear error, not a crash). Only the catalog SOURCE differs; everything
+    downstream (candidate proposal, code fence, id sourcing, confirm loop, report) is UNCHANGED.
     `raw_candidates` (optional) bypasses the AI proposal (offline tests); otherwise the model proposes.
     Every op that reaches `run_op` has passed BOTH code fences; a skip/drop never calls the engine."""
-    catalog = catalog_from_openapi(spec)
+    if (spec is None) == (endpoints is None):
+        raise ValueError("run_scan requires EXACTLY ONE of `spec` or `endpoints` "
+                         f"(got spec={'set' if spec is not None else 'None'}, "
+                         f"endpoints={'set' if endpoints is not None else 'None'})")
+    catalog = catalog_from_openapi(spec) if spec is not None else catalog_from_endpoints(endpoints)
     approved = _approved_host(target)
 
     raw = raw_candidates if raw_candidates is not None else await propose_candidates(

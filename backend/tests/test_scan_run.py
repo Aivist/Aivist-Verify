@@ -11,6 +11,8 @@ import json
 import types
 import asyncio
 
+import pytest
+
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, _REPO_ROOT)
 
@@ -206,3 +208,67 @@ def test_do_scan_bystander_and_assert_route(tmp_path, monkeypatch):
         assert "byst-tok" not in str(kw["auth_context"])                # bystander NEVER in the attack path
     out = "\n".join(lines)
     assert "byst-tok" not in out and "atk-tok" not in out               # tokens masked, never echoed
+
+
+# ==============================================================================
+# scan "1" — catalog from an ENDPOINTS LIST (no spec). Same discovery downstream; exactly-one source.
+# ==============================================================================
+_ENDPOINTS = ["GET /api/reports/{report_id}", "GET /api/users/{user_id}/profile",
+              "GET /api/orders/{order_id}"]
+
+
+def test_run_scan_endpoints_source_feeds_same_discovery():
+    eng = _ScriptedEngine()
+
+    async def run_op(op):
+        return await eng(parsed_request={"method": op["method"], "path": op["baseline_path"].split("?")[0],
+                                         "query_params": {}, "headers": {}, "body": None},
+                         payload=op.get("payload"), base_url="http://t", approved_host="t",
+                         auth_context={}, available_endpoints=[], owner_credential=None)
+
+    # endpoints instead of spec -> the SAME code fence + id sourcing + confirm loop
+    res = asyncio.run(run_scan("http://t", endpoints=_ENDPOINTS, run_op=run_op, id_map=_ID_MAP,
+                               raw_candidates=_CANDS))
+    # the not-in-catalog candidate is dropped by the fence (catalog now built from the endpoints list)
+    assert len(res["accepted"]) == 3 and len(res["dropped"]) == 1
+    assert len(eng.calls) == 2                            # reports + users have ids; orders skipped
+    assert res["catalog"] == sorted(set(_ENDPOINTS), key=lambda e: (e.split(" ", 1)[1], e.split(" ", 1)[0]))
+
+
+def test_run_scan_requires_exactly_one_catalog_source():
+    async def run_op(op):
+        return _result()
+    with pytest.raises(ValueError):                       # NEITHER spec nor endpoints
+        asyncio.run(run_scan("http://t", run_op=run_op, raw_candidates=[]))
+    with pytest.raises(ValueError):                       # BOTH spec and endpoints
+        asyncio.run(run_scan("http://t", _SPEC, endpoints=_ENDPOINTS, run_op=run_op, raw_candidates=[]))
+
+
+def test_do_scan_uses_endpoints_file_when_target_has_no_spec(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", False)
+    monkeypatch.setattr(settings, "LLM_MODEL", "test-model")
+    from backend.app.cli.console import targets as targets_mod
+
+    eps_path = tmp_path / "eps.json"
+    eps_path.write_text(json.dumps(_ENDPOINTS), encoding="utf-8")
+    ids_path = tmp_path / "ids.json"
+    ids_path.write_text(json.dumps({"ids": _ID_MAP}), encoding="utf-8")
+    # a SPEC-LESS target (spec_path="") -> do_scan must fall back to the endpoints list
+    sel = targets_mod.Target(name="specless", base_url="http://localhost:8888", spec_path="", method="GET",
+                             path_template="/api/reports/{report_id}", id_location="path",
+                             id_param="report_id", attacker_id="1", victim_id="2")
+    eng = _ScriptedEngine()
+    lines = []
+    ctl = ConsoleController(
+        prompt=_prompts(str(eps_path), str(ids_path), "", "n"),   # endpoints file, id-source, login(blank), assert=n
+        secret_prompt=_prompts("atk", "own", ""),
+        echo=lambda *a: lines.append(" ".join(str(x) for x in a)),
+        config_path=str(tmp_path / "no-config.toml"),
+        engine=eng, scan_provider_factory=_stub_provider(_CANDS))
+    ctl.selected = sel
+    ctl.do_scan()
+    out = "\n".join(lines)
+    assert "ENDPOINTS LIST" in out                         # the no-spec path was taken (discoverable)
+    assert "scan report:" in out and "[CONFIRMED]" in out
+    assert len(eng.calls) == 2                             # reports + users ran via the endpoints catalog
