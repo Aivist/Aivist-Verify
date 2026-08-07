@@ -414,3 +414,83 @@ def test_renderer_refuted_and_notdata_unaffected_by_evidence_key():
     assert "[REFUTED]" in out
     notdata = _enriched_record(final_verdict=None, degraded=True, status="degraded")
     assert "[NOT DATA]" in render_tree(notdata, color=False)
+
+
+# ==============================================================================
+# Per-finding "So what / Next step" — a plain, tier-FAITHFUL block after the evidence chain. The RED
+# LINE: the phrasing is never stronger than the verdict (broken-for-all stays conditional; NOT DATA
+# never reads as safe; REFUTED stays "here"; signal stays a lead; only code-confirmed is confident).
+# ==============================================================================
+def _conf_rec(**over):
+    r = {"shape": "read_semantic", "final_verdict": "verified", "owner_view_corroborated": True,
+         "guard_override": None, "status": "completed", "ground_truth": None, "degraded": False,
+         "method": "GET", "baseline_path": "/api/orders/8", "attack_path": "/api/orders/7"}
+    r.update(over); return r
+
+
+def _signal_rec(**over):
+    return _conf_rec(owner_view_corroborated=False, **over)          # verified, no code channel -> signal
+
+
+def _refuted_rec(**over):
+    r = _conf_rec(final_verdict="failed", owner_view_corroborated=False,
+                  guard_override="owner_view_not_corroborated"); r.update(over); return r
+
+
+def _notdata_rec(**over):
+    r = {"shape": "read_semantic", "final_verdict": None, "status": "degraded", "degraded": True,
+         "degraded_reason": "baseline request returned HTTP 429", "ground_truth": None,
+         "method": "GET", "baseline_path": "/api/orders/8"}
+    r.update(over); return r
+
+
+def _next_step_block(out: str) -> str:
+    assert "So what / Next step" in out                              # every tier gets the block
+    return out.split("So what / Next step", 1)[1].lower()
+
+
+def test_next_step_confirmed_is_confident_and_actionable():
+    out = render_tree(_conf_rec(), color=False)
+    ns = _next_step_block(out)
+    assert "a real cross-user access bug" in ns
+    assert "the attacker could read the victim's object" in ns      # verb from the shape
+    assert "enforcing an ownership check" in ns
+
+
+def test_next_step_broken_for_all_stays_conditional_never_a_confirmed_claim():
+    out = render_tree(_broken_for_all_record(), color=False)
+    ns = _next_step_block(out)
+    # BOTH conditional branches present; the claim is never asserted as a confirmed vuln
+    assert "if this resource is meant to be owner-private" in ns
+    assert "if it is shared-by-design" in ns
+    assert "a real cross-user access bug" not in ns                 # never upgraded to confirmed
+    assert "confirmed bug" not in ns
+    # the whole rendering keeps the no-'verified'/'confirmed'-claim invariant (see broken-for-all test)
+
+
+def test_next_step_notdata_never_reads_as_safe():
+    ns = _next_step_block(render_tree(_notdata_rec(), color=False))
+    assert "no security result" in ns
+    assert "not a safe or vulnerable verdict" in ns                 # explicitly NOT a verdict
+    assert "is safe" not in ns and "secure" not in ns               # never a safe/secure claim
+    assert "no vulnerability" not in ns
+
+
+def test_next_step_refuted_is_here_not_secure_in_general():
+    ns = _next_step_block(render_tree(_refuted_rec(), color=False))
+    assert "no cross-user access occurred here" in ns               # bounded to THIS endpoint
+    assert "secure in general" not in ns and "proven secure" not in ns
+
+
+def test_next_step_signal_stays_a_lead_not_confirmed():
+    out = render_tree(_signal_rec(), color=False)
+    assert "[SIGNAL" in out
+    ns = _next_step_block(out)
+    assert "a lead, not a confirmed bug" in ns
+    assert "verify it by hand" in ns
+    assert "do not report it as confirmed" in ns                    # 'confirmed' only in the negation
+
+
+def test_next_step_windows_console_safe_for_every_tier():
+    for rec in (_conf_rec(), _signal_rec(), _refuted_rec(), _notdata_rec(), _broken_for_all_record()):
+        assert "—" not in render_tree(rec, color=False)             # no em-dash on any tier's next-step

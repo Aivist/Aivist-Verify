@@ -406,7 +406,7 @@ def _append_chain(lines, record: dict, paint, tier: str) -> None:
 def _append_narrative_chain(lines, record: dict, paint, tier: str) -> None:
     """Cut A: the ordered, walkable evidence chain from field-backed anchors (no raw bytes). Steps
     with no backing field are omitted; the numbering counts only the steps actually shown."""
-    lines.append(paint("  Evidence chain (the engine's own run):", "bold"))
+    lines.append(paint("  Here's what happened - the Evidence chain (the engine's own run):", "bold"))
     n = 0
     s1 = _attacker_step(record)
     if s1:
@@ -488,7 +488,7 @@ def _byte_comparison_lines(record: dict, ev: dict, paint):
 
 
 def _append_evidence_chain(lines, record: dict, ev: dict, paint, tier: str) -> None:
-    lines.append(paint("  Evidence chain (physical bytes the engine actually exchanged):", "bold"))
+    lines.append(paint("  Here's what happened - the Evidence chain (physical bytes the engine actually exchanged):", "bold"))
     n = 0
     atk = ev.get("attack") or {}
     atk_req = atk.get("request")
@@ -638,6 +638,87 @@ def _lab_oracle_line(record: dict, notdata: bool, verdict) -> str:
             f"(informational only; NEVER an input to the verdict)")
 
 
+# ------------------------------------------------------------------------------
+# Per-finding "So what / Next step" — a short, plain, tier-FAITHFUL block appended AFTER the evidence
+# chain. It tells a newcomer what the verdict means for them and the one next action, WITHOUT ever
+# upgrading the claim: broken-for-all stays conditional ("IF it should be private"), NOT DATA stays
+# "not a security result" (never "safe"), REFUTED stays "no cross-user access HERE" (never "secure in
+# general"), SIGNAL stays "a lead, not confirmed". Only code-confirmed speaks with confidence — a
+# deterministic code gate proved it. The phrasing is derived from the same tier the tree rendered.
+# ------------------------------------------------------------------------------
+_ACCESS_VERB = {
+    "read_semantic": "read",
+    "delete": "delete",
+    "mass_assignment": "modify (escalate privilege on)",
+    "write_record": "write to",
+    "silent_write": "write to",
+}
+
+
+def _confirmed_verb(record: dict) -> str:
+    return _ACCESS_VERB.get(record.get("shape", ""), "access")
+
+
+def _next_step_body(record: dict, display_tier: str):
+    """The plain sentences for a tier (no header/paint). FAITHFUL by construction — see module note."""
+    if display_tier == "code_confirmed":
+        return [
+            f"A real cross-user access bug: the attacker could {_confirmed_verb(record)} the victim's "
+            "object. It is reproducible (the request above).",
+            "Next: report it, or fix by enforcing an ownership check on this endpoint.",
+        ]
+    if display_tier == "broken_for_all":
+        return [
+            "Every authenticated user can reach this; an anonymous user cannot.",
+            "IF this resource is meant to be owner-private, this is a serious broken-for-all "
+            "authorization gap.",
+            "IF it is shared-by-design, this is expected.",
+            "Next: confirm the intended access policy, then treat accordingly.",
+        ]
+    if display_tier == "signal":
+        return [
+            "A lead, not a confirmed bug: the model flagged it but no deterministic code gate proved it.",
+            "Next: verify it by hand before acting - do not report it as confirmed.",
+        ]
+    if display_tier == "refuted":
+        return [
+            "No cross-user access occurred here - the attacker did not reach the victim's data.",
+            "Next: nothing needed for this endpoint.",
+        ]
+    if display_tier == "not_data":
+        return [
+            "No security result: the target rate-limited/challenged the run, or a token expired - "
+            "this is NOT a safe or vulnerable verdict.",
+            "Next: retry, refresh credentials, or narrow the run.",
+        ]
+    return []
+
+
+def _next_step_lines(record: dict, display_tier: str, paint):
+    body = _next_step_body(record, display_tier)
+    if not body:
+        return []
+    out = [paint("  So what / Next step:", "bold")]
+    for b in body:
+        out.append(textwrap.fill(b, width=80, initial_indent="    ", subsequent_indent="    "))
+    return out
+
+
+def _display_tier(record: dict) -> str:
+    """The tier the TREE rendered — mirrors render_tree's branch selection exactly, so the next-step
+    block can never disagree with the badge above it."""
+    tier = _claim_tier(record)
+    if tier == "not_data":
+        return "not_data"
+    if tier == "code_confirmed":
+        return "code_confirmed"
+    if tier == "signal":
+        return "signal"
+    if record.get("guard_override") == _BROKEN_FOR_ALL_REASON:
+        return "broken_for_all"
+    return "refuted"
+
+
 def render_tree(record: dict, *, color: Optional[bool] = None) -> str:
     """Render one result-record as a plain-language evidence tree. Verdict from engine
     fields only; the renderer structurally cannot manufacture `verified`.
@@ -736,6 +817,9 @@ def render_tree(record: dict, *, color: Optional[bool] = None) -> str:
             lines.append("    - " + ln)
         lines.append(paint("  Conclusion: the code gate held the line - no cross-user effect confirmed.", "green"))
 
+    # Per-finding "So what / Next step" — plain, tier-faithful, appended AFTER the evidence chain
+    # (never upgrades the claim; see _next_step_body). display tier mirrors the branch selection above.
+    lines.extend(_next_step_lines(record, _display_tier(record), paint))
     lines.append(paint(_lab_oracle_line(record, notdata, verdict), "dim"))
     return _redact("\n".join(lines))
 
