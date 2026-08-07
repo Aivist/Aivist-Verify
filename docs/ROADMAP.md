@@ -9,17 +9,18 @@
   config source); external real-target path (`lanivist verify --target/--spec/--op`, three red lines)
   — **live-confirmed a real BOLA against VAmPI** (unfamiliar third-party target; an engineering signal,
   **not** a zero-FP claim); YAML `--spec` support.
-- **Current station:** the **auto-discovery `scan` onramp — DONE** (commits `c2da36c` → `7ca4891`). Over
-  the UNCHANGED confirm engine, `scan` goes spec-or-endpoints → AI candidate discovery → **two code
-  fences** → per-account id sourcing (tiers a/b/c) → the existing zero-FP confirm loop → one tier-grouped
-  report. This sits on top of a now-**complete capability layer**: multi-step / CSRF login (`cf70d6e`),
-  per-finding owner credentials + **D28 owner-only** mid-run refresh (`4ca17d7`), and **OAuth 2.0** login
-  (`6031f96`) — so the auth work that used to be "next" is landed. **Pipeline runs end-to-end on a real
-  self-hosted lab** (engineering signal, not a zero-FP claim).
-- **Next station:** **report READABILITY (report-clarity)** — make one aggregated `scan` report legible to
-  a non-expert (the confirmed finding vs the signal/broken-for-all/refuted/not-data/skipped noise). Then,
-  as polish: the deferred **tier-c response-body id parser** (needs a real-target response sample) and
-  **AI-driven CLI orchestration**. Presentation-only work (no engine/verdict change), fast-lane.
+- **Current station:** the **auto-discovery `scan` onramp — DONE**, now with **non-interactive onboarding
+  + a readable report** (both smoke-verified on the loopback lab 2026-08-08). `scan` goes spec-or-endpoints
+  → AI candidate discovery → **two code fences** → per-account id sourcing (tiers a/b/c) → the existing
+  zero-FP confirm loop → one **prioritized, tier-grouped report** with a per-finding "So what / Next step"
+  (commits `37047ec` + `7165885`); a target is a single editable **file** driven **non-interactively** from
+  env/file tokens (commits `cb00393`→`a8c199b`). This sits on a **complete capability layer** (multi-step /
+  CSRF login `cf70d6e`, per-finding owner creds + **D28 owner-only** refresh `4ca17d7`, **OAuth 2.0**
+  `6031f96`). Engineering signal, not a zero-FP claim.
+- **Next station:** **`scan` deferred polish** — (a) a bounded **discovery retry** (a transient LLM 5xx
+  currently empties a scan; smoke-observed), (b) the tier-c **response-body id parser** (needs an
+  **external** target with per-resource collections — the built-in labs have none), (c) **AI-driven CLI
+  orchestration**. Presentation/robustness work (no engine/verdict change), fast-lane. See §0 + TECH_DEBT D33.
 - Full **DONE / NEXT / PLANNED / DEFERRED / REJECTED** detail is in the **§0 status board** just below.
 
 > The single source of truth for what this project is, what it is not, and where it's going.
@@ -137,15 +138,20 @@ Operator front door (this node's line — all re-verified 2026-08-02):
     **full passive endpoint discovery (proxy)** (no-spec degrade covers only the manual case); **AI-driven
     CLI orchestration**. See ▶️ NEXT + 📋 PLANNED.
 
+- **`scan` report READABILITY (report-clarity) — ✅ DONE** (commits `37047ec` per-finding "So what /
+  Next step" + `7165885` prioritized top summary + confirmed-first grouping; renderer stays pure/offline,
+  no engine/verdict change). **Smoke-verified 2026-08-08** on the loopback lab: the report renders the top
+  "Where to start" line + per-finding next-step + plain-language D30 reasoning + dim raw tokens on live
+  scan output. Also DONE: the **CLI onboarding / non-interactive config path** (editable target file +
+  non-interactive `scan` from env/file tokens, commits `cb00393`→`a8c199b`), smoke-verified end-to-end.
+
 ### ▶️ NEXT (one item)
-- **`scan` report READABILITY (report-clarity)** — presentation only, no engine/verdict change. The
-  onramp now emits one aggregated report spanning `[CONFIRMED]` / `[SIGNAL]` / `[INCONCLUSIVE
-  broken-for-all]` / `[REFUTED]` / `[NOT DATA]` / `[SKIPPED]` at once; the end-to-end smoke run on a real
-  self-hosted lab showed the **next gap is legibility for a non-expert** — making the one code-confirmed
-  finding stand out from the noise, and each tier's meaning plain. Fast-lane (renderer is pure/offline).
-  *(Polish after this: the deferred tier-c **response-body id parser** — needs a real-target response
-  sample — and **AI-driven CLI orchestration**. The auth-capability remainder that used to sit here is
-  now DONE — see ✅ above.)*
+- **`scan` deferred polish (in order):** (a) **discovery retry** — `propose_candidates` uses
+  `max_attempts=1`, so a transient LLM 5xx empties a scan (smoke-observed twice); add a small bounded
+  retry (presentation/robustness, no verdict change). Then (b) the tier-c **response-body id parser** —
+  which **needs an external target with per-resource collection endpoints** (the built-in labs have none,
+  so the sample can't be captured locally — smoke finding, TECH_DEBT **D33**), and (c) **AI-driven CLI
+  orchestration**. Fast-lane; SAFE-direction throughout (the zero-FP engine judges every op regardless).
 
 ### 📋 PLANNED (ordered)
 1. **Remote arbitrary targets + full SSRF / DNS-rebinding / rate-limit hardening** — beyond localhost.

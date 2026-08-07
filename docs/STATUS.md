@@ -69,7 +69,7 @@ the earlier single-target record (140 SAFE / 70 VULN, one target), kept as histo
 
 | Suite | Command (from repo root) | Result |
 |---|---|---|
-| Backend | `python -m pytest backend/tests -q` | **761 passed** |
+| Backend | `python -m pytest backend/tests -q` | **781 passed** |
 | Ground-truth target (`vulnerable_target`, integer-id) | `python -m pytest vulnerable_target -q` | **31 passed** |
 | Ground-truth target (`depot_target`, UUID-id) | `python -m pytest depot_target -q` | **23 passed** |
 
@@ -79,12 +79,16 @@ the earlier single-target record (140 SAFE / 70 VULN, one target), kept as histo
 > auto-relogin path, the WAF/rate-limit challenge circuit breaker (Part 1) + the 200-status
 > corroboration guard (Part 2), the presentation-deepening **cut A** (claim-tiering + walkable evidence
 > chain), the opt-in **broken-for-all** disclosure, the **multi-step / CSRF login** (slice 2c), and
-> **D25 IP-pinning**; it is now **761** after the auth-capability layer completed (per-finding owner
+> **D25 IP-pinning**; **669→761** after the auth-capability layer completed (per-finding owner
 > credentials + **D28 owner-only** mid-run refresh `4ca17d7`, **OAuth 2.0** login `6031f96`) and — the
 > bulk of the delta — the **`scan` auto-discovery onramp** and its CLI tiers **2a/2b/2c + no-spec
 > degrade** (44 scan-specific tests across `test_scan_discovery.py`/`_ids.py`/`_run.py`/`_relogin.py`/
-> `_endpoints.py`, plus `test_console.py` / `test_external_verify.py` additions). See the "Auto-discovery
-> `scan` onramp" block below.
+> `_endpoints.py`, plus `test_console.py` / `test_external_verify.py` additions). It is now **781** after
+> the **CLI onboarding / non-interactive config path** (editable target file + non-interactive `scan` from
+> env/file tokens; `test_target_file.py` / `test_scan_cli.py` + console additions, commits
+> `cb00393`→`a8c199b`) and **report-clarity** (per-finding next-step + prioritized scan summary;
+> `test_confirm_render.py` / `test_scan_run.py` additions, commits `37047ec` + `7165885`). See the
+> "Auto-discovery `scan` onramp" block below.
 
 ## Operator front door — CLI, packaging, config, external targets (code facts, re-verified 2026-08-02)
 
@@ -360,17 +364,42 @@ file.
 
 **Real-target smoke datapoint (engineering signal, NOT a zero-FP claim).** The scan pipeline runs
 **end-to-end on a real network against a self-hosted lab** — catalog → AI candidate discovery → code
-fence → id sourcing → the confirm loop → aggregated report. The mechanism works; the honest **next gap
-is the aggregated report's READABILITY for a non-expert** (a scan surfaces confirmed / signal /
-broken-for-all / refuted / not-data / skipped tiers at once, and a first-time operator needs the report
-to make the one code-confirmed finding legible against the noise). **Report-clarity work is pending** —
-see [`ROADMAP.md`](./ROADMAP.md) §0 NEXT.
+fence → id sourcing → the confirm loop → aggregated report. **Report-clarity is now DONE** (per-finding
+"So what / Next step" + prioritized top summary; commits `37047ec` + `7165885`) and the **non-interactive
+config path is DONE** (editable target file + env/file tokens; commits `cb00393`→`a8c199b`). Both were
+**re-smoke-tested end-to-end on the loopback lab `vulnerable_target` (127.0.0.1:8001, seeded tokens
+alice/bob/carol)** on 2026-08-08:
+- **Non-interactive path (RUN A):** `target --dump-template` → fill → `target --from-file` → `scan
+  --target-file … --endpoints-file … --id-source …` with `TARGET_ATTACKER/OWNER/BYSTANDER_TOKEN` in env,
+  NO prompts. Discovered 3 candidates, confirmed each; the readable report rendered (top "Where to start"
+  line + per-finding next-step + dim raw tokens). All 3 came back **[REFUTED]** — and the invoice IDOR was
+  **correctly suppressed by D30** (`public_resource_read_not_cross_user`: the bystander could also read it,
+  so it is public/broken-for-all, not a per-user leak) — a **live validation of D30 on a real scan**. No
+  genuine per-user (bystander-denied) BOLA exists on this lab, so no live `[CONFIRMED]` arose (documented
+  behavior; the `[CONFIRMED]`/broken-for-all rendering is covered by `test_confirm_render.py` + the
+  deterministic mixed-tier render).
+- **Friction (real, repeatable):** AI **discovery uses `max_attempts=1`** (`propose_candidates`), so a
+  **transient Gemini `ServerError` (5xx) yields an empty scan** (0 candidates) — observed on 2 of the runs;
+  a re-run succeeded. The confirm path retries; discovery does not. Filed under **DEFERRED / friction**
+  below and [`TECH_DEBT.md`](./TECH_DEBT.md) **D33**.
+- **WAF Part 1/2 + `--auth` refresh did NOT fire** (healthy local lab, static tokens) — as expected.
 
 **DEFERRED (NOT done — do not claim otherwise):**
 - **Tier-c response-body id PARSER.** The AI-parser slot in `scan_ids._extract_ids` is a **hook awaiting a
   real-target response sample**; the **deterministic default** (prefer the candidate's `id_param`, then
   generic `id`/`_id`, across a top-level array or the first list-of-dicts in a wrapper) parses collection
-  bodies for now, so id sourcing never depends on the model hallucinating an id.
+  bodies for now, so id sourcing never depends on the model hallucinating an id. **Smoke finding
+  (2026-08-08):** the built-in labs have **no per-resource collection/list endpoints** (only single-object
+  `/{id}` routes), so on them tier-c's `propose_collection` correctly returns **None → SKIP** (direction-
+  safe, no fabricated id) and `_harvest`/`_extract_ids` are never exercised — **so the parser sample cannot
+  be captured from a local lab; it needs a target that publishes list endpoints.** The deterministic
+  extractor WAS confirmed against a real wrapped-list body from the lab: `GET /api/admin/users`
+  `{"count":3,"users":[{"id":1,…},{"id":2,…},{"id":3,…}]}` → `_extract_ids` → `['1','2','3']` (and an
+  empty `{"events":[]}` → `[]`). Finalizing the AI parser slot still needs a real target with per-resource
+  collections (external — handed to the director; not run here).
+- **Discovery has no retry on a transient LLM 5xx** (`propose_candidates(max_attempts=1)`) — a transient
+  `ServerError` empties the scan. SAFE-direction (an empty scan, never a wrong verdict) but a real usability
+  gap; see TECH_DEBT **D33**.
 - **Full passive endpoint discovery (proxy).** Not built. The no-spec degrade covers the **manual** case
   (operator supplies the endpoint list); the `catalog_from_har` proxy-capture path is still the
   `NotImplementedError` stub (TECH_DEBT **D18** open half; ROADMAP §0 PLANNED item 2).

@@ -1092,16 +1092,30 @@
   **hook awaiting a real-target response sample** and is deliberately NOT built, so id sourcing never
   depends on the model hallucinating an id. SAFE-direction: a body the deterministic parser cannot read →
   no ids → **SKIP**, never a guessed id.
+  - **Smoke finding (2026-08-08, loopback lab):** forcing tier-c (no id_map / no collections) against
+    `vulnerable_target` produced `propose_collection → None` for every candidate — the labs have **no
+    per-resource collection/list endpoints** (only single-object `/{id}` routes), so `validate_collection`
+    /`_harvest`/`_extract_ids` are never reached and every candidate SKIPs. **The parser sample therefore
+    cannot be captured from the built-in labs — it needs a target that publishes list endpoints (external).**
+    The deterministic extractor WAS confirmed on a real wrapped-list body from the lab: `GET /api/admin/users`
+    `{"count":3,"users":[{"id":1,…},{"id":2,…},{"id":3,…}]}` → `['1','2','3']`; `{"events":[]}` → `[]`.
+    Finalizing the AI slot is handed to the director (needs an external target with collections).
+- **Deferred hook 1b — discovery has no retry on a transient LLM 5xx.** `propose_candidates` runs the
+  discovery LLM call with `max_attempts=1`; **smoke observed a transient Gemini `ServerError` (5xx) empty a
+  scan** (0 candidates) on 2 of the runs — a re-run succeeded. SAFE-direction (an empty scan, never a wrong
+  verdict), but a real usability gap: the confirm path retries, discovery does not. Consider a small bounded
+  retry on `propose_candidates` (presentation/robustness, no verdict change).
 - **Deferred hook 2 — full passive endpoint discovery (proxy).** Not built; the no-spec degrade covers
   only the **manual** endpoints-list case. This is the same open half tracked under **D18** (the
   `catalog_from_har` stub) — cross-linked here so the `scan` reader finds it.
 - **Deferred hook 3 — AI-driven CLI orchestration.** The AI drives candidate/collection **selection**
   only; the operator still drives the CLI (target, creds, id-source / login files) turn by turn. An
   agentic orchestration layer over the onramp is NOT built.
-- **Direction: SAFE / capability, not correctness.** None of the three can affect a verdict — the zero-FP
-  engine still judges every op behind the two code fences. They are missing *reach*, not missing *safety*.
-- **Priority:** after **report-clarity** (the current NEXT — ROADMAP §0). Hook 1 needs a real-target
-  response sample to design against.
+- **Direction: SAFE / capability, not correctness.** None can affect a verdict — the zero-FP engine still
+  judges every op behind the two code fences. They are missing *reach*, not missing *safety*.
+- **Priority:** report-clarity is now **DONE** (per-finding next-step + prioritized summary, commits
+  `37047ec` + `7165885`; smoke-verified). Next polish: hook 1b (discovery retry — cheap), then hook 1
+  (tier-c parser — needs an external target with collections), then hook 3.
 
 ---
 
