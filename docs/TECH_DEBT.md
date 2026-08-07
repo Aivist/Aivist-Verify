@@ -85,7 +85,7 @@
   been removed entirely.)
 - **Where:** `backend/tests/test_api_endpoints.py` (API smoke); `test_step9_proxy.py`
   (proxy radar, Step 9); plus pruner, custody, Step D extraction in other files.
-  Total backend suite: **669 tests**. See [`STATUS.md`](./STATUS.md).
+  Total backend suite: **761 tests**. See [`STATUS.md`](./STATUS.md).
 - **Covered:** FastAPI `TestClient` over isolated per-test SQLite with Gemini and
   background fuzzing mocked — analyze (200 + 422), findings persist (201 + 422),
   verify/batch 404s, health check. **Step 9:** WriterService serialization, SSEHub
@@ -198,9 +198,17 @@
     **measured** through the shadow path (5 runs each, `RESULTS.md`) and resolve to an
     **integrity-floor `inconclusive`** — no false verdict either way (X-CROSS's raw model
     verdict was `failed` 4/5, downgraded by the guard; see D19). Suite at that commit: **112**.
-  - **Still open — automated attack-surface DISCOVERY:** the catalog is *fed* an
-    OpenAPI/HAR source (operator-supplied). The system still does **not discover**
-    endpoints on its own. This is the larger half of D18.
+  - **Partially closed — AI-driven CANDIDATE discovery over the catalog (the `scan` onramp, commits
+    `c2da36c`→`7ca4891`):** given a catalog, the model now **selects BOLA/IDOR candidates** and names the
+    object-id param, each **code-fenced twice** before the unchanged engine judges it (see
+    [`STATUS.md`](./STATUS.md) "Auto-discovery `scan` onramp"). The **no-spec degrade** (`7ca4891`) also
+    lets an operator feed a plain `METHOD /path` **endpoints list** when the target publishes no OpenAPI
+    spec — the same catalog, byte-identical downstream. So *candidate selection over a known surface* is
+    done; two pieces remain open below.
+  - **Still open — PASSIVE attack-surface discovery:** the catalog is still *fed* a source
+    (OpenAPI spec, or now a manual endpoints list). The system does **not** discover endpoints from
+    observed traffic on its own — `catalog_from_har` is still the `NotImplementedError` proxy-capture
+    stub. This is the remaining larger half of D18 (ROADMAP §0 PLANNED item 2).
   - **✅ DONE (committed `37769b3`) — a CONFIDENT cross-path verdict (B-1):** rather
     than wait for the model to *choose* the decisive `GET /api/audit-log` (it chose it 0/20
     unaided), the code gathers it deterministically and exempts the resulting `verified` from
@@ -1070,6 +1078,31 @@
   `test_confirm_render.py` (the `[INCONCLUSIVE]` render + drift guards).
 - **Flag for the future README "Known limitations" list** (alongside D30's residual and D31).
 
+### D33 — `scan` onramp: deferred hooks (tier-c response-body id parser; AI CLI orchestration) — LOW (capability, SAFE-direction)
+- **Where:** the `scan` auto-discovery onramp — `scan_ids._extract_ids` (`backend/app/cli/scan_ids.py`)
+  and the REPL `do_scan` flow (`backend/app/cli/console/controller.py`). Onramp landed commits
+  `c2da36c`→`7ca4891`; see [`STATUS.md`](./STATUS.md) "Auto-discovery `scan` onramp".
+- **What IS done (so this is not misread as open).** Candidate discovery + double code fence + id-sourcing
+  tiers a/b/c + the confirm loop + tier-grouped report + the no-spec (endpoints-list) degrade are all
+  DONE and tested. The three items below are the **explicitly deferred hooks**, recorded so a future node
+  does not assume them shipped.
+- **Deferred hook 1 — tier-c response-body id PARSER.** `_extract_ids` uses a **deterministic** extractor
+  (prefer the candidate's `id_param`, then generic `id`/`_id`, across a top-level array or the first
+  list-of-dicts in a wrapper object). The docstring notes an **AI parser could slot in here**; it is a
+  **hook awaiting a real-target response sample** and is deliberately NOT built, so id sourcing never
+  depends on the model hallucinating an id. SAFE-direction: a body the deterministic parser cannot read →
+  no ids → **SKIP**, never a guessed id.
+- **Deferred hook 2 — full passive endpoint discovery (proxy).** Not built; the no-spec degrade covers
+  only the **manual** endpoints-list case. This is the same open half tracked under **D18** (the
+  `catalog_from_har` stub) — cross-linked here so the `scan` reader finds it.
+- **Deferred hook 3 — AI-driven CLI orchestration.** The AI drives candidate/collection **selection**
+  only; the operator still drives the CLI (target, creds, id-source / login files) turn by turn. An
+  agentic orchestration layer over the onramp is NOT built.
+- **Direction: SAFE / capability, not correctness.** None of the three can affect a verdict — the zero-FP
+  engine still judges every op behind the two code fences. They are missing *reach*, not missing *safety*.
+- **Priority:** after **report-clarity** (the current NEXT — ROADMAP §0). Hook 1 needs a real-target
+  response sample to design against.
+
 ---
 
 ## Suggested priority order for the next agent
@@ -1110,6 +1143,12 @@
    passive host decisions (fail-closed + per-hop redirect + resolved-IP guard; the proxy shares the
    matcher); unified `scope`+`model` declaration; SecretStr key privacy. IP-pinning follow-up (the DNS
    TOCTOU window) now **✅ CLOSED** (commit `06bdba8`). **D5** — keep `preview_dashboard.html`, retire `frontend/`.
+7. **Auth-capability layer + `scan` auto-discovery onramp — ✅ DONE** (commits `4ca17d7` `6031f96`;
+   `c2da36c`→`7ca4891`). Per-finding owner creds / D28 owner-only refresh / OAuth 2.0 login completed the
+   auth layer; `scan` then adds candidate discovery + double code fence + id-sourcing tiers a/b/c + the
+   confirm loop + tier-grouped report + no-spec degrade, over the UNCHANGED judge. **▶️ NEXT: `scan`
+   report READABILITY (report-clarity)** — presentation only; then the **D33** deferred hooks (tier-c
+   response-body id parser, AI CLI orchestration) as polish. See ROADMAP §0 + [`STATUS.md`](./STATUS.md).
 
 ### Deferred — NOT in the active line (unlock condition: the benchmark above proves commercialization is worth it)
 - **D2 (auth)**, multi-tenancy, **D1 (Alembic migrations)**, hosted/enterprise deployment.

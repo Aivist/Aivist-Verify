@@ -69,17 +69,22 @@ the earlier single-target record (140 SAFE / 70 VULN, one target), kept as histo
 
 | Suite | Command (from repo root) | Result |
 |---|---|---|
-| Backend | `python -m pytest backend/tests -q` | **669 passed** |
+| Backend | `python -m pytest backend/tests -q` | **761 passed** |
 | Ground-truth target (`vulnerable_target`, integer-id) | `python -m pytest vulnerable_target -q` | **31 passed** |
 | Ground-truth target (`depot_target`, UUID-id) | `python -m pytest depot_target -q` | **23 passed** |
 
-> Re-verified against the repo 2026-08-05 (backend suite run). The backend count was **473** while
-> only the confirmer spine had landed; it is now **669** after the presentation pass, entry point,
-> config flow, `config.py` user-config source, the external real-target path, YAML `--spec` support,
-> the `--auth` auto-relogin path, the real-target WAF/rate-limit challenge circuit breaker (Part 1) +
-> the 200-status challenge-page corroboration guard (Part 2), the presentation-deepening **cut A**
-> (claim-tiering + walkable evidence chain), the opt-in **broken-for-all** disclosure, the
-> **multi-step / CSRF login** (slice 2c), and **D25 IP-pinning** (DNS-rebinding TOCTOU closed) below.
+> Re-verified against the repo 2026-08-07 (all three suites run). The backend count was **473** while
+> only the confirmer spine had landed; **669** after the presentation pass, entry point, config flow,
+> `config.py` user-config source, the external real-target path, YAML `--spec` support, the `--auth`
+> auto-relogin path, the WAF/rate-limit challenge circuit breaker (Part 1) + the 200-status
+> corroboration guard (Part 2), the presentation-deepening **cut A** (claim-tiering + walkable evidence
+> chain), the opt-in **broken-for-all** disclosure, the **multi-step / CSRF login** (slice 2c), and
+> **D25 IP-pinning**; it is now **761** after the auth-capability layer completed (per-finding owner
+> credentials + **D28 owner-only** mid-run refresh `4ca17d7`, **OAuth 2.0** login `6031f96`) and — the
+> bulk of the delta — the **`scan` auto-discovery onramp** and its CLI tiers **2a/2b/2c + no-spec
+> degrade** (44 scan-specific tests across `test_scan_discovery.py`/`_ids.py`/`_run.py`/`_relogin.py`/
+> `_endpoints.py`, plus `test_console.py` / `test_external_verify.py` additions). See the "Auto-discovery
+> `scan` onramp" block below.
 
 ## Operator front door — CLI, packaging, config, external targets (code facts, re-verified 2026-08-02)
 
@@ -267,6 +272,110 @@ file touched is `config.py`, and only to ADD a settings source (below). What shi
   never logged. **No verdict/engine code changed** — it only produces the token strings that flow into the
   same `execute_deep_verification`. OAuth authorization-code and captcha/MFA-bypass stay out (later / a
   different tool category). Suite 647→**662**.
+
+## Auto-discovery `scan` onramp — spec/endpoints → AI candidates → code fence → confirm → report (DONE)
+
+A **capability layer** over the SAME confirm engine: the operator no longer has to hand-write one
+`--op` per finding. `scan` discovers BOLA/IDOR candidates, sources their ids, runs each through the
+**unchanged** `verify` confirm, and renders one tier-grouped report. **It reimplements NOTHING of the
+judge** — every op is handed to the caller-supplied `run_op`, which is the byte-identical
+`_verify_external` / `_verify_external_relogin` pre-bound with the run's creds. Reached from the REPL as
+the `scan` command (`console/controller.py:do_scan`, `intro.py`); the whole onramp lives in
+`backend/app/cli/scan_run.py` + `scan_discovery.py` + `scan_ids.py` + `scan_report.py` +
+`services/endpoint_catalog.py`.
+
+**The pipeline** (`run_scan`, `scan_run.py`, commits `c2da36c` → `510e829`):
+1. **Catalog** from EXACTLY ONE source — the target's OpenAPI `spec` (today's path) OR a user-provided
+   `endpoints` list (no-spec degrade, below). Both/neither → `ValueError` (a clear error, never a crash).
+2. **AI proposes** BOLA candidates from the catalog — a descriptor `{method, templated path, id
+   location, id param}` per candidate (`propose_candidates`). No provider / any failure → `[]` (a
+   discovery miss, never a crash, never a fabricated candidate).
+3. **CODE FENCE #1** (`validate_candidate`): the method+path must exist in the catalog **verbatim**; the
+   id param must be a real `{template}` var (path) or a bare name (query); the **shape/location are
+   CODE-assigned** from the known set (the AI's `shape` is never trusted). A failed fence → **dropped**,
+   grouped under "invalid candidate(s) dropped", never run.
+4. **Id sourcing** (`source_ids`, tiers a/b/c, below) fills the (attacker_id, victim_id) pair, building
+   the flat op via the SAME `build_op` that `verify` uses.
+5. **CODE FENCE #2** (`validate_op`): the CONCRETE op is re-vetted — `target_param` must actually appear
+   in `baseline_path` and the path must templated-match a catalog endpoint. A failed fence → **dropped**,
+   never run (defense-in-depth on the built op).
+6. **The EXISTING confirm** runs the op; the zero-FP engine judges it. A per-candidate run exception
+   (e.g. an `--auth` login/refresh failure) → **NOT DATA for that candidate**, and the scan continues.
+7. **Report** (`render_scan_report`): records grouped by OUTCOME TIER — `[CONFIRMED]` (code-gated) /
+   `[SIGNAL]` / `[INCONCLUSIVE — broken-for-all]` / `[REFUTED]` / `[NOT DATA]` / `[SKIPPED — needs manual
+   id]` — each finding rendered with the SAME `confirm_render` tree a single-op `verify` uses, plus a
+   summary tally. Verdicts are read ONLY from engine record fields; the report manufactures none.
+
+**RED LINES (welded, tested — the onramp cannot widen what gets confirmed):**
+- **AI proposes; CODE fences every op TWICE; the zero-FP engine judges.** Discovery selects candidates
+  and names the id param — it touches **no** verdict/engine logic. A wrongly-generated op is
+  refuted / NOT-DATA correctly by the existing judge; **auto-discovery cannot create a false positive**
+  (direction-safe, asserted in `test_scan_discovery.py` / `test_scan_run.py`).
+- **Id harvesting is per-account isolated, never cross-account, never fabricated.** In the harvest tiers
+  the attacker reads its OWN list with attacker creds ONLY and the owner with owner creds ONLY, on
+  separate fresh clients (`_harvest_distinct_pair`, `scan_ids.py`); the victim id is an owner id the
+  attacker does **not** own, used ONLY as the attack target, **never** as a credential. Every harvest is
+  scope-checked fail-closed via the engine's GET-only, custody-free `fetch_control_view`. If no id can be
+  sourced → **SKIP** (return `None`, "needs manual id"); the tool **never fabricates/guesses an id and
+  runs it** (a guessed id could hit a nonexistent object and mislead).
+- **Scan runs from a spec OR an endpoints list — exactly one.** All discovery downstream is byte-identical
+  regardless of source (`catalog_from_endpoints` yields the same normalized `["METHOD /path", …]` shape).
+
+**Id-sourcing tiers** (`source_ids`, `scan_ids.py`, commits `a72c773` [a+b] / `c92dd58` [c]):
+- **Tier a** — operator-supplied id map `{path_template: {attacker_id, victim_id}}` (no reads).
+- **Tier b** — operator-DECLARED "list my objects" collection endpoint, harvested per-account (isolated).
+- **Tier c** (`c92dd58`) — an **AI-PROPOSED** collection endpoint from the CATALOG, code-fenced
+  (`propose_collection` / `validate_collection`: must be a GET in the catalog verbatim, **no** id/template
+  segment, this resource's noun + same parent lineage), then the SAME per-account harvest. Runs only when
+  neither a nor b applies and both creds + a catalog exist. **Catalog-based only** — the AI sees templated
+  paths, never a real response body, so tier-c does NOT depend on the target's response shape. A failed
+  fence / non-2xx harvest / no id-shaped value → `None` → SKIP.
+
+**CLI tier 2a — per-finding account controls exposed in `verify` AND `scan`** (commit `2d19a5b`,
+`external_verify.py` + `controller.py`): the D30 **bystander / third-account token** (prompted masked,
+routed ONLY into `bystander_credential`, never an attack request), the opt-in **`assert_owner_only`**
+(broken-for-all disclosure, D32), and **#7 per-finding account labels** (`_account_labels`) are now
+surfaced through both commands. Identity-collision is fail-closed: `attacker == owner` (or bystander ==
+either) is refused before any request (`_identity_collision_reason` — the #7 FP nail).
+
+**CLI tier 2b — `--auth` re-login inside the scan loop** (commit `b8c5aa3`, `controller.py` +
+`external_verify.py` + `scan_run.py`): a login-declaration file drives the scan through the SAME
+per-account `TokenProvider`s `verify` uses. The three providers are built ONCE and **reused across every
+candidate** (a token obtained for candidate 1 serves candidate 2), refreshed only on a per-candidate 401
+(incl. **D28 owner-only** mid-run refresh). A per-candidate login/refresh failure is NOT-DATA-safe: that
+candidate becomes NOT DATA and the scan continues — auth wiring can never manufacture a verdict.
+`test_scan_relogin.py` proves provider reuse + per-candidate isolation.
+
+**No-spec degrade — scan from an endpoints list** (commit `7ca4891`, `endpoint_catalog.py` +
+`controller.py` + `scan_run.py`): a target that publishes no usable OpenAPI spec can still be scanned
+from a plain `METHOD /path` list (JSON array or newline-delimited). `catalog_from_endpoints` /
+`spec_from_endpoints` produce the SAME normalized catalog + a minimal synthetic spec (operation objects
+empty — **nothing is invented**), so ALL downstream discovery is byte-identical and the confirm gets the
+same catalog. Templated `{id}` paths detect best (documented; a concrete `/orders/7` still works).
+`test_scan_endpoints.py`.
+
+**Example** — `examples/op.crapi_mechanic_report.json` (commit `5f81716`): a real `--op` template (crAPI
+query-string IDOR, `report_id 7→6`) that the smoke run below exercised; tokens are prompted, never in the
+file.
+
+**Real-target smoke datapoint (engineering signal, NOT a zero-FP claim).** The scan pipeline runs
+**end-to-end on a real network against a self-hosted lab** — catalog → AI candidate discovery → code
+fence → id sourcing → the confirm loop → aggregated report. The mechanism works; the honest **next gap
+is the aggregated report's READABILITY for a non-expert** (a scan surfaces confirmed / signal /
+broken-for-all / refuted / not-data / skipped tiers at once, and a first-time operator needs the report
+to make the one code-confirmed finding legible against the noise). **Report-clarity work is pending** —
+see [`ROADMAP.md`](./ROADMAP.md) §0 NEXT.
+
+**DEFERRED (NOT done — do not claim otherwise):**
+- **Tier-c response-body id PARSER.** The AI-parser slot in `scan_ids._extract_ids` is a **hook awaiting a
+  real-target response sample**; the **deterministic default** (prefer the candidate's `id_param`, then
+  generic `id`/`_id`, across a top-level array or the first list-of-dicts in a wrapper) parses collection
+  bodies for now, so id sourcing never depends on the model hallucinating an id.
+- **Full passive endpoint discovery (proxy).** Not built. The no-spec degrade covers the **manual** case
+  (operator supplies the endpoint list); the `catalog_from_har` proxy-capture path is still the
+  `NotImplementedError` stub (TECH_DEBT **D18** open half; ROADMAP §0 PLANNED item 2).
+- **AI-driven CLI orchestration.** Not built. AI drives candidate/collection **selection** only; the
+  operator still drives the CLI (target, creds, id-source/login files) turn by turn.
 
 ## The main line (three nodes)
 
@@ -536,3 +645,11 @@ deployment — parked until a benchmark justifies them.
    IP-pinning follow-up now **✅ DONE** — the connection is pinned to the scope-validated IP, closing
    the DNS TOCTOU window (commit `06bdba8`, TECH_DEBT D25). Still before a
    real target: model/target diversity; retire the legacy `frontend/` (D5).
+5. **Auto-discovery `scan` onramp — ✅ DONE** (candidate discovery + double code fence + id-sourcing
+   tiers a/b/c + the confirm loop + tier-grouped report + no-spec degrade; commits `c2da36c` → `7ca4891`).
+   The operator front door now goes from spec/endpoints → confirmed report without a hand-written `--op`
+   per finding, over the UNCHANGED judge — see the "Auto-discovery `scan` onramp" section above.
+   **▶️ NEXT is report READABILITY** (make one aggregated report legible to a non-expert; the pipeline
+   already runs end-to-end on a real self-hosted lab), then the deferred **tier-c response-body id parser**
+   (needs a real-target response sample) and **AI-driven CLI orchestration** as polish — see
+   [`ROADMAP.md`](./ROADMAP.md) §0.

@@ -9,14 +9,17 @@
   config source); external real-target path (`lanivist verify --target/--spec/--op`, three red lines)
   — **live-confirmed a real BOLA against VAmPI** (unfamiliar third-party target; an engineering signal,
   **not** a zero-FP claim); YAML `--spec` support.
-- **Current station:** **multi-step auth slice 2c (multi-step / CSRF login) — DONE** (commit `cf70d6e`).
-  `--auth` now supports an OPTIONAL ordered pre-login sequence (fetch a CSRF token / nonce / session cookie,
-  then POST login using it), run in a per-account scope-locked, identity-isolated session. Builds on slice 1
-  (auto-relogin, `675835ff`) and slice 2b (token extraction by body/header/cookie location).
-- **Next station:** the remaining multi-step-auth work — owner-token **mid-run** refresh (needs the
-  deferred engine-level token hook, TECH_DEBT D28); OAuth authorization-code flow is a heavier later slice
-  (captcha/MFA-bypass stays out — a different tool category). **Slow-lane: plan-first, signed-off** (touches
-  auth + identity isolation), NOT an auto batch.
+- **Current station:** the **auto-discovery `scan` onramp — DONE** (commits `c2da36c` → `7ca4891`). Over
+  the UNCHANGED confirm engine, `scan` goes spec-or-endpoints → AI candidate discovery → **two code
+  fences** → per-account id sourcing (tiers a/b/c) → the existing zero-FP confirm loop → one tier-grouped
+  report. This sits on top of a now-**complete capability layer**: multi-step / CSRF login (`cf70d6e`),
+  per-finding owner credentials + **D28 owner-only** mid-run refresh (`4ca17d7`), and **OAuth 2.0** login
+  (`6031f96`) — so the auth work that used to be "next" is landed. **Pipeline runs end-to-end on a real
+  self-hosted lab** (engineering signal, not a zero-FP claim).
+- **Next station:** **report READABILITY (report-clarity)** — make one aggregated `scan` report legible to
+  a non-expert (the confirmed finding vs the signal/broken-for-all/refuted/not-data/skipped noise). Then,
+  as polish: the deferred **tier-c response-body id parser** (needs a real-target response sample) and
+  **AI-driven CLI orchestration**. Presentation-only work (no engine/verdict change), fast-lane.
 - Full **DONE / NEXT / PLANNED / DEFERRED / REJECTED** detail is in the **§0 status board** just below.
 
 > The single source of truth for what this project is, what it is not, and where it's going.
@@ -33,9 +36,10 @@
 > **This board is the single authoritative answer** to "what's done, what's next, what's deferred,
 > what's rejected." It owns **status, ordering, and decisions**; **code facts** (test counts, shipped
 > modules, commit hashes) live in [`STATUS.md`](./STATUS.md). Every `DONE` below was **re-verified
-> against the repo on 2026-08-03** (the multi-step-auth commit **`675835ff`** confirmed against its
-> touched files); the **backend suite is 669 passed as of 2026-08-05** (presentation cut A + WAF
-> Part 1/2 + broken-for-all disclosure + multi-step/CSRF login + D25 IP-pinning landed since — see ✅ DONE). Sections §1–§8 below are the
+> against the repo on 2026-08-07** (the `scan` onramp commits `c2da36c`→`7ca4891` confirmed against their
+> touched files + tests); the **backend suite is 761 passed as of 2026-08-07** (the auth-capability layer
+> — per-finding owner creds / D28 owner-only refresh / OAuth 2.0 — and the `scan` auto-discovery onramp +
+> CLI tiers 2a/2b/2c + no-spec degrade landed since 669 — see ✅ DONE). Sections §1–§8 below are the
 > detailed rationale the board summarizes; the tags here win for status.
 
 ### ✅ DONE (re-verified against code)
@@ -95,15 +99,53 @@ Operator front door (this node's line — all re-verified 2026-08-02):
   resource but an anonymous request cannot — **structurally cannot promote to `verified`** (not a D19
   channel). Exists because a broken-for-all bug and a shared-by-design feature are black-box identical, so
   the intent judgment stays with the operator. TECH_DEBT **D32**.
+- **Auth-capability layer — COMPLETE** (what used to be "NEXT"). Beyond slices 1/2b/2c: **per-finding owner
+  credentials** with fail-closed identity-collision refusal + **D28 owner-only** mid-run token refresh
+  (commit `4ca17d7`), and **OAuth 2.0** login — authorization-code + PKCE and resource-owner-password,
+  scope-locked and per-account isolated (commit `6031f96`). So the previously-open owner-mid-run-refresh
+  and OAuth-authorization-code items are landed. (captcha / MFA-bypass stays REJECTED — a different tool
+  category.) Detail in [`STATUS.md`](./STATUS.md).
+- **Auto-discovery `scan` onramp — COMPLETE** (commits `c2da36c` `a72c773` `510e829` `2d19a5b` `b8c5aa3`
+  `c92dd58` `7ca4891`; example op `5f81716`). A capability layer over the UNCHANGED confirm engine that
+  removes the hand-written-`--op`-per-finding step. `scan` (a REPL command) does: catalog (from a spec OR
+  an endpoints list) → **AI-proposed BOLA candidates** → id sourcing (tiers a/b/c) → the EXISTING zero-FP
+  confirm run per op → one **tier-grouped report** (`[CONFIRMED]`/`[SIGNAL]`/`[INCONCLUSIVE broken-for-all]`
+  /`[REFUTED]`/`[NOT DATA]`/`[SKIPPED]`). **RED LINES (welded, tested):**
+  - **AI proposes; CODE fences every op TWICE; the zero-FP engine judges.** The candidate descriptor is
+    vetted against the catalog verbatim (method+path exist; id param is a real template var / query name;
+    shape+location are CODE-assigned, never the AI's), and the CONCRETE op is re-vetted before it runs
+    (`target_param` present in `baseline_path`; path templated-matches the catalog). Discovery touches NO
+    verdict/engine logic — a wrongly-generated op is refuted / NOT-DATA correctly; it **cannot create a
+    false positive** (direction-safe).
+  - **Id harvesting is per-account isolated, never cross-account, never fabricated → SKIP.** The attacker
+    reads its OWN list with attacker creds only, the owner with owner creds only, on separate clients; the
+    victim id is an owner id the attacker does NOT own, used only as the attack target, never a credential;
+    every harvest is scope-checked fail-closed via the engine's custody-free `fetch_control_view`. No
+    sourceable id → **SKIP** (the tool never guesses an id and runs it).
+  - **Scan runs from a spec OR an endpoints list — exactly one** (both/neither → a clear `ValueError`); all
+    discovery downstream is byte-identical regardless of source.
+  - **CLI tiers:** **2a** (`2d19a5b`) exposes the bystander token, `assert_owner_only`, and #7 per-finding
+    account labels in BOTH `verify` and `scan`; **2b** (`b8c5aa3`) drives the scan loop through `--auth`
+    re-login (per-account providers built once + reused across candidates, per-candidate 401 refresh incl.
+    D28 owner-only, NOT-DATA-safe); **2c** (`c92dd58`) adds tier-c AI-proposed, code-fenced collection
+    discovery (catalog-based, reusing the per-account harvest); **no-spec degrade** (`7ca4891`) catalogs
+    from a user-provided endpoints list when the target publishes no OpenAPI spec.
+  - **Real-target datapoint:** the pipeline runs **end-to-end on a real self-hosted lab** (engineering
+    signal, NOT a zero-FP claim). See [`STATUS.md`](./STATUS.md) "Auto-discovery `scan` onramp".
+  - **DEFERRED (not done):** the tier-c **response-body id parser** (the AI-parser slot in
+    `scan_ids._extract_ids` — a hook awaiting a real-target sample; the deterministic default parses now);
+    **full passive endpoint discovery (proxy)** (no-spec degrade covers only the manual case); **AI-driven
+    CLI orchestration**. See ▶️ NEXT + 📋 PLANNED.
 
 ### ▶️ NEXT (one item)
-- **Multi-step auth slice 2 — the remainder.** (a) Owner-token **mid-run** refresh, which needs an
-  **engine-level token hook** the engine consults per request (a deferred core change — TECH_DEBT **D28**;
-  today's fail-safe is safe-direction: a missed confirmation / NOT DATA, never a false positive); and
-  (b) **OAuth authorization-code flow** (a heavier redirect-based login, deliberately deferred as its own
-  slice). *(Header/cookie token extraction (slice 2b) AND multi-step / CSRF login (slice 2c, `cf70d6e`) are
-  now DONE — see ✅ above; captcha / MFA-bypass stays REJECTED as a different tool category.)* Slow-lane:
-  plan-first, signed-off.
+- **`scan` report READABILITY (report-clarity)** — presentation only, no engine/verdict change. The
+  onramp now emits one aggregated report spanning `[CONFIRMED]` / `[SIGNAL]` / `[INCONCLUSIVE
+  broken-for-all]` / `[REFUTED]` / `[NOT DATA]` / `[SKIPPED]` at once; the end-to-end smoke run on a real
+  self-hosted lab showed the **next gap is legibility for a non-expert** — making the one code-confirmed
+  finding stand out from the noise, and each tier's meaning plain. Fast-lane (renderer is pure/offline).
+  *(Polish after this: the deferred tier-c **response-body id parser** — needs a real-target response
+  sample — and **AI-driven CLI orchestration**. The auth-capability remainder that used to sit here is
+  now DONE — see ✅ above.)*
 
 ### 📋 PLANNED (ordered)
 1. **Remote arbitrary targets + full SSRF / DNS-rebinding / rate-limit hardening** — beyond localhost.
@@ -113,7 +155,10 @@ Operator front door (this node's line — all re-verified 2026-08-02):
    remains here is the broader remote-target / SSRF / DNS-rebinding work.)*
 2. **Passive endpoint discovery (proxy radar)** — feed observed flows into the catalog. *(This is the
    open half of **D18** "automated attack-surface discovery" ≡ the `catalog_from_har` stub,
-   `backend/app/services/endpoint_catalog.py:154` — one item, not three.)*
+   `backend/app/services/endpoint_catalog.py` — one item, not three. **Note:** the `scan` no-spec degrade
+   (`7ca4891`) now covers the MANUAL case — an operator-supplied `METHOD /path` endpoints list feeds the
+   same catalog when the target has no OpenAPI spec — so what remains here is specifically the PASSIVE /
+   proxy-capture half, not manual endpoint entry.)*
 3. **Live crAPI acceptance run** — an **agent-run exploratory validation is DONE** (crAPI stood up via
    Docker on the director's Windows machine; three hand-verified endpoints; surfaced **D29** + **D30** —
    see [`STATUS.md`](./STATUS.md) / [`TECH_DEBT.md`](./TECH_DEBT.md)). An engineering signal, NOT a zero-FP
@@ -131,6 +176,9 @@ Operator front door (this node's line — all re-verified 2026-08-02):
    target / spec / tokens / endpoint, then runs. **Sequenced AFTER the crAPI run-through**, because
    its design depends on what real targets actually require the user to provide (spec shape, path-param
    forms, auth/token forms) — build the input surface to fit observed reality, not guessed reality.
+   *(Partly realized: the REPL `scan` command already prompts target / spec-or-endpoints / tokens /
+   id-source / login file and runs the whole onramp; what remains is the polished opening screen + the
+   deferred AI-driven CLI orchestration.)*
    > **CLI UX — adopted / rejected** (recorded so external UX suggestions aren't re-litigated):
    > ADOPTED — evidence-chain tree (honest); confirmed/refuted tally (measurable); `--json` (planned — machine-readable); inspectable real bytes (auditable).
    > REJECTED — competitor-comparison text (unverifiable); live raw-HTTP firehose (credential-leak); hacker-movie styling (off-brand).
@@ -139,13 +187,22 @@ Operator front door (this node's line — all re-verified 2026-08-02):
 6. **README (dual positioning) + comparison report** — this engine's verification vs a detection-side tool.
    **Headline target still open:** crAPI is not a clean cross-user-BOLA headline (order = public,
    community = shared — see item 3 strategic note); pick a target with a genuine per-user BOLA first.
-7. **GitHub publication + promotion.**
+7. **GitHub publication + promotion.** **Gated behind a PRE-LAUNCH GATE** (the repo goes public here, so
+   this is the last honest checkpoint):
+   - **Public-surface review** — sweep the shipped surface for handoff/agent-to-agent comments, mixed
+     Chinese/English (the *docs/comments* pass; the Chinese Hunter prompt is a separate functional change
+     — see DEFERRED), stray temp/scratch files, and **`preview_dashboard.html`** (the uncommitted
+     frontend Proxy-Radar work — decide keep/exclude before it ships). CJK inventory is tracked.
+   - **Git-safety** — a reviewed **`.gitignore`** (the working tree carries `security_platform.db*`
+     WAL/`.itbak` snapshots + `__pycache__`) and a **history scan for secrets** before the repo is public
+     (tokens are `SecretStr`/prompted by design, but scan to be sure nothing leaked into a commit).
+   - **Umbrella brand name** (item 8) finalized (a one-constant change).
 8. **Umbrella brand name finalization** — `lanivist` is a provisional placeholder (single constant
-   `BRAND_NAME`); the `verify` suffix is locked.
+   `BRAND_NAME`); the `verify` suffix is locked. (Part of the item-7 pre-launch gate.)
 9. **Multi-step request-sequence orchestration (M2)** — the engine composing a sequence like "user A
    creates → user B reads" to set up and confirm a cross-actor access-control bug. *(DISTINCT from the
-   multi-step AUTH work — DONE slice 1 / NEXT slice 2 — this is request orchestration, not login. M2
-   phase; see §7 strategic (b).)*
+   multi-step AUTH work — now DONE — this is request orchestration, not login. M2 phase; see §7
+   strategic (b).)*
 10. **A second *measured* model** — the zero-FP evidence is measured on **gemini-2.5-pro only**;
    non-Gemini SAFE-case (false-positive) behavior is **unvalidated** (the provider seam gives
    connectivity, not a correctness/zero-FP guarantee). See §4 / [`LLM_PROVIDERS.md`](./LLM_PROVIDERS.md).
