@@ -272,3 +272,74 @@ def test_do_scan_uses_endpoints_file_when_target_has_no_spec(tmp_path, monkeypat
     assert "ENDPOINTS LIST" in out                         # the no-spec path was taken (discoverable)
     assert "scan report:" in out and "[CONFIRMED]" in out
     assert len(eng.calls) == 2                             # reports + users ran via the endpoints catalog
+
+
+# ==============================================================================
+# Report readability — the prioritized TOP summary ("where do I start") + priority-ordered grouping.
+# The confirmed count is CODE-CONFIRMED ONLY; acting-worthy findings sit at the top, not buried.
+# ==============================================================================
+from backend.app.cli.confirm_render import _BROKEN_FOR_ALL_REASON
+
+
+def _rr(**kw):
+    base = dict(shape="read_semantic", ground_truth=None, status="completed", degraded=False,
+                method="GET", guard_override=None)
+    base.update(kw)
+    return base
+
+
+def _mixed_records():
+    return [
+        _rr(final_verdict="verified", owner_view_corroborated=True,                       # code-confirmed
+            baseline_path="/api/a/8", attack_path="/api/a/7"),
+        _rr(final_verdict="verified", owner_view_corroborated=False, baseline_path="/api/s/1"),  # signal
+        _rr(final_verdict="inconclusive", guard_override=_BROKEN_FOR_ALL_REASON,          # broken-for-all
+            owner_view_corroborated=False, broken_for_all_suspected=True,
+            baseline_path="/api/b/1", attack_path="/api/b/2"),
+        _rr(final_verdict="failed", guard_override="owner_view_not_corroborated", baseline_path="/api/r/1"),
+        _rr(final_verdict="failed", guard_override="owner_view_not_corroborated", baseline_path="/api/r/2"),
+        _rr(final_verdict=None, status="degraded", degraded=True,                          # not-data
+            degraded_reason="baseline request returned HTTP 429", baseline_path="/api/n/1"),
+        {"scan_skipped": True, "scan_skip_reason": "needs manual id", "method": "GET",     # skipped
+         "baseline_path": "/api/k/1", "final_verdict": None, "status": "skipped"},
+    ]
+
+
+def test_scan_prioritized_summary_counts_and_grouping():
+    result = {"records": _mixed_records(), "dropped": [{"reason": "f"}], "accepted": list(range(6))}
+    r = render_scan_report(result, "http://t", color=False)
+
+    # (1) the prioritized "where do I start" line at the TOP, with correct per-tier counts.
+    assert "Where to start:" in r
+    assert "1 confirmed cross-user bug (act on these first)" in r     # code-confirmed ONLY
+    assert "1 lead to verify (signal)" in r                          # a signal is NOT folded into confirmed
+    assert "1 need your review (broken-for-all)" in r                # broken-for-all is NOT a confirmed bug
+    assert "1 need an id from you (skipped)" in r
+    assert "2 safe (refuted)" in r
+    assert "1 blocked by the target (not data)" in r
+    assert r.index("Where to start:") < r.index("[CONFIRMED]")       # it is at the TOP, before findings
+
+    # (2) findings GROUPED in priority order (acting-worthy first, not buried).
+    order = [r.index(t) for t in ("[CONFIRMED]", "[SIGNAL]", "[INCONCLUSIVE - broken-for-all]",
+                                  "[SKIPPED - needs manual id]", "[REFUTED]", "[NOT DATA]")]
+    assert order == sorted(order)
+
+    # (3) the SKIPPED tier carries its "so what / next step".
+    assert "provide an id (id_map)" in r
+
+    # (4) back-compat: the detailed bottom Summary is unchanged.
+    assert "1 confirmed (code-gated)" in r and "1 skipped" in r
+    assert "1 invalid candidate(s) dropped" in r
+
+
+def test_scan_summary_confirmed_is_code_confirmed_only():
+    # a report with NO code-confirmed finding (only a signal + a broken-for-all) headlines ZERO confirmed.
+    recs = [
+        _rr(final_verdict="verified", owner_view_corroborated=False, baseline_path="/api/s/1"),   # signal
+        _rr(final_verdict="inconclusive", guard_override=_BROKEN_FOR_ALL_REASON,
+            owner_view_corroborated=False, broken_for_all_suspected=True, baseline_path="/api/b/1"),
+    ]
+    r = render_scan_report({"records": recs, "dropped": [], "accepted": [1, 2]}, "http://t", color=False)
+    assert "0 confirmed cross-user bugs (act on these first)" in r    # signal/broken-for-all NOT counted
+    assert "1 lead to verify (signal)" in r
+    assert "1 need your review (broken-for-all)" in r

@@ -27,13 +27,45 @@ def _group(records: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
     return buckets
 
 
-_TIER_HEADER = [
-    ("confirmed", "[CONFIRMED]  code-confirmed cross-user access (zero-FP tier)"),
-    ("signal", "[SIGNAL]  verified by the model but NOT code-confirmed (a lead, not a confirmation)"),
-    ("broken_for_all", "[INCONCLUSIVE - broken-for-all]  locked; requires human review"),
-    ("refuted", "[REFUTED]  checked - no cross-user effect"),
-    ("notdata", "[NOT DATA]  degraded / challenged - not a security signal"),
+# Findings are GROUPED in PRIORITY order so acting-worthy findings sit at the top, not buried:
+# confirmed (act first) -> signal (verify these leads) -> broken-for-all (needs your review) ->
+# skipped (needs an id from you) -> refuted (safe) -> not-data (blocked). Signal is placed right
+# after confirmed because it is still a `verified` verdict (exit_code 1) and worth verifying early.
+_PRIORITY_ORDER = [
+    ("confirmed", "[CONFIRMED]  code-confirmed cross-user access (zero-FP tier) - ACT ON THESE FIRST"),
+    ("signal", "[SIGNAL]  verified by the model but NOT code-confirmed (a lead to verify, not a confirmation)"),
+    ("broken_for_all", "[INCONCLUSIVE - broken-for-all]  locked; needs YOUR review of the intended access policy"),
+    ("skipped", "[SKIPPED - needs manual id]  no object id could be sourced automatically"),
+    ("refuted", "[REFUTED]  checked - no cross-user effect here"),
+    ("notdata", "[NOT DATA]  the target blocked/challenged the run - not a security signal"),
 ]
+
+# The one-line "So what / Next step" for the SKIPPED tier (rendered once per group — the action is the
+# same for every skipped endpoint). render_tree handles the next-step for the judged tiers.
+_SKIPPED_NEXT_STEP = (
+    "    So what / Next step: couldn't obtain an object id automatically for these endpoints. "
+    "Next: provide an id (id_map) or declare its list endpoint (collections), then re-scan.")
+
+
+def _plural(n: int, singular: str, plural: Optional[str] = None) -> str:
+    return f"{n} {singular if n == 1 else (plural or singular + 's')}"
+
+
+def _priority_summary(buckets: Dict[str, List[Dict[str, Any]]]) -> str:
+    """The 'where do I start' line at the TOP. The `confirmed` count is CODE-CONFIRMED ONLY (buckets
+    ['confirmed'] == case_outcome 'confirmed'; mirrors exit_code_for's tier discipline) — a
+    broken-for-all / not-data is NEVER counted as a confirmed bug in this headline. A signal segment
+    only appears when there is one (a lead to verify, not a confirmation)."""
+    segs = [f"{_plural(len(buckets['confirmed']), 'confirmed cross-user bug')} (act on these first)"]
+    if buckets["signal"]:
+        segs.append(f"{_plural(len(buckets['signal']), 'lead')} to verify (signal)")
+    segs += [
+        f"{len(buckets['broken_for_all'])} need your review (broken-for-all)",
+        f"{len(buckets['skipped'])} need an id from you (skipped)",
+        f"{len(buckets['refuted'])} safe (refuted)",
+        f"{len(buckets['notdata'])} blocked by the target (not data)",
+    ]
+    return "  Where to start: " + " | ".join(segs)
 
 
 def render_scan_report(scan_result: Dict[str, Any], target: str, *, color: Optional[bool] = None) -> str:
@@ -44,25 +76,26 @@ def render_scan_report(scan_result: Dict[str, Any], target: str, *, color: Optio
 
     out: List[str] = []
     out.append(f"=== scan report: {target} ===")
+    out.append(_priority_summary(buckets))                 # the prioritized "where do I start" line, at the top
     out.append(f"  candidates accepted: {len(scan_result.get('accepted', []))}  |  "
                f"dropped by code fence: {len(dropped)}  |  ops judged: "
                f"{sum(len(buckets[k]) for k in ('confirmed', 'signal', 'broken_for_all', 'refuted', 'notdata'))}")
     out.append("")
 
-    for key, header in _TIER_HEADER:
+    for key, header in _PRIORITY_ORDER:                    # findings grouped in PRIORITY order (confirmed first)
         group = buckets[key]
         if not group:
             continue
         out.append(f"{header}  ({len(group)})")
-        for r in group:
-            out.append(render_tree(r, color=color))
-            out.append("")
-
-    if buckets["skipped"]:
-        out.append(f"[SKIPPED - needs manual id]  ({len(buckets['skipped'])})")
-        for r in buckets["skipped"]:
-            out.append(f"  - {r.get('method')} {r.get('baseline_path')}  "
-                       f"({r.get('scan_skip_reason', 'needs manual id')})")
+        if key == "skipped":
+            for r in group:
+                out.append(f"  - {r.get('method')} {r.get('baseline_path')}  "
+                           f"({r.get('scan_skip_reason', 'needs manual id')})")
+            out.append(_SKIPPED_NEXT_STEP)
+        else:
+            for r in group:
+                out.append(render_tree(r, color=color))
+                out.append("")
         out.append("")
 
     # Summary tally — the code-confirmed count is the headline; a model-only signal is separate.
