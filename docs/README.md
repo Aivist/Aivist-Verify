@@ -12,7 +12,8 @@ only a thin [`README.md`](../README.md) pointer).
 
 | Doc | Read it for |
 |---|---|
-| [`STATUS.md`](./STATUS.md) | **Current-state snapshot** — progress, what's proven, what's uncommitted/in flight, what's deferred. *Where the project stands right now.* **Read first.** |
+| [`STATUS.md`](./STATUS.md) | **Current-state snapshot** — progress, what's proven, what's uncommitted/in flight, what's deferred. *Where the project stands right now.* Includes the **Auto-discovery `scan` onramp** (spec/endpoints → AI candidates → code fence → confirm → tier-grouped report). **Read first.** |
+| [`QUICKSTART.md`](./QUICKSTART.md) | **Run it now** — the lab `confirm` demo, plus the real-target `verify` (one finding) and the **`scan`** onramp (auto-discover + confirm many). *First-time user entry point.* |
 | [`ROADMAP.md`](./ROADMAP.md) | **Strategy** (human-owned) — the thesis, explicit non-goals, main-line direction (B-1 / D19 / scope-lock), authorization reality. *Why / where.* |
 | [`PROJECT_OVERVIEW.md`](./PROJECT_OVERVIEW.md) | **Acceptance snapshot (中文)** — product positioning, maturity, the end-to-end pipeline, API summary, run/verify checklist. Non-engineering entry point. |
 | [`ARCHITECTURE.md`](./ARCHITECTURE.md) | System overview, components, runtime/concurrency model, security posture, directory map. Includes the **Step 9 proxy radar** and the **unified WriterService**. **Engineering entry point.** |
@@ -31,5 +32,5 @@ only a thin [`README.md`](../README.md) pointer).
 > `backend/app/services/fuzzer.py`). When code and docs disagree, the code wins —
 > please update the docs.
 >
-> **Test counts:** `backend/tests` → **669** passed; `vulnerable_target` → **31**;
-> `depot_target` → **23** (separate suites). See [`STATUS.md`](./STATUS.md).
+> **Test counts:** `backend/tests` → **761** passed; `vulnerable_target` → **31**;
+> `depot_target` → **23** (separate suites; re-run 2026-08-07). See [`STATUS.md`](./STATUS.md).

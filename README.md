@@ -37,6 +37,23 @@ Then open [`preview_dashboard.html`](./preview_dashboard.html) (the canonical
 single-file frontend) in a browser. Full setup, configuration, and the
 manual end-to-end recipe are in [`docs/DEVELOPMENT.md`](./docs/DEVELOPMENT.md).
 
+## CLI — confirm a finding, or auto-discover many
+
+The verification engine also has a human-walkable command line (no server needed):
+
+```powershell
+python run.py                 # no args → interactive console: config → target → verify / scan
+python run.py demo            # zero-setup: confirm a real BOLA on a built-in lab
+python run.py verify --target <url> --spec <openapi.json> --op <op.json>   # confirm ONE finding
+```
+
+`verify` confirms a single finding you supply; **`scan`** (a command inside the interactive console)
+**auto-discovers** BOLA/IDOR candidates from the target's spec *or a plain `METHOD /path` endpoints list*,
+has the model propose candidates, **code-fences every op twice**, sources ids **per-account (never
+cross-account, never fabricated → skipped)**, and confirms each through the same zero-FP engine — printing
+one tier-grouped report. See [`docs/QUICKSTART.md`](./docs/QUICKSTART.md) to run it and
+[`docs/STATUS.md`](./docs/STATUS.md) "Auto-discovery `scan` onramp" for the full behavior + red lines.
+
 ## Repository layout
 
 ```

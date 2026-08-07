@@ -25,6 +25,26 @@ strategy doc.
   (`_boot_target` / `_stop_target` / `_rm_db`).
 - Commits: **`94d1fd5`** (spine), **`8727b12`** (offline test + full-caseset mode).
 
+## Beyond the lab confirmer — the real-target front doors (`verify`, `scan`)
+
+The map above is the **lab caseset** renderer. Over the same engine there are now two real-target
+surfaces (verdict logic untouched — they only assemble the inputs and reuse `execute_deep_verification`):
+
+- **`verify` — one finding.** Subcommand `python run.py verify --target <url> --spec <openapi> --op <op.json>`
+  (`+ --auth <login.json>` for auto re-login). Assembles one operation into the same engine call; the
+  three red lines (scope fail-closed, attacker/owner identity isolation, `SecretStr` tokens) hold. Code in
+  `backend/app/cli/external_verify.py`.
+- **`scan` — auto-discover many (REPL command, no subcommand).** Launch the console (`python run.py` with
+  no args) → `config` → `target` → `scan`. It builds a catalog (from the target's spec **or** a
+  `METHOD /path` endpoints list), has the model **propose** BOLA/IDOR candidates, **code-fences every op
+  twice**, sources ids **per-account (never cross-account, never fabricated → SKIP)**, runs each through
+  the existing confirm, and prints one tier-grouped report. Modules: `scan_run.py` (orchestration),
+  `scan_discovery.py` (AI proposal + code fences), `scan_ids.py` (id sourcing tiers a/b/c),
+  `scan_report.py` (tier-grouped render); REPL wiring in `console/controller.py:do_scan` +
+  `console/intro.py`. Full behavior + red lines: [`STATUS.md`](./STATUS.md) "Auto-discovery `scan`
+  onramp"; deferred hooks (tier-c response-body id parser, passive proxy discovery, AI CLI orchestration):
+  [`TECH_DEBT.md`](./TECH_DEBT.md) **D33**.
+
 ## Two open observations (pending director feedback — do not freeze the UX)
 1. **ASCII dash** — the header uses `-`, not `—` (the Windows console mangles the em-dash).
    Already applied in `confirm_render.py`.

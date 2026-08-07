@@ -23,7 +23,7 @@
 | 形态 | **单租户、本地运行的原型(prototype)**,功能链路完整,尚未上线/未做多用户化 |
 | 核心链路 | Hunter→验证 全链路 **已端到端跑通**(真实服务 + 真实本地靶机 + 真实数据库,详见 §7) |
 | 鉴权 | **暂无任何鉴权**(刻意延后,仅限本地/可信网络使用,见 §8 / D2) |
-| 测试 | **后端 669 个自动化测试全绿**(pytest)+ 靶机 31 + depot_target 23 个(独立套件),覆盖核心服务 + API 层 + 被动代理雷达 + 验证判定层(含 B-1 影子路径回归测试 + M1.1/M1.2 判定与豁免测试 + D21 spec-config 测试 + scope-lock 对抗/一致性测试) |
+| 测试 | **后端 761 个自动化测试全绿**(pytest)+ 靶机 31 + depot_target 23 个(独立套件),覆盖核心服务 + API 层 + 被动代理雷达 + 验证判定层(含 B-1 影子路径回归测试 + M1.1/M1.2 判定与豁免测试 + D21 spec-config 测试 + scope-lock 对抗/一致性测试 + CLI `verify`/`scan` 自动发现上手层) |
 | 前端 | 主用单文件仪表盘已联通后端(含 Step 9 代理雷达页,该页 UI 接线**尚未提交**——属后续前端阶段);另有一个遗留的 Vite 前端(mock 数据,非产品基线) |
 | 版本管理 | 已纳入 git,提交历史清晰;密钥/数据库已隔离出版本库。B-1 已提交(`37769b3`);当前**唯一**未提交改动是代理雷达前端页,见 [`STATUS.md`](./STATUS.md) |
 
@@ -145,7 +145,7 @@ anti gravity/
 │  │  └─ services/                # traffic_parser.py / pruner.py / fuzzer.py(核心)
 │  │                              # + proxy_manager.py(进程状态机) / proxy_pipeline.py(队列+SSE+统一写者)
 │  │                              # + deep_verifier.py(AI 深度验证,影子 Phase 7) / endpoint_catalog.py(D18 端点目录)
-│  └─ tests/                      # pytest（669 个）
+│  └─ tests/                      # pytest（761 个）
 ├─ vulnerable_target/             # 独立的地面真值靶机（:8001，31 个 pytest 用例）
 ├─ scripts/audit/                 # 判定准确率的测量脚本/记录（非产品代码）
 ├─ docs/                          # 全部项目文档（本文 + ROADMAP/STATUS/架构/各管线/API/技术债）
@@ -185,6 +185,17 @@ anti gravity/
 - 🟡 **CA 证书门户**:`GET /hunter/proxy/cert` 下载 mitmproxy CA 证书以拦截 HTTPS(首次启动后生成)。
 - 🟡 **送入 Hunter**:雷达列表可一键把某条流量带入逻辑狩猎工作流(登录候选自动预填身份锚点)。
 - ⚪ **隔离与防滥用**:内部摄取端点 `/proxy/internal-ingest` 仅环回可达 + 每会话令牌 + 不进 OpenAPI 文档;失败一律返回 404。
+
+### D. CLI 操作前门 · 单条 `verify` 与 `scan` 自动发现（本地真实靶标）
+
+> 引擎之上的**操作前门**:判定逻辑一字未改——每个 op 都交给与 `verify` 完全一致的确认路径,由零误报引擎裁决。真实靶标**没有 ground truth**,因此**不作零误报声明**;超时 / 401 / 403 / 429 一律记为 **NOT DATA**,绝不出判定。
+
+- ✅ **`verify`——确认单条发现**(子命令):`python run.py verify --target <url> --spec <openapi.json> --op <op.json>`(可加 `--auth <login.json>` 自动登录/刷新令牌)。攻击者/属主两个 Bearer 令牌掩码粘贴;三条红线成立(scope 失败即拒、攻击者/属主身份隔离、令牌 `SecretStr` 脱敏)。示例模板 [`examples/op.crapi_mechanic_report.json`](../examples/op.crapi_mechanic_report.json)(crAPI 查询串 IDOR,`report_id 7→6`)。
+- ✅ **`scan`——自动发现并逐条确认**(交互式控制台内的命令,**无** `scan` 子命令)。无参启动 `python run.py` 进入控制台 → `config` → `target` → `scan`。流程:①从目标 spec **或**用户提供的 `METHOD /path` 端点清单(**无 spec 降级**)建端点目录;②模型**提议 BOLA/IDOR 候选**;③**代码两道栅栏**校验(候选描述符 + 具体 op:路径须逐字命中目录、id 参数须为真实模板变量/查询名、shape/location 由**代码**指派,不信 AI 的);④**逐账户**取 id(tier a 运营者给定 id;tier b 运营者声明的"列我的对象"端点;tier c 代码栅栏过的 AI 提议集合端点);⑤每个 op 走**同一个确认**;⑥输出按结局分层的报告(`[CONFIRMED]`/`[SIGNAL]`/`[INCONCLUSIVE broken-for-all]`/`[REFUTED]`/`[NOT DATA]`/`[SKIPPED]`)。可选:`--auth` 登录文件(令牌中途过期按账户刷新)、bystander 第三方令牌(公共资源鉴别)、`assert_owner_only`(broken-for-all 人工复核)。
+  - **红线(welded,有测试)**:AI 只**提议**;**代码给每个 op 两道栅栏**;**零误报引擎裁决**——错误生成的 op 会被正确地 refuted / NOT-DATA,**不可能造出误报**。id 采集**逐账户隔离、绝不跨账户、绝不臆造**:攻击者只用攻击者凭证读自己的清单、属主只用属主凭证读自己的(各自独立客户端);取到的属主 id 只作攻击目标、绝不作凭证;取不到 id 即 **SKIP**,绝不猜一个跑。目录来源**恰好一个**(spec 或端点清单;二者皆给/皆缺 → 明确报错)。
+  - **CLI 分层**:2a(`2d19a5b`)在 `verify` 与 `scan` 同时暴露 bystander 令牌、`assert_owner_only`、#7 每发现账户标签;2b(`b8c5aa3`)扫描回路内 `--auth` 重登录(三套按账户 provider 建一次、跨候选复用,按候选 401 刷新含 D28 属主专用,失败即该候选 NOT DATA、扫描继续);2c(`c92dd58`)tier-c 基于目录的 AI 集合端点发现(不依赖响应体形态)。
+  - **真实靶标数据点(工程信号,非零误报声明)**:整条 `scan` 流水线在**自建靶场上真机端到端跑通**;下一个诚实缺口是**面向非专家的报告可读性**(report-clarity,待做)。
+  - **DEFERRED(尚未做,勿当已完成)**:tier-c **响应体 id 解析器**(`scan_ids._extract_ids` 的 AI 解析槽是待真实样本的钩子,当前用确定性默认解析);**完整被动端点发现(代理)**未建(无 spec 降级仅覆盖手工清单);**AI 驱动的 CLI 编排**未建。见 [`TECH_DEBT.md`](./TECH_DEBT.md) D33 / [`STATUS.md`](./STATUS.md)。
 
 ---
 
@@ -231,7 +242,7 @@ anti gravity/
 
 ## 7. 质量与工程化（可验收的证据）
 
-- **自动化测试:后端 669 个,全部通过**(本会话亲测;`python -m pytest backend/tests -q`)。另有靶机独立套件 31 个(`vulnerable_target`)+ 23 个(`depot_target`)。覆盖:
+- **自动化测试:后端 761 个,全部通过**(本会话亲测 2026-08-07;`python -m pytest backend/tests -q`)。另有靶机独立套件 31 个(`vulnerable_target`)+ 23 个(`depot_target`)。覆盖:
   - `test_pruner.py` — 剪枝评分 + 去除非确定性(随机种子下稳定);
   - `test_step8_custody.py` — auth 自愈托管 / 并行引擎;
   - `test_step_d_hunter_link.py` — Hunter→验证 数据桥接(列优先 + 旧格式回退);
@@ -294,7 +305,7 @@ python backend/run.py
 ```
 
 ### 验收清单（建议逐项打勾）
-- [ ] **测试全绿**:仓库根目录运行 `python -m pytest backend/tests -q` → 应见 `669 passed`。
+- [ ] **测试全绿**:仓库根目录运行 `python -m pytest backend/tests -q` → 应见 `761 passed`。
 - [ ] **服务健康**:`GET http://127.0.0.1:8000/` 返回 `status: online` 与诊断信息。
 - [ ] **API 文档**:`/api/docs` 能看到全部端点与请求/响应模型。
 - [ ] **逻辑狩猎链路**:在前端粘贴一段原始 HTTP 报文 → analyze 出报告与 payloads → 保存为 finding → 触发 verify → 在结果里看到带判定(verified/suspicious/failed)的验证记录。

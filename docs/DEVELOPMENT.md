@@ -89,6 +89,20 @@ Health check: open `http://127.0.0.1:8000/` or `GET /api/docs`.
 On startup the lifespan handler runs `Base.metadata.create_all` then
 `_verify_schema_integrity` — see the **migration gotcha** below.
 
+### The CLI front door (separate file from the server)
+The verification engine also has a command line — **`run.py` at the repo root** (NOT
+`backend/run.py`, which is the uvicorn launcher; the two share the module name `run`, TECH_DEBT **D27**).
+No server needed:
+```powershell
+python run.py                 # no args → interactive console: config → target → verify / scan
+python run.py demo            # zero-setup: confirm a real BOLA on a built-in lab
+python run.py verify --target <url> --spec <openapi.json> --op <op.json>   # confirm ONE finding
+```
+`scan` (auto-discover BOLA/IDOR candidates and confirm each, from a spec **or** a `METHOD /path`
+endpoints list) is a command inside the interactive console. Full run recipe:
+[`QUICKSTART.md`](./QUICKSTART.md); behavior + red lines: [`STATUS.md`](./STATUS.md) "Auto-discovery
+`scan` onramp".
+
 ## 4. Frontend
 The canonical UI is the single file `preview_dashboard.html`. Just open it in a
 browser (double-click → `file://`, which is why CORS allows the `'null'`
@@ -101,7 +115,7 @@ importable):
 ```powershell
 python -m pytest backend/tests -q
 ```
-Current suite: **669 tests** (backend). See [`STATUS.md`](./STATUS.md).
+Current suite: **761 tests** (backend; re-run 2026-08-07). See [`STATUS.md`](./STATUS.md).
 - `test_pruner.py` — exposure scoring + determinism regression tests
 - `test_step8_custody.py` — auth custody / parallel engine
 - `test_step_d_hunter_link.py` — Step D extraction (column-first + legacy fallback)

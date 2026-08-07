@@ -86,6 +86,15 @@ anti gravity/
 │  │  │  └─ hunter.py             # /api/v1/hunter/* (Hunter, verify, HAR, batch, auth, proxy)
 │  │  ├─ proxy/
 │  │  │  └─ radar_addon.py        # Step 9: mitmdump addon (separate interpreter), Tier-1 filter + loopback POST
+│  │  ├─ cli/                     # Operator front door over the SAME engine (verdict logic untouched)
+│  │  │  ├─ external_verify.py    # `verify` real-target path (--target/--spec/--op/--auth); 3 red lines
+│  │  │  ├─ relogin.py            # per-account login + token auto-refresh (multi-step / CSRF / OAuth 2.0)
+│  │  │  ├─ confirm_render.py     # pure offline renderer (evidence chain + claim-tiering); no engine import
+│  │  │  ├─ scan_run.py           # `scan` onramp: catalog → AI candidates → 2× code fence → confirm → report
+│  │  │  ├─ scan_discovery.py     # AI candidate + tier-c collection proposal + the code fences
+│  │  │  ├─ scan_ids.py           # id sourcing tiers a/b/c (per-account harvest, never cross-account → SKIP)
+│  │  │  ├─ scan_report.py        # tier-grouped scan report (reuses confirm_render)
+│  │  │  └─ console/              # interactive REPL: config → target → verify / scan (controller, intro)
 │  │  └─ services/
 │  │     ├─ traffic_parser.py     # raw HTTP text → structured dict
 │  │     ├─ pruner.py             # heuristic exposure scoring / HAR noise filter (shared Tier-2 helpers)
@@ -96,13 +105,15 @@ anti gravity/
 │  │     └─ endpoint_catalog.py   # D18: OpenAPI → "METHOD /path [tags/operationId]" catalog + write-record queries (B-1)
 │  ├─ scripts/
 │  │  └─ deep_verify_live_check.py  # Manual Gemini+target check (not pytest)
-│  └─ tests/                      # pytest (669): pruner, step8_custody, scope (+enforcement),
+│  └─ tests/                      # pytest (761): pruner, step8_custody, scope (+enforcement),
 │                                 # step_d_hunter_link, api_endpoints, step9_proxy, verdict_oracle,
 │                                 # endpoint_catalog, d18_phase2_crosspath, d18_b22_guard, d18_b1_write_record,
 │                                 # d18_b1_shadow_integration, m1_evidence_anchoring, m12_object_scope,
 │                                 # m12_state_readback_exemption (M1.2A), m12b_state_gather (M1.2B),
 │                                 # m13_delete (M1.3 negative assertion),
-│                                 # m14_mass_assignment (M1.4 low-entropy state jump)
+│                                 # m14_mass_assignment (M1.4 low-entropy state jump),
+│                                 # external_verify, console, scan_discovery, scan_ids, scan_run,
+│                                 # scan_relogin, scan_endpoints (the CLI verify/scan onramp)
 ├─ vulnerable_target/            # Standalone ground-truth target (:8001), own DB, 31 pytest cases
 │  ├─ main.py
 │  ├─ test_vulns.py
