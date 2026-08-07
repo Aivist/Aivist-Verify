@@ -21,6 +21,60 @@ _FIELDS = (
     "name", "base_url", "spec_path", "method", "path_template",
     "id_location", "id_param", "attacker_id", "victim_id", "auth_spec_path",
 )
+# Public alias — the persisted, NON-SECRET target schema. Callers (the interactive flow, the editable
+# template, the file loader) reference this ONE tuple so the format can never fork.
+SAVE_FIELDS = _FIELDS
+
+# Per-field onboarding guidance — the SINGLE source shared by the interactive `target` flow
+# (controller.do_target) AND the editable template (target_file.dump_template) AND the file loader's
+# error messages, so the three can never drift. NON-SECRET fields only (tokens are never a field here).
+# `required` drives both the interactive re-prompt and the template's validation. `label` is the prompt
+# label; `hint`/`example`/`why` are the exact strings the interactive `_guide()` shows.
+FIELD_GUIDE = {
+    "name": {
+        "label": "Target name", "required": True,
+        "hint": "A label to save and re-select this target.", "example": "crapi-orders"},
+    "base_url": {
+        "label": "Base URL", "required": True,
+        "hint": "The target's base URL (localhost only).", "example": "http://localhost:8888",
+        "why": "Every request is scope-locked to this host."},
+    "spec_path": {
+        "label": "OpenAPI spec path (blank if the target has none)", "required": False,
+        "hint": "Path to the target's OpenAPI/Swagger file (.json or .yml), or BLANK.",
+        "example": r"C:\Users\you\crapi-openapi-spec.json",
+        "why": "Used to list endpoints. Blank => a spec-less target; `scan` runs from an endpoints "
+               "list you provide at scan time."},
+    "method": {
+        "label": "HTTP method", "required": True,
+        "hint": "The endpoint's HTTP method. One of: GET, POST, PUT, DELETE, PATCH.", "example": "GET"},
+    "path_template": {
+        "label": "Path template", "required": True,
+        "hint": "The path, with the id written as a {template}.",
+        "example": "/workshop/api/shop/orders/{order_id}"},
+    "id_location": {
+        "label": "Where is the object id?", "required": True,
+        "hint": 'Where the object id lives: "path" (e.g. /orders/{id}) or "query" (e.g. ?report_id=123).',
+        "example": "path",
+        "why": "The tool swaps the id in this location to attempt cross-user access."},
+    "id_param": {
+        "label": "Id parameter", "required": True,
+        "hint": "For a PATH id: the {template} variable name (e.g. order_id in /orders/{order_id}). "
+                "For a QUERY id: the query parameter name (e.g. report_id).",
+        "example": "order_id"},
+    "attacker_id": {
+        "label": "Attacker's OWN resource id", "required": True,
+        "hint": "An id the ATTACKER legitimately owns - the safe baseline.", "example": "8",
+        "why": "The tool compares this against the victim's to detect a real leak."},
+    "victim_id": {
+        "label": "Victim's resource id", "required": True,
+        "hint": "The id the attacker should NOT be able to reach.", "example": "7",
+        "why": "The tool swaps this in to attempt the cross-user access."},
+    "auth_spec_path": {
+        "label": "Login file", "required": False,
+        "hint": "OPTIONAL path to a login-declaration JSON (auto-relogin for tokens that expire mid-run).",
+        "example": "leave BLANK to just paste tokens at verify time",
+        "why": "Only needed if the target's tokens expire during a run."},
+}
 
 
 @dataclass

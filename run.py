@@ -165,6 +165,19 @@ def build_parser() -> argparse.ArgumentParser:
         "demo",
         help="Zero-setup demo: confirm a BOLA on the built-in lab (no Docker/target/tokens; needs an API key).",
     )
+
+    # target: manage a reusable target as ONE editable FILE (see all fields, fix errors, save, reuse).
+    tp = sub.add_parser(
+        "target",
+        help="Create a reusable target from an editable FILE: --dump-template to write the form, "
+             "--from-file to validate + save it.",
+    )
+    tg = tp.add_mutually_exclusive_group(required=True)
+    tg.add_argument("--dump-template", metavar="PATH",
+                    help="Write a fully-commented target template to PATH; fill it in ONE pass.")
+    tg.add_argument("--from-file", metavar="PATH",
+                    help="Validate a filled template and SAVE it as a reusable target "
+                         "(reports ALL errors at once; NOTHING is created if any field is invalid).")
     return ap
 
 
@@ -203,6 +216,25 @@ def main():
         sys.exit(run_config_flow())
     if args.cmd == "demo":
         sys.exit(demo())
+    if args.cmd == "target":
+        from backend.app.cli import target_file
+        if args.dump_template:
+            path = target_file.dump_template(args.dump_template)
+            print(f"Wrote a target template to {path}")
+            print("Fill in the fields (each has an inline comment), then create the target with:")
+            print(f"  {command_name()} target --from-file {path}")
+            sys.exit(0)
+        t, errors = target_file.save_target_from_file(args.from_file)
+        if errors:
+            print(f"[NOT DATA] the target file has {len(errors)} problem(s) - fix them and re-run:",
+                  file=sys.stderr)
+            for e in errors:
+                print(f"  - {e}", file=sys.stderr)
+            sys.exit(_EXIT_NOTDATA)
+        print(f"Saved target '{t.name}'. Scan it non-interactively with:")
+        print(f"  {command_name()} scan --target-file {args.from_file}  "
+              f"(tokens from env TARGET_ATTACKER_TOKEN/_OWNER_TOKEN or --tokens-file)")
+        sys.exit(0)
 
 
 if __name__ == "__main__":
