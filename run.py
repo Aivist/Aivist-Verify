@@ -178,6 +178,25 @@ def build_parser() -> argparse.ArgumentParser:
     tg.add_argument("--from-file", metavar="PATH",
                     help="Validate a filled template and SAVE it as a reusable target "
                          "(reports ALL errors at once; NOTHING is created if any field is invalid).")
+
+    # scan: non-interactive auto-discovery from a target FILE + tokens (env / --tokens-file).
+    sc = sub.add_parser(
+        "scan",
+        help="Non-interactive: auto-discover + confirm BOLA/IDOR from a target FILE + tokens "
+             "(env TARGET_ATTACKER_TOKEN/_OWNER_TOKEN/_BYSTANDER_TOKEN or --tokens-file).",
+    )
+    sc.add_argument("--target-file", required=True, help="Path to a filled target file (see `target --dump-template`).")
+    sc.add_argument("--tokens-file", default=None,
+                    help="OPTIONAL runtime tokens file (TOML or KEY=value) with TARGET_ATTACKER_TOKEN / "
+                         "TARGET_OWNER_TOKEN / TARGET_BYSTANDER_TOKEN; read at use-time, NEVER persisted, "
+                         "NEVER the target file. Omit to read the same keys from env vars.")
+    sc.add_argument("--endpoints-file", default=None,
+                    help="For a SPEC-LESS target: a 'METHOD /path' endpoints list (JSON array or lines).")
+    sc.add_argument("--id-source", default=None,
+                    help='OPTIONAL JSON {"ids": {...}, "collections": {...}} for id sourcing.')
+    sc.add_argument("--assert-owner-only", action="store_true",
+                    help="Surface broken-for-all findings ([INCONCLUSIVE] human review) instead of suppressing.")
+    sc.add_argument("--model", default=None, help="optional model override")
     return ap
 
 
@@ -235,6 +254,12 @@ def main():
         print(f"  {command_name()} scan --target-file {args.from_file}  "
               f"(tokens from env TARGET_ATTACKER_TOKEN/_OWNER_TOKEN or --tokens-file)")
         sys.exit(0)
+    if args.cmd == "scan":
+        from backend.app.cli.scan_cli import run_scan_from_file
+        sys.exit(run_scan_from_file(
+            args.target_file, tokens_file=args.tokens_file, endpoints_file=args.endpoints_file,
+            id_source_file=args.id_source, assert_owner_only=args.assert_owner_only, model=args.model,
+        ))
 
 
 if __name__ == "__main__":
