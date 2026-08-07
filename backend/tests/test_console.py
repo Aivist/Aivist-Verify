@@ -212,6 +212,45 @@ def test_targets_list_and_select(tmp_path, monkeypatch):
     assert "alpha" in "\n".join(lines) and c.selected and c.selected.name == "alpha"
 
 
+# ------------------------------------------------------------------ Feature 3: overview / review / saved-state
+def test_target_review_lets_a_field_be_corrected_before_save(tmp_path, monkeypatch):
+    # A misplaced value (a URL typed into the NAME slot) is caught at the REVIEW step and fixed BEFORE
+    # anything is saved — the "errors flagged, edit, resubmit" the director asked for, interactively.
+    spec = _spec(tmp_path)
+    c, lines = _ctrl(tmp_path, monkeypatch, prompt=_scripted([
+        "http://misplaced-url-in-name",         # name slot (wrong on purpose)
+        "http://localhost:8888",                # base url
+        spec, "1", "1", "8", "7", "",           # spec, endpoint, id-loc, attacker, victim, login
+        "1",                                    # review -> edit field 1 (name)
+        "crapi-orders",                         # corrected name
+        "",                                     # review -> blank -> save
+    ]))
+    c.dispatch("target")
+    out = "\n".join(lines)
+    assert "Review - the target as entered" in out              # the review step ran
+    assert "you'll provide these" in out.lower() or "You'll provide these" in out   # overview, not blind
+    assert c.selected and c.selected.name == "crapi-orders"     # corrected, not the misplaced URL
+    d = tomllib.loads((tmp_path / "targets" / "crapi-orders.toml").read_text(encoding="utf-8"))
+    assert d["name"] == "crapi-orders" and d["base_url"] == "http://localhost:8888"
+
+
+def test_startup_shows_key_configured_and_saved_targets(tmp_path, monkeypatch):
+    monkeypatch.setattr(branding, "config_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("startup-key"))
+    c, lines = _ctrl(tmp_path, monkeypatch)
+    c.run_intro()
+    out = "\n".join(lines)
+    assert "API key: configured" in out and "startup-key" not in out    # KNOWN configured, never echoed
+    # with a saved target, the startup names it so the user doesn't re-create it
+    tg.save_target(tg.Target(name="alpha", base_url="http://localhost:8888", spec_path="", method="GET",
+                             path_template="/a/{id}", id_location="path", id_param="id",
+                             attacker_id="1", victim_id="2"))
+    lines.clear()
+    c.run_intro()
+    out2 = "\n".join(lines)
+    assert "Saved targets" in out2 and "alpha" in out2
+
+
 # ------------------------------------------------------------------ MASKING invariant (bug #1)
 def test_only_key_and_tokens_are_masked(tmp_path, monkeypatch):
     # do_target: every field is non-secret -> the masked prompt is NEVER used.

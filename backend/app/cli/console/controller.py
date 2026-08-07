@@ -67,6 +67,26 @@ class ConsoleController:
     def run_intro(self) -> None:
         for line in intro.intro_lines(branding.product_name()):
             self.echo(line)
+        for line in self._startup_status_lines():     # so the user KNOWS what's already saved
+            self.echo(line)
+
+    def _startup_status_lines(self) -> List[str]:
+        """Saved-state at startup: the API key (never re-enter it) + saved targets — so the user is not
+        walking blind. Guarded: a read hiccup must never break the console."""
+        out: List[str] = []
+        try:
+            key_set = bool(reveal_secret(settings.LLM_API_KEY) or reveal_secret(settings.GEMINI_API_KEY))
+            out.append("  API key: configured (run 'config' to change)." if key_set
+                       else "  API key: not set - run 'config' to add one.")
+            names = targets.list_targets()
+            if names:
+                shown = ", ".join(names[:6]) + (" ..." if len(names) > 6 else "")
+                out.append(f"  Saved targets ({len(names)}): {shown} - run 'targets' to select.")
+            else:
+                out.append("  No saved targets yet - run 'target' (or 'target --dump-template' file form).")
+        except Exception:
+            pass
+        return out
 
     def dispatch(self, line: str) -> bool:
         """Handle one command line. Returns False to quit, True to continue."""
@@ -350,55 +370,107 @@ class ConsoleController:
                                example="/workshop/api/shop/orders/{order_id}")
         return m, p
 
+    def _g(self, field: str) -> dict:
+        """The guidance kwargs (hint/example/why) for a field, from the SINGLE shared FIELD_GUIDE so the
+        interactive prompts and the editable template can never drift."""
+        g = targets.FIELD_GUIDE[field]
+        return {k: g[k] for k in ("hint", "example", "why") if k in g}
+
+    def _target_overview(self) -> None:
+        """Feature 3: a one-screen overview so the user is NOT walking blind through the flow."""
+        self.echo("Create a reusable target (saved as an editable file; tokens are NEVER stored on disk).")
+        self.echo("You'll provide these, in order:")
+        self.echo("  1) name   2) base URL   3) OpenAPI spec (or blank)   4) endpoint (method + path)")
+        self.echo("  5) id location + parameter   6) attacker id   7) victim id   8) login file (optional)")
+        self.echo("At the end you'll REVIEW everything and can fix any field before it's saved.")
+        self.echo(f"  One-pass alternative: {branding.command_name()} target --dump-template <file>  "
+                  "(edit the whole form at once, then --from-file).")
+
+    def _review_target(self, v: dict) -> None:
+        """Show the target as entered, numbered to match the edit steps, so a misplaced value is caught
+        BEFORE it is saved."""
+        rows = [
+            ("name", v.get("name", "")),
+            ("base URL", v.get("base_url", "")),
+            ("spec", v.get("spec_path", "") or "(none - spec-less; scan from an endpoints list)"),
+            ("endpoint", f"{v.get('method', '')} {v.get('path_template', '')}".strip()),
+            ("id", f"{v.get('id_location', '')} / {v.get('id_param', '')}".strip(" /")),
+            ("attacker id", v.get("attacker_id", "")),
+            ("victim id", v.get("victim_id", "")),
+            ("login file", v.get("auth_spec_path", "") or "(none - paste tokens at verify time)"),
+        ]
+        self.echo("Review - the target as entered (nothing is saved yet):")
+        for i, (lbl, val) in enumerate(rows, 1):
+            self.echo(f"    [{i}] {lbl}: {val}")
+
     def do_target(self) -> None:
-        self.echo("Create a reusable target: where to attack, and the two ids to compare.")
-        name = self._ask_required("Target name",
-                                  hint="A label to save and re-select this target.",
-                                  example="crapi-orders")
-        base_url = self._ask_url("Base URL",
-                                 hint="The target's base URL (localhost only).",
-                                 example="http://localhost:8888",
-                                 why="Every request is scope-locked to this host.")
-        spec_path = self._ask_optional_spec_path(
-            "OpenAPI spec path (blank if the target has none)",
-            hint="Path to the target's OpenAPI/Swagger file (.json or .yml), or BLANK.",
-            example=r"C:\Users\you\crapi-openapi-spec.json",
-            why="Used to list endpoints. Blank => a spec-less target; `scan` runs from an endpoints "
-                "list you provide at scan time.")
-        method, path_template = self._pick_endpoint(spec_path)
-        loc_idx = self._ask_menu("Where is the object id?",
-                                 ["path  - e.g. /orders/{id}", "query - e.g. ?report_id=123"],
-                                 why="The tool swaps the id in this location to attempt cross-user access.")
-        id_location = "query" if loc_idx == 1 else "path"
-        if id_location == "path":
-            id_param = self._default_id_param(path_template, "path")
-            self.echo(f"  id parameter: {id_param}  (taken from the path template)")
-        else:
-            id_param = self._ask_required("Query parameter name that carries the id",
-                                          hint="The name of the query parameter holding the object id.",
-                                          example="report_id")
-        attacker_id = self._ask_required("Attacker's OWN resource id",
-                                         hint="An id the ATTACKER legitimately owns - the safe baseline.",
-                                         example="8",
-                                         why="The tool compares this against the victim's to detect a real leak.")
-        victim_id = self._ask_required("Victim's resource id",
-                                       hint="The id the attacker should NOT be able to reach.",
-                                       example="7",
-                                       why="The tool swaps this in to attempt the cross-user access.")
-        auth = self._ask_optional_login_file(
-            "Login file",
-            hint="OPTIONAL path to a login-declaration JSON (auto-relogin for tokens that expire mid-run).",
-            example="leave BLANK to just paste tokens at verify time",
-            why="Only needed if the target's tokens expire during a run.")
+        self._target_overview()
+        v: dict = {}
+
+        def c_name() -> None:
+            v["name"] = self._ask_required(targets.FIELD_GUIDE["name"]["label"], **self._g("name"))
+
+        def c_url() -> None:
+            v["base_url"] = self._ask_url(targets.FIELD_GUIDE["base_url"]["label"], **self._g("base_url"))
+
+        def c_spec() -> None:
+            v["spec_path"] = self._ask_optional_spec_path(
+                targets.FIELD_GUIDE["spec_path"]["label"], **self._g("spec_path"))
+
+        def c_endpoint() -> None:
+            v["method"], v["path_template"] = self._pick_endpoint(v.get("spec_path", ""))
+
+        def c_id() -> None:
+            loc_idx = self._ask_menu(
+                targets.FIELD_GUIDE["id_location"]["label"],
+                ["path  - e.g. /orders/{id}", "query - e.g. ?report_id=123"],
+                why=targets.FIELD_GUIDE["id_location"].get("why"))
+            v["id_location"] = "query" if loc_idx == 1 else "path"
+            if v["id_location"] == "path":
+                v["id_param"] = self._default_id_param(v["path_template"], "path")
+                self.echo(f"  id parameter: {v['id_param']}  (taken from the path template)")
+            else:
+                v["id_param"] = self._ask_required(
+                    "Query parameter name that carries the id",
+                    hint="The name of the query parameter holding the object id.", example="report_id")
+
+        def c_attacker() -> None:
+            v["attacker_id"] = self._ask_required(
+                targets.FIELD_GUIDE["attacker_id"]["label"], **self._g("attacker_id"))
+
+        def c_victim() -> None:
+            v["victim_id"] = self._ask_required(
+                targets.FIELD_GUIDE["victim_id"]["label"], **self._g("victim_id"))
+
+        def c_login() -> None:
+            v["auth_spec_path"] = self._ask_optional_login_file(
+                targets.FIELD_GUIDE["auth_spec_path"]["label"], **self._g("auth_spec_path"))
+
+        steps = [c_name, c_url, c_spec, c_endpoint, c_id, c_attacker, c_victim, c_login]
+        for fn in steps:
+            fn()
+
+        # Review + confirm/go-back: blank = save; a number re-collects that field (so a misplaced value
+        # like a URL typed into the name slot is caught and fixed BEFORE anything is created).
+        while True:
+            self._review_target(v)
+            choice = self._ask("Save this target? Press Enter to save, or a number (1-8) to edit")
+            if not choice:
+                break
+            if choice.isdigit() and 1 <= int(choice) <= len(steps):
+                steps[int(choice) - 1]()
+                continue
+            self.echo(f"  ! Enter a number 1-{len(steps)} to edit a field, or leave blank to save.")
+
         t = targets.Target(
-            name=name, base_url=base_url, spec_path=spec_path, method=method,
-            path_template=path_template, id_location=id_location, id_param=id_param,
-            attacker_id=attacker_id, victim_id=victim_id, auth_spec_path=auth,
+            name=v["name"], base_url=v["base_url"], spec_path=v.get("spec_path", ""), method=v["method"],
+            path_template=v["path_template"], id_location=v["id_location"], id_param=v["id_param"],
+            attacker_id=v["attacker_id"], victim_id=v["victim_id"], auth_spec_path=v.get("auth_spec_path", ""),
         )
         path = targets.save_target(t)
         self.selected = t
         self.echo(f"  saved target '{t.name}' -> {path}")
-        self.echo(f"  selected '{t.name}'. Run 'verify' to confirm it.")
+        self.echo(f"  selected '{t.name}'. Run 'verify' to confirm it, or 'scan' to auto-discover more.")
 
     def do_targets(self) -> None:
         names = targets.list_targets()
@@ -657,6 +729,14 @@ class ConsoleController:
             # a prompted bystander overrides the config-file one; EITHER way it routes ONLY into
             # bystander_credential (never the attack path) via _verify_external below.
             bystander_tok = SecretStr(bystander) if bystander else _resolve_bystander_token(self.config_path)
+            # #7 FP NAIL (fail-closed): DISTINCT identities required. attacker==owner -> the D24 owner-view
+            # corroborates self-vs-self -> a false [CONFIRMED]. Refuse BEFORE any candidate runs (the
+            # engine is never called on a collision) — the SAME guard the --auth scan / single-op verify use.
+            reason = _identity_collision_reason(
+                attacker, owner, reveal_secret(bystander_tok) if bystander_tok is not None else None)
+            if reason:
+                self.echo(f"  ! [NOT DATA] {reason}")
+                return
 
             async def run_op(op):
                 return await _verify_external(t.base_url, confirm_spec, op, attacker_tok, owner_tok,
