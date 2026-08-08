@@ -1086,20 +1086,23 @@
   tiers a/b/c + the confirm loop + tier-grouped report + the no-spec (endpoints-list) degrade are all
   DONE and tested. The three items below are the **explicitly deferred hooks**, recorded so a future node
   does not assume them shipped.
-- **Deferred hook 1 — tier-c response-body id PARSER.** `_extract_ids` uses a **deterministic** extractor
-  (prefer the candidate's `id_param`, then generic `id`/`_id`, across a top-level array or the first
-  list-of-dicts in a wrapper object). The docstring notes an **AI parser could slot in here**; it is a
-  **hook awaiting a real-target response sample** and is deliberately NOT built, so id sourcing never
-  depends on the model hallucinating an id. SAFE-direction: a body the deterministic parser cannot read →
-  no ids → **SKIP**, never a guessed id.
-  - **Smoke finding (2026-08-08, loopback lab):** forcing tier-c (no id_map / no collections) against
-    `vulnerable_target` produced `propose_collection → None` for every candidate — the labs have **no
-    per-resource collection/list endpoints** (only single-object `/{id}` routes), so `validate_collection`
-    /`_harvest`/`_extract_ids` are never reached and every candidate SKIPs. **The parser sample therefore
-    cannot be captured from the built-in labs — it needs a target that publishes list endpoints (external).**
-    The deterministic extractor WAS confirmed on a real wrapped-list body from the lab: `GET /api/admin/users`
-    `{"count":3,"users":[{"id":1,…},{"id":2,…},{"id":3,…}]}` → `['1','2','3']`; `{"events":[]}` → `[]`.
-    Finalizing the AI slot is handed to the director (needs an external target with collections).
+- **Hook 1 — tier-c response-body id PARSER — ✅ DONE** (commit `d46dd41`; end-to-end verified 2026-08-08).
+  `_extract_ids` now robustly finds the item list (top-level array OR wrapped under `data`/`items`/`results`/
+  a plural resource key) and resolves ONE id field consistent across the list — `id_param` first, then a
+  generic id key (`id`/`uuid`/`guid`/`_id`/`pk`/`objectId`), then a single resource-specific `<name>_id`.
+  **Relationship/owner keys (`owner_id`, `user_id`, …) are denylisted** — the object's own id is never the
+  owner (`owner_id` decoy). Ambiguity (0 or >1 candidate field, or no id-shaped values) → `[]` → **SKIP**,
+  never a fabricated id. A **code-validated, default-off AI id-field slot** disambiguates genuinely ambiguous
+  shapes only (the proposed field must exist + be id-shaped in every item and must not be a relation key).
+  6 unit tests over the real lab shapes + the owner_id decoy + ambiguity→SKIP + AI-slot validation.
+  - **End-to-end verified (2026-08-08).** The built-in labs still have **no per-resource collections**, so
+    tier-c correctly SKIPs there (re-confirmed 3/3). A **local loopback collection-bearing fixture** (a
+    constructed test target on 127.0.0.1, NOT external) was scanned NON-INTERACTIVELY with no id_map / no
+    declared collection — forcing tier-c — via **both** catalog sources (spec + endpoints-list): **2/2
+    candidates auto-sourced ids with NO user hint**, the parser picking `widget_id` over the `owner_id` decoy
+    in a LIVE run → 1 [CONFIRMED] + 1 [REFUTED], 0 SKIPPED. `_harvest` per-account isolation unchanged.
+    **Still recommended:** a run against an EXTERNAL real target with collections (crAPI/VAmPI) — not run
+    here (read-only / no-external-target gate).
 - **Deferred hook 1b — discovery has no retry on a transient LLM 5xx.** `propose_candidates` runs the
   discovery LLM call with `max_attempts=1`; **smoke observed a transient Gemini `ServerError` (5xx) empty a
   scan** (0 candidates) on 2 of the runs — a re-run succeeded. SAFE-direction (an empty scan, never a wrong
@@ -1113,9 +1116,9 @@
   agentic orchestration layer over the onramp is NOT built.
 - **Direction: SAFE / capability, not correctness.** None can affect a verdict — the zero-FP engine still
   judges every op behind the two code fences. They are missing *reach*, not missing *safety*.
-- **Priority:** report-clarity is now **DONE** (per-finding next-step + prioritized summary, commits
-  `37047ec` + `7165885`; smoke-verified). Next polish: hook 1b (discovery retry — cheap), then hook 1
-  (tier-c parser — needs an external target with collections), then hook 3.
+- **Priority:** report-clarity (`37047ec`+`7165885`) and hook 1 (tier-c parser, `d46dd41`) are both now
+  **DONE** and smoke-verified. Remaining polish: hook 1b (discovery retry — cheap), then hook 3 (AI CLI
+  orchestration); plus a run of tier-c against an EXTERNAL real target with collections (crAPI/VAmPI).
 
 ---
 

@@ -69,7 +69,7 @@ the earlier single-target record (140 SAFE / 70 VULN, one target), kept as histo
 
 | Suite | Command (from repo root) | Result |
 |---|---|---|
-| Backend | `python -m pytest backend/tests -q` | **781 passed** |
+| Backend | `python -m pytest backend/tests -q` | **787 passed** |
 | Ground-truth target (`vulnerable_target`, integer-id) | `python -m pytest vulnerable_target -q` | **31 passed** |
 | Ground-truth target (`depot_target`, UUID-id) | `python -m pytest depot_target -q` | **23 passed** |
 
@@ -87,7 +87,8 @@ the earlier single-target record (140 SAFE / 70 VULN, one target), kept as histo
 > the **CLI onboarding / non-interactive config path** (editable target file + non-interactive `scan` from
 > env/file tokens; `test_target_file.py` / `test_scan_cli.py` + console additions, commits
 > `cb00393`→`a8c199b`) and **report-clarity** (per-finding next-step + prioritized scan summary;
-> `test_confirm_render.py` / `test_scan_run.py` additions, commits `37047ec` + `7165885`). See the
+> `test_confirm_render.py` / `test_scan_run.py` additions, commits `37047ec` + `7165885`); and **787**
+> after the **tier-c response-body id parser** (`test_scan_ids.py` +6, commit `d46dd41`). See the
 > "Auto-discovery `scan` onramp" block below.
 
 ## Operator front door — CLI, packaging, config, external targets (code facts, re-verified 2026-08-02)
@@ -384,22 +385,32 @@ alice/bob/carol)** on 2026-08-08:
   below and [`TECH_DEBT.md`](./TECH_DEBT.md) **D33**.
 - **WAF Part 1/2 + `--auth` refresh did NOT fire** (healthy local lab, static tokens) — as expected.
 
-**DEFERRED (NOT done — do not claim otherwise):**
-- **Tier-c response-body id PARSER.** The AI-parser slot in `scan_ids._extract_ids` is a **hook awaiting a
-  real-target response sample**; the **deterministic default** (prefer the candidate's `id_param`, then
-  generic `id`/`_id`, across a top-level array or the first list-of-dicts in a wrapper) parses collection
-  bodies for now, so id sourcing never depends on the model hallucinating an id. **Smoke finding
-  (2026-08-08):** the built-in labs have **no per-resource collection/list endpoints** (only single-object
-  `/{id}` routes), so on them tier-c's `propose_collection` correctly returns **None → SKIP** (direction-
-  safe, no fabricated id) and `_harvest`/`_extract_ids` are never exercised — **so the parser sample cannot
-  be captured from a local lab; it needs a target that publishes list endpoints.** The deterministic
-  extractor WAS confirmed against a real wrapped-list body from the lab: `GET /api/admin/users`
-  `{"count":3,"users":[{"id":1,…},{"id":2,…},{"id":3,…}]}` → `_extract_ids` → `['1','2','3']` (and an
-  empty `{"events":[]}` → `[]`). Finalizing the AI parser slot still needs a real target with per-resource
-  collections (external — handed to the director; not run here).
+**Tier-c response-body id PARSER — ✅ DONE** (commit `d46dd41`; end-to-end verified 2026-08-08). `scan_ids
+._extract_ids` now robustly harvests ids from real collection envelopes (top-level array OR wrapped under
+`data`/`items`/`results`/a plural resource key) and id-field variants (`id_param` / `id` / `uuid` /
+`<resource>_id` / camelCase `<resource>Id`), resolving ONE id field consistent across the list. **The
+`owner_id` DECOY is excluded** (relationship/owner keys are never taken as the object id); ambiguity (0 or
+>1 candidate field, or no id-shaped values) → `[]` → **SKIP**, never a fabricated id; a **code-validated,
+default-off AI id-field slot** disambiguates only genuinely ambiguous shapes. 6 unit tests + 787 backend
+suite.
+- **End-to-end verification (2026-08-08).** The built-in labs (`vulnerable_target`/`depot_target`) still
+  have **no per-resource collection endpoints**, so tier-c correctly **SKIPs** all candidates there
+  (re-confirmed: 3/3 SKIP). To exercise the auto-source path, a **local loopback collection-bearing fixture**
+  (127.0.0.1:8002, seeded alice/bob, widgets=BOLA + gadgets=secure; a constructed test fixture, NOT an
+  external target) was scanned NON-INTERACTIVELY with **no id_map and no declared collection** — forcing
+  tier-c. Result via **both** catalog sources (spec AND endpoints-list): **2/2 candidates auto-sourced ids
+  with NO user hint** (attacker's own + victim's), the parser picking `widget_id` over the `owner_id` decoy
+  in a LIVE run → **1 [CONFIRMED]** (widgets BOLA, owner-view corroborated on the victim's real bytes) +
+  **1 [REFUTED]** (gadgets soft-200 denial), **0 SKIPPED**. `_harvest` per-account isolation unchanged
+  (attacker list read with attacker cred, owner with owner cred; the harvested owner id is the victim
+  target only, never a credential). **Still recommended:** a run against an EXTERNAL real target that
+  publishes collections (crAPI/VAmPI) — not run here (per the read-only/no-external-target gate).
 - **Discovery has no retry on a transient LLM 5xx** (`propose_candidates(max_attempts=1)`) — a transient
   `ServerError` empties the scan. SAFE-direction (an empty scan, never a wrong verdict) but a real usability
-  gap; see TECH_DEBT **D33**.
+  gap; see TECH_DEBT **D33**. (This smoke's runs hit no transient 5xx.)
+
+**DEFERRED (NOT done — do not claim otherwise):**
+- **Full passive endpoint discovery (proxy).** Not built. The no-spec degrade covers the **manual** case
 - **Full passive endpoint discovery (proxy).** Not built. The no-spec degrade covers the **manual** case
   (operator supplies the endpoint list); the `catalog_from_har` proxy-capture path is still the
   `NotImplementedError` stub (TECH_DEBT **D18** open half; ROADMAP §0 PLANNED item 2).

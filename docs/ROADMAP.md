@@ -17,10 +17,12 @@
   env/file tokens (commits `cb00393`→`a8c199b`). This sits on a **complete capability layer** (multi-step /
   CSRF login `cf70d6e`, per-finding owner creds + **D28 owner-only** refresh `4ca17d7`, **OAuth 2.0**
   `6031f96`). Engineering signal, not a zero-FP claim.
-- **Next station:** **`scan` deferred polish** — (a) a bounded **discovery retry** (a transient LLM 5xx
-  currently empties a scan; smoke-observed), (b) the tier-c **response-body id parser** (needs an
-  **external** target with per-resource collections — the built-in labs have none), (c) **AI-driven CLI
-  orchestration**. Presentation/robustness work (no engine/verdict change), fast-lane. See §0 + TECH_DEBT D33.
+- **Next station:** **`scan` deferred polish** — the tier-c **response-body id parser** is now **DONE**
+  (commit `d46dd41`; end-to-end verified on a local collection-bearing fixture — 2/2 candidates auto-sourced
+  ids with no user hint, `owner_id` decoy excluded). Remaining: (a) a bounded **discovery retry** (a
+  transient LLM 5xx currently empties a scan; smoke-observed), (b) **AI-driven CLI orchestration**, and
+  (c) a tier-c run against an **external** real target with collections (crAPI/VAmPI). No engine/verdict
+  change; fast-lane. See §0 + TECH_DEBT D33.
 - Full **DONE / NEXT / PLANNED / DEFERRED / REJECTED** detail is in the **§0 status board** just below.
 
 > The single source of truth for what this project is, what it is not, and where it's going.
@@ -133,10 +135,12 @@ Operator front door (this node's line — all re-verified 2026-08-02):
     from a user-provided endpoints list when the target publishes no OpenAPI spec.
   - **Real-target datapoint:** the pipeline runs **end-to-end on a real self-hosted lab** (engineering
     signal, NOT a zero-FP claim). See [`STATUS.md`](./STATUS.md) "Auto-discovery `scan` onramp".
-  - **DEFERRED (not done):** the tier-c **response-body id parser** (the AI-parser slot in
-    `scan_ids._extract_ids` — a hook awaiting a real-target sample; the deterministic default parses now);
-    **full passive endpoint discovery (proxy)** (no-spec degrade covers only the manual case); **AI-driven
-    CLI orchestration**. See ▶️ NEXT + 📋 PLANNED.
+  - **DONE since:** the tier-c **response-body id parser** (`scan_ids._extract_ids`, commit `d46dd41`) —
+    robust across real collection envelopes / id-field shapes, `owner_id` decoy excluded, ambiguity→SKIP,
+    code-validated AI slot; **end-to-end verified** (2/2 candidates auto-sourced on a local collection lab).
+  - **DEFERRED (not done):** **full passive endpoint discovery (proxy)** (no-spec degrade covers only the
+    manual case); **AI-driven CLI orchestration**; a bounded **discovery retry** (transient-5xx). See
+    ▶️ NEXT + 📋 PLANNED.
 
 - **`scan` report READABILITY (report-clarity) — ✅ DONE** (commits `37047ec` per-finding "So what /
   Next step" + `7165885` prioritized top summary + confirmed-first grouping; renderer stays pure/offline,
@@ -146,12 +150,13 @@ Operator front door (this node's line — all re-verified 2026-08-02):
   non-interactive `scan` from env/file tokens, commits `cb00393`→`a8c199b`), smoke-verified end-to-end.
 
 ### ▶️ NEXT (one item)
-- **`scan` deferred polish (in order):** (a) **discovery retry** — `propose_candidates` uses
-  `max_attempts=1`, so a transient LLM 5xx empties a scan (smoke-observed twice); add a small bounded
-  retry (presentation/robustness, no verdict change). Then (b) the tier-c **response-body id parser** —
-  which **needs an external target with per-resource collection endpoints** (the built-in labs have none,
-  so the sample can't be captured locally — smoke finding, TECH_DEBT **D33**), and (c) **AI-driven CLI
-  orchestration**. Fast-lane; SAFE-direction throughout (the zero-FP engine judges every op regardless).
+- **`scan` deferred polish (in order):** the tier-c **response-body id parser** is now **DONE** (`d46dd41`;
+  end-to-end verified — 2/2 candidates auto-sourced ids with no user hint on a local collection-bearing
+  fixture, `owner_id` decoy excluded). Remaining: (a) **discovery retry** — `propose_candidates` uses
+  `max_attempts=1`, so a transient LLM 5xx empties a scan (smoke-observed); add a small bounded retry
+  (presentation/robustness, no verdict change). Then (b) **AI-driven CLI orchestration**, and (c) a tier-c
+  run against an **external** real target with collections (crAPI/VAmPI; the built-in labs have none —
+  TECH_DEBT **D33**). Fast-lane; SAFE-direction throughout (the zero-FP engine judges every op regardless).
 
 ### 📋 PLANNED (ordered)
 1. **Remote arbitrary targets + full SSRF / DNS-rebinding / rate-limit hardening** — beyond localhost.
