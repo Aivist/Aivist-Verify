@@ -210,6 +210,105 @@ def test_do_scan_bystander_and_assert_route(tmp_path, monkeypatch):
     assert "byst-tok" not in out and "atk-tok" not in out               # tokens masked, never echoed
 
 
+# ------------------------------------------------------------------ #6 interactive scan reads ENV tokens
+class _SecretSpy:
+    """A secret_prompt that COUNTS calls (proves a paste prompt was / wasn't shown) and returns ''."""
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, *_a):
+        self.calls += 1
+        return ""
+
+
+def _scan_target(tmp_path):
+    from backend.app.cli.console import targets as targets_mod
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text(json.dumps(_SPEC), encoding="utf-8")
+    ids_path = tmp_path / "ids.json"
+    ids_path.write_text(json.dumps({"ids": _ID_MAP}), encoding="utf-8")
+    sel = targets_mod.Target(name="scan-t", base_url="http://localhost:8888", spec_path=str(spec_path),
+                             method="GET", path_template="/api/reports/{report_id}", id_location="path",
+                             id_param="report_id", attacker_id="1", victim_id="2")
+    return sel, ids_path
+
+
+def test_do_scan_uses_env_tokens_masked_and_routed_per_account(tmp_path, monkeypatch):
+    # #6 (load-bearing): env TARGET_*_TOKEN set -> USED (no paste prompt), masked (never echoed), and
+    # routed ONLY per account (attacker->auth_context, owner->owner_credential, bystander->bystander).
+    monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", False)
+    monkeypatch.setattr(settings, "LLM_MODEL", "test-model")
+    from backend.app.services.deep_verifier import OwnerCredential
+    sel, ids_path = _scan_target(tmp_path)
+    eng = _ScriptedEngine()
+    secret_spy = _SecretSpy()
+    lines = []
+    ctl = ConsoleController(
+        prompt=_prompts(str(ids_path)),                          # id-source; auth/assert/review exhaust to ""
+        secret_prompt=secret_spy, echo=lambda *a: lines.append(" ".join(str(x) for x in a)),
+        config_path=str(tmp_path / "no-config.toml"), engine=eng, scan_provider_factory=_stub_provider(_CANDS))
+    ctl._environ = {"TARGET_ATTACKER_TOKEN": "env-atk", "TARGET_OWNER_TOKEN": "env-own",
+                    "TARGET_BYSTANDER_TOKEN": "env-byst"}
+    ctl.selected = sel
+    ctl.do_scan()
+    assert secret_spy.calls == 0                                 # env used -> NO manual paste prompt
+    assert len(eng.calls) == 2
+    for kw in eng.calls:
+        assert "env-atk" in str(kw["auth_context"])             # attacker -> auth_context
+        assert "env-own" not in str(kw["auth_context"])         # owner NEVER in the attack path
+        assert "env-byst" not in str(kw["auth_context"])        # bystander NEVER in the attack path
+        assert isinstance(kw["owner_credential"], OwnerCredential) and "env-own" in kw["owner_credential"].header_value
+        assert isinstance(kw["bystander_credential"], OwnerCredential) and "env-byst" in kw["bystander_credential"].header_value
+    out = "\n".join(lines)
+    assert "env-atk" not in out and "env-own" not in out and "env-byst" not in out   # masked, never echoed
+    assert "from environment" in out                            # the masked 'from env' receipt is shown
+
+
+def test_do_scan_env_attacker_equals_owner_is_refused(tmp_path, monkeypatch):
+    # #6 red line: the attacker!=owner fail-closed guard fires on ENV tokens; the engine NEVER runs.
+    monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "LLM_MODEL", "test-model")
+    sel, ids_path = _scan_target(tmp_path)
+    eng = _ScriptedEngine()
+    secret_spy = _SecretSpy()
+    lines = []
+    ctl = ConsoleController(
+        prompt=_prompts(str(ids_path)), secret_prompt=secret_spy,
+        echo=lambda *a: lines.append(" ".join(str(x) for x in a)),
+        config_path=str(tmp_path / "no-config.toml"), engine=eng, scan_provider_factory=_stub_provider(_CANDS))
+    ctl._environ = {"TARGET_ATTACKER_TOKEN": "same-tok", "TARGET_OWNER_TOKEN": "same-tok"}
+    ctl.selected = sel
+    ctl.do_scan()
+    assert eng.calls == []                                       # REFUSED before any candidate -> engine never ran
+    out = "\n".join(lines)
+    assert "SAME identity" in out and "NOT DATA" in out
+
+
+def test_do_scan_pre_run_review_shows_plan_and_lets_a_field_be_corrected(tmp_path, monkeypatch):
+    # #8: do_scan shows a pre-run REVIEW; editing '1' toggles the owner-private assertion before the scan.
+    monkeypatch.setattr(settings, "LLM_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "AI_DEEP_VERIFY_ENABLED", False)
+    monkeypatch.setattr(settings, "LLM_MODEL", "test-model")
+    sel, ids_path = _scan_target(tmp_path)
+    eng = _ScriptedEngine()
+    lines = []
+    # clear prompts: id-source, auth(blank), assert(n->no), review edit '1', new-assert 'y', review ''(run)
+    ctl = ConsoleController(
+        prompt=_prompts(str(ids_path), "", "n", "1", "y", ""), secret_prompt=_SecretSpy(),
+        echo=lambda *a: lines.append(" ".join(str(x) for x in a)),
+        config_path=str(tmp_path / "no-config.toml"), engine=eng, scan_provider_factory=_stub_provider(_CANDS))
+    ctl._environ = {"TARGET_ATTACKER_TOKEN": "a", "TARGET_OWNER_TOKEN": "b"}    # env tokens -> no paste
+    ctl.selected = sel
+    ctl.do_scan()
+    out = "\n".join(lines)
+    assert "Review - the scan about to run" in out              # the pre-run review rendered
+    assert "target:" in out and "catalog:" in out and "tokens:" in out
+    assert len(eng.calls) == 2
+    for kw in eng.calls:                                         # the edit took effect: assertion now ON
+        assert kw["assert_owner_only"] is True
+
+
 # ==============================================================================
 # scan "1" — catalog from an ENDPOINTS LIST (no spec). Same discovery downstream; exactly-one source.
 # ==============================================================================

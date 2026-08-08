@@ -540,3 +540,62 @@ def test_tui_exception_falls_back_to_text(monkeypatch):
         raise RuntimeError("tui broke")
 
     assert lz._guarded_run(c, boom, "tui", None) == 0 and called["text"] == 1
+
+
+# ------------------------------------------------------------------ display polish (#1,#2,#3,#9 + color)
+def test_prompt_shows_example_before_input_blank_line_and_echoes_value(tmp_path, monkeypatch):
+    # #3 example BEFORE the input cursor; #2 a blank line opens the block; #1 the entered value is echoed.
+    events = []
+    answers = iter(["mytarget"])
+
+    def prm(label):
+        events.append(("PROMPT", label))
+        return next(answers, "")
+
+    def ech(*a):
+        events.append(("ECHO", " ".join(str(x) for x in a)))
+
+    c = ConsoleController(prompt=prm, secret_prompt=lambda *a: "", echo=ech,
+                          config_path=str(tmp_path / "c.toml"))
+    c._ask_required("Target name", hint="A label to save and re-select this target.", example="crapi-orders")
+    ex_i = next(i for i, (k, v) in enumerate(events) if k == "ECHO" and "example: crapi-orders" in v)
+    pr_i = next(i for i, (k, v) in enumerate(events) if k == "PROMPT" and "Target name" in v)
+    assert ex_i < pr_i                                           # #3: the example appears BEFORE the prompt
+    assert events[0] == ("ECHO", "")                            # #2: a blank line opens the Q&A block
+    assert any(k == "ECHO" and "-> mytarget" in v for k, v in events)   # #1: the entered value is echoed back
+
+
+def test_optional_prompt_shows_skip_hint_and_color_degrades_to_plain(tmp_path, monkeypatch):
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    lines = []
+    c = ConsoleController(prompt=lambda *a: "", secret_prompt=lambda *a: "",
+                          echo=lambda *a: lines.append(" ".join(str(x) for x in a)),
+                          config_path=str(tmp_path / "c.toml"))
+    c._ask_optional_login_file("Login file", hint="OPTIONAL path to a login-declaration JSON.")
+    out = "\n".join(lines)
+    assert "press Enter to skip" in out                         # #9: optional prompts say how to skip
+    assert "\033[" not in out                                   # color OFF (not a TTY) -> NO raw escape codes
+
+
+def test_color_is_applied_when_forced(tmp_path, monkeypatch):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    lines = []
+    c = ConsoleController(prompt=lambda *a: "", secret_prompt=lambda *a: "",
+                          echo=lambda *a: lines.append(" ".join(str(x) for x in a)),
+                          config_path=str(tmp_path / "c.toml"))
+    c._guide(hint="hello")
+    assert any("\033[" in l for l in lines)                     # ANSI present when FORCE_COLOR set (degrades cleanly)
+
+
+def test_env_token_value_is_never_echoed(tmp_path, monkeypatch):
+    # #6 red line at the helper level: the env token VALUE never reaches output; only a masked receipt.
+    lines = []
+    c = ConsoleController(prompt=lambda *a: "", secret_prompt=lambda *a: "SHOULD-NOT-BE-USED",
+                          echo=lambda *a: lines.append(" ".join(str(x) for x in a)),
+                          config_path=str(tmp_path / "c.toml"))
+    c._environ = {"TARGET_ATTACKER_TOKEN": "super-secret-value"}
+    got = c._env_or_secret("attacker", "Attacker token")
+    assert got == "super-secret-value"                          # the value is returned to the caller
+    out = "\n".join(lines)
+    assert "super-secret-value" not in out                      # but NEVER echoed
+    assert "from environment" in out and "TARGET_ATTACKER_TOKEN" in out   # masked receipt only

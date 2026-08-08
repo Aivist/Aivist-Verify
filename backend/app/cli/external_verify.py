@@ -272,7 +272,12 @@ def _resolve_tokens(
     The config-key names are parameters (default: today's TARGET_ATTACKER_TOKEN / TARGET_OWNER_TOKEN,
     so every existing caller is byte-identical). #7 per-finding: the caller may point a role at a
     DIFFERENT account's key so different findings/ops can attack different owners across separate runs.
-    The two tokens stay SEPARATE variables — attacker -> auth_context, owner -> owner_credential."""
+    The two tokens stay SEPARATE variables — attacker -> auth_context, owner -> owner_credential.
+
+    SOURCE ORDER (#6): the process ENVIRONMENT (the same TARGET_*_TOKEN keys) wins over the config file,
+    which wins over the masked prompt — so a user who already exported the tokens is not forced to paste.
+    An env token is never printed here; it is masked as a SecretStr exactly like a config/pasted one, and
+    the caller's attacker!=owner collision guard fires on it identically."""
     cfg: Dict[str, Any] = {}
     try:
         if config_path and os.path.isfile(config_path):
@@ -283,13 +288,13 @@ def _resolve_tokens(
     except Exception:
         cfg = {}
 
-    attacker = str(cfg.get(attacker_key) or "").strip()
+    attacker = str(os.environ.get(attacker_key) or cfg.get(attacker_key) or "").strip()   # env > config
     if not attacker:
         attacker = (prompt_secret("Attacker bearer token (input hidden): ") or "").strip()
     if not attacker:
         raise ValueError("an attacker token is required")
 
-    owner = str(cfg.get(owner_key) or "").strip()
+    owner = str(os.environ.get(owner_key) or cfg.get(owner_key) or "").strip()             # env > config
     if not owner:
         owner = (prompt_secret("Owner/victim bearer token (hidden; blank to skip owner-view): ") or "").strip()
 

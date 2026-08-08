@@ -31,7 +31,13 @@ from backend.app.cli import branding
 from backend.app.cli.config_flow import write_config, redacted_summary
 from backend.app.cli.external_verify import run_external_verify, _load_spec_file
 from backend.app.cli.console import intro, targets
+from backend.app.cli.confirm_render import _painter          # ANSI paint; auto-off when not a TTY / NO_COLOR
 from backend.app.core.config import settings, reveal_secret
+
+# The env keys the non-interactive scan reads; the interactive flow now reads them too (#6) so a user who
+# already exported them isn't forced to paste. Values become SecretStr immediately and route per-account.
+_ENV_TOKEN_KEYS = {"attacker": "TARGET_ATTACKER_TOKEN", "owner": "TARGET_OWNER_TOKEN",
+                   "bystander": "TARGET_BYSTANDER_TOKEN"}
 
 # Conservative, provider-appropriate suggestions; a validated "custom" option always
 # follows, so a valid model the list doesn't include is never hard-blocked.
@@ -62,6 +68,10 @@ class ConsoleController:
         # scan discovery provider (None -> the configured LLM provider); a test seam for offline scans.
         self.scan_provider_factory = scan_provider_factory
         self.selected: Optional[targets.Target] = None
+        # ANSI painter, detected ONCE (NO_COLOR / FORCE_COLOR / stdout.isatty). Off when piped / in tests,
+        # so no raw escape codes ever reach a dumb terminal. `environ` is a test seam for the env-token read.
+        self._paint = _painter(None)
+        self._environ = os.environ
 
     # -- REPL entry points -------------------------------------------------
     def run_intro(self) -> None:
@@ -108,17 +118,28 @@ class ConsoleController:
         return True
 
     # -- input helpers: guidance + validation + re-prompt ------------------
-    def _guide(self, hint=None, example=None, why=None) -> None:
+    def _guide(self, hint=None, example=None, why=None, *, optional: bool = False) -> None:
+        """Show guidance BEFORE the input line (#3), one blank line above so blocks aren't cramped (#2),
+        dim-colored so it reads as guidance not answer (#1). `optional` appends a press-Enter-to-skip
+        hint (#9) so the user never has to ask 'do I skip this?'."""
+        self.echo("")                                        # blank line between Q&A blocks (#2)
         if hint:
-            self.echo(f"  {hint}")
+            self.echo(self._paint(f"  {hint}", "dim"))
         if example:
-            self.echo(f"    example: {example}")
+            self.echo(self._paint(f"    example: {example}", "dim"))
         if why:
-            self.echo(f"    why: {why}")
+            self.echo(self._paint(f"    why: {why}", "dim"))
+        if optional:
+            self.echo(self._paint("    (optional - just press Enter to skip)", "dim"))
 
     def _ask(self, label: str) -> str:
-        """A single CLEAR-TEXT prompt (never masked)."""
-        return (self.prompt(f"  {label}: ") or "").strip()
+        """A single CLEAR-TEXT prompt (never masked). The label is highlighted (#1) so it stands apart
+        from the dim guidance; the entered value is echoed back on its own line in a distinct style (#1),
+        so there's always a clear record of what was typed. Secrets NEVER go through here."""
+        v = (self.prompt(self._paint(f"  {label}", "cyan", "bold") + ": ") or "").strip()
+        if v:
+            self.echo(self._paint(f"    -> {v}", "green"))   # echo back the entered value (distinct)
+        return v
 
     def _ask_required(self, label: str, **g) -> str:
         self._guide(**g)
@@ -158,7 +179,7 @@ class ConsoleController:
     def _ask_optional_spec_path(self, label: str, **g) -> str:
         """Like `_ask_spec_path` but BLANK is allowed => a spec-less target (scan runs from an
         endpoints list instead). A non-blank value must be a readable OpenAPI file (re-prompt otherwise)."""
-        self._guide(**g)
+        self._guide(**g, optional=True)
         while True:
             v = self._ask(label)
             if not v:
@@ -187,7 +208,7 @@ class ConsoleController:
             self.echo(f"  ! Please enter a number from the list (1-{len(options)}).")
 
     def _ask_optional_login_file(self, label: str, **g) -> str:
-        self._guide(**g)
+        self._guide(**g, optional=True)
         while True:
             v = self._ask(label)
             if not v:
@@ -217,12 +238,14 @@ class ConsoleController:
             self.echo("  ! That doesn't look like a model id ('gemini' or '2.5' won't work). "
                       "Use the full id, e.g. gemini-2.5-pro.")
 
-    def _ask_secret(self, label: str, **g) -> str:
-        """MASKED entry (key). Confirms receipt without ever showing the value."""
-        self._guide(**g)
-        v = (self.secret_prompt(f"  {label} (input hidden): ") or "").strip()
+    def _ask_secret(self, label: str, *, optional: bool = False, **g) -> str:
+        """MASKED entry (key/token). Confirms receipt without EVER showing the value. `optional` shows the
+        press-Enter-to-skip hint (#9). The masked line + a length-only receipt are the only output — the
+        value is never echoed."""
+        self._guide(**g, optional=optional)
+        v = (self.secret_prompt(self._paint(f"  {label} (input hidden)", "cyan", "bold") + ": ") or "").strip()
         if v:
-            self.echo(f"    received ({len(v)} characters).")
+            self.echo(self._paint(f"    received ({len(v)} characters).", "dim"))
         return v
 
     def _confirming_secret(self, label: str) -> str:
@@ -230,8 +253,21 @@ class ConsoleController:
         Masked + 'received' confirmation so the user always knows it worked."""
         v = (self.secret_prompt(label) or "").strip()
         if v:
-            self.echo(f"    received ({len(v)} characters).")
+            self.echo(self._paint(f"    received ({len(v)} characters).", "dim"))
         return v
+
+    def _env_or_secret(self, role: str, label: str, *, optional: bool = False, **g) -> str:
+        """#6: if the role's env token (TARGET_<ROLE>_TOKEN) is set, USE it instead of forcing a paste;
+        otherwise fall back to the masked prompt. Returns the RAW token string — the caller wraps it in
+        SecretStr and routes it per-account (attacker->auth_context, owner->owner_credential,
+        bystander->bystander_credential). RED LINE: the value is NEVER echoed (only a masked 'from env'
+        receipt), and the attacker!=owner collision guard still fires on it downstream."""
+        key = _ENV_TOKEN_KEYS[role]
+        env_val = (self._environ.get(key) or "").strip()
+        if env_val:
+            self.echo(self._paint(f"  Using {role} token from environment ({key}, masked).", "green"))
+            return env_val
+        return self._ask_secret(label, optional=optional, **g)
 
     def _ask_yes_no(self, label: str, default: bool = False, **g) -> bool:
         """A y/N prompt. Blank -> `default`. Re-prompts on anything unrecognized."""
@@ -377,14 +413,19 @@ class ConsoleController:
         return {k: g[k] for k in ("hint", "example", "why") if k in g}
 
     def _target_overview(self) -> None:
-        """Feature 3: a one-screen overview so the user is NOT walking blind through the flow."""
+        """A one-screen overview so the user is NOT walking blind — and (#7) surfaces the one-pass FILE
+        form prominently at the top (not buried in help), plus (#4) announces the end-of-flow review."""
+        self.echo("")
+        self.echo(self._paint(
+            f"  Tip: prefer filling ONE form instead of these prompts? Run  "
+            f"{branding.command_name()} target --dump-template <file> , edit it once, then load it with  "
+            f"{branding.command_name()} target --from-file <file> .", "cyan"))
+        self.echo("")
         self.echo("Create a reusable target (saved as an editable file; tokens are NEVER stored on disk).")
         self.echo("You'll provide these, in order:")
         self.echo("  1) name   2) base URL   3) OpenAPI spec (or blank)   4) endpoint (method + path)")
         self.echo("  5) id location + parameter   6) attacker id   7) victim id   8) login file (optional)")
-        self.echo("At the end you'll REVIEW everything and can fix any field before it's saved.")
-        self.echo(f"  One-pass alternative: {branding.command_name()} target --dump-template <file>  "
-                  "(edit the whole form at once, then --from-file).")
+        self.echo("At the END you'll REVIEW everything and can fix any field before it's saved.")
 
     def _review_target(self, v: dict) -> None:
         """Show the target as entered, numbered to match the edit steps, so a misplaced value is caught
@@ -522,11 +563,11 @@ class ConsoleController:
             self.echo("    - Attacker token: the ATTACKER account (the attack is sent as the attacker).")
             self.echo("    - Owner token:    the VICTIM/owner (re-read ONLY as the owner; Enter to skip).")
             self.echo("    Example value: Bearer eyJhbGciOi...")
-            bystander_token = self._ask_secret(
-                "Bystander / third-account token - OPTIONAL",
-                hint="A THIRD account that does NOT own the resource; leave blank to skip.",
-                why="Enables public-resource discrimination: without it the tool can't tell a public "
-                    "resource from a real cross-user leak. It is used ONLY to re-read as the bystander.")
+            bystander_token = self._env_or_secret(
+                "bystander", "Bystander / third-account token", optional=True,
+                hint="A THIRD account that does NOT own the resource.",
+                why="Lets the tool tell a public/shared resource from a real cross-user leak. Used ONLY "
+                    "to re-read as the bystander, never to attack.")
         else:
             self.echo(f"  Using the login file for auto-relogin: {t.auth_spec_path}")
             bystander_token = ""   # --auth bystander comes from config (login creds), unchanged
@@ -560,7 +601,7 @@ class ConsoleController:
                 pass
 
     def _ask_optional_existing_file(self, label: str, **g) -> str:
-        self._guide(**g)
+        self._guide(**g, optional=True)
         while True:
             v = self._ask(label)
             if not v:
@@ -568,6 +609,45 @@ class ConsoleController:
             if os.path.isfile(v):
                 return v
             self.echo(f"  ! That file wasn't found: {v}. Leave blank to skip, or enter a valid path.")
+
+    def _collect_id_source(self) -> tuple:
+        """Optionally read a small id-hints file. Plain language, NO raw JSON in the prompt, NO tier a/b
+        jargon (#5): most runs skip this and the tool sources ids itself. Returns (id_map, collections)."""
+        id_map: dict = {}
+        collections: dict = {}
+        src = self._ask_optional_existing_file(
+            "Id hints file",
+            hint="Most runs: press Enter to skip - the tool finds the ids to compare itself.",
+            why="Only needed if you're testing many endpoints and want to pin the exact attacker/victim "
+                "ids per endpoint. (A small JSON file listing each endpoint's two ids.)")
+        if src:
+            try:
+                with open(src, encoding="utf-8") as fh:
+                    d = json.load(fh)
+                id_map = dict(d.get("ids") or {})
+                collections = dict(d.get("collections") or {})
+            except Exception as ex:
+                self.echo(f"  ! Could not read the id hints file ({type(ex).__name__}); ignoring it.")
+        return id_map, collections
+
+    def _scan_review(self, t, spec, id_map, collections, auth_spec_path, assert_owner_only,
+                     has_bystander: bool) -> None:
+        """#8: a pre-run REVIEW of the scan plan (mirrors target's review) so the user sees exactly what
+        will run — target, catalog source, tokens received, bystander, owner-private assertion, id hints —
+        before anything executes. Tokens are shown as received/absent ONLY (never a value)."""
+        self.echo("")
+        self.echo(self._paint("Review - the scan about to run (nothing has run yet):", "bold"))
+        catalog_src = "the target's OpenAPI spec" if spec is not None else "an endpoints list (no spec)"
+        n_ids = len(id_map or {}) + len(collections or {})
+        self.echo(f"    target:   {t.base_url}")
+        self.echo(f"    catalog:  {catalog_src}")
+        self.echo("    tokens:   attacker + owner received"
+                  + ("; bystander received" if has_bystander else "; no bystander (public-vs-leak check off)"))
+        self.echo(f"    [1] treat resources as owner-private (broken-for-all): {'YES' if assert_owner_only else 'no'}")
+        self.echo(f"    [2] id hints: " + (f"{n_ids} provided" if n_ids
+                                           else "none - the tool auto-sources; an unsourced one is skipped"))
+        if auth_spec_path:
+            self.echo(f"    login:    {auth_spec_path} (auto-relogin)")
 
     def do_scan(self) -> None:
         """Auto-discovery onramp: from the selected target's base URL + spec, the AI proposes BOLA
@@ -582,6 +662,10 @@ class ConsoleController:
             self.echo("  No API key configured - scan needs one for candidate discovery AND for the "
                       "confirm judge. Run 'config' first. Nothing was sent.")
             return
+        # #4: announce up-front that a review comes at the end, so a mistyped field doesn't feel final.
+        self.echo("")
+        self.echo("scan finds BOLA/IDOR candidates and confirms each. A few quick questions - then you'll")
+        self.echo("REVIEW the whole plan and can change a setting before anything runs.")
         t = self.selected
         # Endpoint source: the target's OpenAPI spec if it loads (BYTE-IDENTICAL to today), ELSE a
         # user-provided endpoints list (scan works WITHOUT a spec). `confirm_spec` is a spec dict fed to
@@ -614,25 +698,8 @@ class ConsoleController:
                 self.echo(f"  ! [NOT DATA] could not read the endpoints file ({type(ex).__name__}): {ex}")
                 return
 
-        # id source (optional): a JSON file {"ids": {path_template: {attacker_id, victim_id}},
-        # "collections": {path_template: collection_path}}. Tier a (ids) needs no reads; tier b
-        # (collections) harvests each account's OWN list with its own creds.
-        id_map: dict = {}
-        collections: dict = {}
-        src = self._ask_optional_existing_file(
-            "Id-source file (optional JSON)",
-            hint="{\"ids\": {\"/path/{id}\": {\"attacker_id\": \"7\", \"victim_id\": \"6\"}}, "
-                 "\"collections\": {\"/path/{id}\": \"/list-endpoint\"}}",
-            why="Supplies each candidate's attacker/victim ids (tier a) or a 'list my objects' "
-                "endpoint to harvest them per-account (tier b). No id -> that candidate is SKIPPED.")
-        if src:
-            try:
-                with open(src, encoding="utf-8") as fh:
-                    d = json.load(fh)
-                id_map = dict(d.get("ids") or {})
-                collections = dict(d.get("collections") or {})
-            except Exception as ex:
-                self.echo(f"  ! Could not parse the id-source file ({type(ex).__name__}); ignoring it.")
+        # id hints (optional) — plain-language prompt; the tool sources ids itself when skipped (#5).
+        id_map, collections = self._collect_id_source()
 
         # --auth (optional, 2b): a login-declaration file drives auto-relogin per candidate, so a token
         # that expires mid-scan is refreshed (per-account, incl. D28 owner-only) and the candidate
@@ -713,30 +780,55 @@ class ConsoleController:
             self.echo(f"Scanning {t.base_url} (auto-relogin) - discovering + confirming each candidate...")
             run_coro = _orchestrate()
         else:
-            # STATIC-token scan (today): paste attacker/owner tokens + an optional bystander token.
-            self.echo("Paste the two Bearer tokens (input hidden; the tool confirms receipt):")
-            attacker = self._confirming_secret("  Attacker token (input hidden): ")
-            owner = self._confirming_secret("  Owner/victim token (input hidden): ")
+            # STATIC-token scan: tokens come from the ENVIRONMENT (#6) when TARGET_*_TOKEN is set, else a
+            # masked paste. Each becomes a SecretStr routed ONLY per account; a value is NEVER echoed.
+            self.echo("")
+            self.echo("Tokens - from the environment (TARGET_ATTACKER_TOKEN / _OWNER_TOKEN / _BYSTANDER_TOKEN)")
+            self.echo("if set, otherwise paste them (hidden):")
+            attacker = self._env_or_secret("attacker", "Attacker token")
+            owner = self._env_or_secret("owner", "Owner/victim token")
             if not attacker or not owner:
                 self.echo("  ! scan needs BOTH an attacker and an owner token (the confirm compares them).")
                 return
-            bystander = self._ask_secret(
-                "Bystander / third-account token - OPTIONAL",
-                hint="A THIRD account that does NOT own the resource; leave blank to skip.",
-                why="Enables public-resource discrimination: without it scan can't tell a public resource "
-                    "from a real cross-user leak. Used ONLY to re-read as the bystander, never to attack.")
+            bystander = self._env_or_secret(
+                "bystander", "Bystander / third-account token", optional=True,
+                hint="A THIRD account that does NOT own the resource.",
+                why="Lets scan tell a public/shared resource from a real cross-user leak. Used ONLY to "
+                    "re-read as the bystander, never to attack.")
             attacker_tok, owner_tok = SecretStr(attacker), SecretStr(owner)
-            # a prompted bystander overrides the config-file one; EITHER way it routes ONLY into
+            # a bystander from env/prompt overrides the config-file one; EITHER way it routes ONLY into
             # bystander_credential (never the attack path) via _verify_external below.
             bystander_tok = SecretStr(bystander) if bystander else _resolve_bystander_token(self.config_path)
-            # #7 FP NAIL (fail-closed): DISTINCT identities required. attacker==owner -> the D24 owner-view
-            # corroborates self-vs-self -> a false [CONFIRMED]. Refuse BEFORE any candidate runs (the
-            # engine is never called on a collision) — the SAME guard the --auth scan / single-op verify use.
+            # #7 FP NAIL (fail-closed): DISTINCT identities required — fires on ENV tokens too. attacker==
+            # owner -> the D24 owner-view corroborates self-vs-self -> a false [CONFIRMED]. Refuse BEFORE
+            # any candidate runs (the engine is never called on a collision).
             reason = _identity_collision_reason(
                 attacker, owner, reveal_secret(bystander_tok) if bystander_tok is not None else None)
             if reason:
                 self.echo(f"  ! [NOT DATA] {reason}")
                 return
+
+            # #8 pre-run REVIEW: show the whole plan; let the user change a setting or cancel before it runs.
+            while True:
+                self._scan_review(t, spec, id_map, collections, auth_spec_path, assert_owner_only,
+                                  bystander_tok is not None)
+                choice = self._ask("Press Enter to RUN, a number to change a setting, or 'q' to cancel")
+                if not choice:
+                    break
+                if choice.lower() in ("q", "quit", "cancel"):
+                    self.echo("  Scan cancelled - nothing was sent.")
+                    return
+                if choice == "1":
+                    assert_owner_only = self._ask_yes_no(
+                        "Treat discovered resources as owner-private (broken-for-all disclosure)?",
+                        default=assert_owner_only,
+                        why="Surfaces a resource EVERY authenticated user can read (anonymous cannot) as "
+                            "[INCONCLUSIVE broken-for-all] instead of suppressing it.")
+                    continue
+                if choice == "2":
+                    id_map, collections = self._collect_id_source()
+                    continue
+                self.echo("  ! Enter a number (1-2) to change a setting, blank to run, or 'q' to cancel.")
 
             async def run_op(op):
                 return await _verify_external(t.base_url, confirm_spec, op, attacker_tok, owner_tok,

@@ -1120,6 +1120,67 @@
   **DONE** and smoke-verified. Remaining polish: hook 1b (discovery retry — cheap), then hook 3 (AI CLI
   orchestration); plus a run of tier-c against an EXTERNAL real target with collections (crAPI/VAmPI).
 
+### D34 — `scan` discovery + short-TTL / challenge-breaker friction (real-target VAmPI run) — LOW (SAFE-direction, usability)
+- **Where / evidence:** the non-interactive `scan` no-spec path, validated against **local VAmPI** on
+  127.0.0.1:5000 (2026-08-09; discover → confirm → report reached **[INCONCLUSIVE broken-for-all]** on
+  `GET /books/v1/{book_title}`). Three friction points surfaced — **none can produce a wrong verdict**
+  (all SAFE-direction: a miss / NOT DATA, never a false positive). Filed, not fixed.
+- **(a) AI candidate discovery is non-deterministic and can silently miss an obvious BOLA endpoint.**
+  Given a catalog of `[GET /books/v1/{book_title}, GET /books/v1, GET /users/v1/{username}]`,
+  `scan_discovery.propose_candidates` proposed **only** `/users/v1/{username}` and omitted the obvious
+  id-templated `/books/v1/{book_title}` BOLA; narrowing the endpoints list to books forced it. Undercuts
+  the "give an endpoints list, the tool tests it" promise. Options (do NOT implement here): a
+  **deterministic floor** that always proposes every id-templated single-object path (the model only
+  ADDS/annotates), and/or a second proposal pass, and/or reporting "endpoints seen but not proposed".
+- **(b) Static tokens expire on a short-TTL target → the challenge breaker trips to NOT DATA.** VAmPI's
+  JWT TTL is **60s**; gemini-2.5-pro discovery + the confirm cycle exceeds it, so the confirm's requests
+  get expired-token 401s. Combined with the `assert_owner_only` anonymous-probe 401, the run-level
+  **challenge circuit breaker** (`>= 2` challenge/rate-limit responses; D31 / WAF Part 1) trips →
+  **[NOT DATA]**. Workaround proven: fresh tokens + `--model gemini-2.5-flash` (fit inside 60s). The
+  proper fix is **`--auth` auto-relogin** in the non-interactive scan (per-account token refresh via a
+  login file — the plumbing already exists; the CLI/docs just don't steer a token-based user to it).
+- **(c) The challenge breaker counts the `assert_owner_only` anonymous-probe 401 toward its threshold.**
+  That anonymous-denied 401 is the **broken-for-all SIGNAL** (D32), not a challenge/rate-limit — counting
+  it makes NOT-DATA more likely whenever `--assert-owner-only` is on. Non-blocking today (one anon-401 is
+  below the threshold of 2), but the anonymous probe should be **excluded from the challenge tally**.
+  See D31 (breaker) + D32 (broken-for-all).
+- **Priority:** usability polish after the current scan line; (b) is highest-value (steer token users to
+  `--auth` relogin), then (a) real-target coverage, then (c) the anonymous-probe exclusion.
+
+### D35 — interactive CLI onboarding UX friction (director's hands-on run) — ✅ RESOLVED (all 9 fixed)
+- **Where:** the interactive console (`backend/app/cli/console/controller.py`; `_resolve_tokens` in
+  `external_verify.py` for #6-verify). Collected from the director's first hands-on run. **None affects a
+  verdict — pure onboarding UX (judgment core untouched).** All nine were fixed in the console-ergonomics
+  pass (2026-08-09; text tests `test_console.py` / `test_scan_run.py`, +7 tests):
+  1 input echoed back + colored labels vs dim guidance (ANSI, degrades to plain off-TTY/NO_COLOR);
+  2 blank line between blocks; 3 guidance printed BEFORE the input; 4 up-front "you'll review at the end"
+  announce (target + scan) + end-of-flow edit; 5 id-hints prompt rewritten in plain language (no JSON, no
+  "tier a/b"); 6 interactive scan/verify read env `TARGET_*_TOKEN` (masked, per-account routed, collision
+  guard fires on env tokens); 7 `target --dump-template` surfaced as a top Tip; 8 do_scan pre-run REVIEW
+  with edit; 9 optional prompts show "(press Enter to skip)". The original list is kept below for the record.
+  1. **No input highlight** — the prompt and the user's typed input are all one color; the user can't tell
+     what they typed vs the prompt text. Needs a distinct highlight/color for entered values.
+  2. **Cramped Q&A** — no blank line between question and answer (or between steps); the flow reads as a wall.
+  3. **Guidance shown too late** — the example / `why` prints AFTER the input line, not before, so the user
+     reads it after already answering. Show hint/example/why BEFORE the prompt.
+  4. **No mid-flow go-back** — a field can only be corrected at the END-of-flow review, not the moment the
+     user notices the mistake. Allow editing / going back at any step.
+  5. **Jargon / raw structures leak** — prompts expose internal jargon ("tier a/b") and raw JSON shapes
+     (the id-source object). Use plain language; abstract/hide the JSON.
+  6. **Interactive `scan` ignores env tokens** — it does NOT read `TARGET_ATTACKER_TOKEN` / `_OWNER_TOKEN` /
+     `_BYSTANDER_TOKEN` the user already set, forcing a manual masked paste. It should offer the env tokens
+     (the NON-interactive path already reads them — the asymmetry is the bug).
+  7. **`--dump-template` is buried** — the one-pass editable target FILE (`target --dump-template`), the
+     right fix for the many-field flow, is only discoverable via `--help`. Surface it in the console (e.g.
+     offer it up-front in `target`).
+  8. **`scan` has no pre-run review** — `target` shows a review before saving, but `scan` runs straight off
+     with no "here's what I'll do (target, endpoints, ids, tokens present?, assertions)" confirmation step.
+  9. **Optional prompts don't say how to skip** — optional prompts don't tell the user "just press Enter to
+     skip", so it's unclear the field is optional.
+- **Status:** ✅ all nine RESOLVED in the text console (the path the director used). `tui_view` still
+  delegates to the same controller, so it inherits the fixes (its prompt-side coloring is prompt_toolkit's
+  own). This closes the concrete substance of ROADMAP §0 PLANNED item 4 ("Interactive onboarding UX").
+
 ---
 
 ## Suggested priority order for the next agent
