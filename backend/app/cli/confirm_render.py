@@ -49,15 +49,48 @@ _ANSI = {
 }
 
 
+def _windows_vt_enabled() -> bool:
+    """On Windows, turn ON ANSI/VT processing for the console (idempotent) and report whether the
+    terminal actually supports it. A legacy conhost that cannot enable VT -> False, so callers emit
+    PLAIN text and never leak raw '\\033[..' codes; a modern terminal (Windows Terminal, VS Code, or a
+    VT-capable conhost) or a redirected-but-enableable console -> True. No third-party dependency: this
+    uses the Win32 console API via ctypes."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.windll.kernel32
+        _ENABLE_VT = 0x0004
+        _STD_OUTPUT_HANDLE = -11
+        handle = kernel32.GetStdHandle(_STD_OUTPUT_HANDLE)
+        if not handle or handle == wintypes.HANDLE(-1).value:
+            return False
+        mode = wintypes.DWORD()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False                                   # not a real console (redirected) -> no VT
+        if mode.value & _ENABLE_VT:
+            return True                                    # already enabled
+        return bool(kernel32.SetConsoleMode(handle, mode.value | _ENABLE_VT))
+    except Exception:
+        return False
+
+
 def _supports_color() -> bool:
+    """Robust ANSI-color support detection (fixes raw '\\033[..' leakage on Windows PowerShell/conhost).
+    ANSI is enabled ONLY when: NO_COLOR is unset, AND (FORCE_COLOR is set OR stdout is a real TTY),
+    AND — on Windows — the console's VT mode is on or can be enabled. When unsupported this returns
+    False so callers emit PLAIN text with NO escape codes at all (never the raw codes)."""
     if os.environ.get("NO_COLOR"):
         return False
     if os.environ.get("FORCE_COLOR"):
-        return True
+        return True                                        # explicit override (user asserts ANSI works)
     try:
-        return bool(sys.stdout.isatty())
+        if not sys.stdout.isatty():
+            return False                                   # piped / redirected / captured -> plain
     except Exception:
         return False
+    if sys.platform == "win32":
+        return _windows_vt_enabled()                       # TTY, but color ONLY if VT is / can be turned on
+    return True
 
 
 def _painter(color: Optional[bool]):
