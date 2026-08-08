@@ -69,7 +69,7 @@ the earlier single-target record (140 SAFE / 70 VULN, one target), kept as histo
 
 | Suite | Command (from repo root) | Result |
 |---|---|---|
-| Backend | `python -m pytest backend/tests -q` | **787 passed** |
+| Backend | `python -m pytest backend/tests -q` | **824 passed** |
 | Ground-truth target (`vulnerable_target`, integer-id) | `python -m pytest vulnerable_target -q` | **31 passed** |
 | Ground-truth target (`depot_target`, UUID-id) | `python -m pytest depot_target -q` | **23 passed** |
 
@@ -88,8 +88,13 @@ the earlier single-target record (140 SAFE / 70 VULN, one target), kept as histo
 > env/file tokens; `test_target_file.py` / `test_scan_cli.py` + console additions, commits
 > `cb00393`→`a8c199b`) and **report-clarity** (per-finding next-step + prioritized scan summary;
 > `test_confirm_render.py` / `test_scan_run.py` additions, commits `37047ec` + `7165885`); and **787**
-> after the **tier-c response-body id parser** (`test_scan_ids.py` +6, commit `d46dd41`). See the
-> "Auto-discovery `scan` onramp" block below.
+> after the **tier-c response-body id parser** (`test_scan_ids.py` +6, commit `d46dd41`); and **824**
+> after **passive endpoint discovery** — **LIGHT** (a captured-traffic file HAR/raw-HTTP → templatize →
+> `scan`'s endpoints path; `test_scan_traffic.py`, commit `0c7510b`), **HEAVY** (CLI-native LIVE
+> `mitmdump` capture → the light loader; `test_scan_capture.py`, commit `6745b85`), and the **CLI
+> experience/discovery fixes** from the director's hands-on run (robust Windows color, env-first
+> owner/bystander tokens, required-choice framing, token re-entry, non-numeric `{templated}` id
+> discovery; `test_cli_regressions.py`). See the "Auto-discovery `scan` onramp" block below.
 
 ## Operator front door — CLI, packaging, config, external targets (code facts, re-verified 2026-08-02)
 
@@ -409,13 +414,36 @@ suite.
   `ServerError` empties the scan. SAFE-direction (an empty scan, never a wrong verdict) but a real usability
   gap; see TECH_DEBT **D33**. (This smoke's runs hit no transient 5xx.)
 
+**Passive endpoint discovery — ✅ DONE** (commits `0c7510b` LIGHT, `6745b85` HEAVY; verdict/engine + the
+async proxy stack untouched):
+- **LIGHT — captured-traffic file → `scan`.** `backend/app/cli/scan_traffic.py`:
+  `endpoints_from_traffic_file(path, base_url)` reads a **HAR export** (browser/Burp) OR a **raw-HTTP
+  dump**, keeps ONLY target-origin flows (the ONE audited `ScopePolicy`; off-target dropped), folds
+  concrete paths back to `{id}` templates via the new pure `endpoint_catalog.templatize_endpoints`
+  (variance across the capture + a shape fallback; version tokens excluded), and feeds `scan`'s existing
+  endpoints path. Reads only method/host/path — no auth headers/cookies/body. `test_scan_traffic.py`.
+- **HEAVY — CLI-native LIVE `mitmdump` capture → the light loader.** `backend/app/cli/scan_capture.py` +
+  `backend/app/proxy/capture_addon.py`: a short-lived **synchronous** `mitmdump` spawner (NOT the async
+  ProxyManager/ingest/WriterService/SQLite/SSE stack) that mirrors ProxyManager's teardown discipline
+  (new process group; `taskkill /F /T` / `killpg` process-tree kill; boot-grace) so no orphaned proxy /
+  leaked port survives a stop. A file-writing addon (scope-filtered; request-line + Host only → no secret
+  to disk) appends flows to a temp file the light loader reads. CLI: `run.py scan --capture
+  [--capture-port N] [--capture-duration S]`. mitmproxy missing → clear error; 0 flows → honest-empty.
+  `test_scan_capture.py`.
+- **CLI experience/discovery fixes** (director hands-on run; `test_cli_regressions.py`): robust Windows
+  ANSI/VT color detection (no raw `\033[` leak; plain when unsupported — `confirm_render._supports_color`);
+  env-first owner+bystander tokens, masked, with the same "from environment" message
+  (`external_verify._resolve_tokens` / `_resolve_bystander_token`); spec/traffic/endpoints framed as a
+  required **choice** (clear "provide one of…"); a mistyped token re-enterable from the scan review
+  (`controller.py` `[3]`); and the discovery prompt broadened so **any** `{templated}` path segment
+  (`{book_title}`, `{slug}`, `{uuid}`) is proposed, not only numeric/`_id` (`scan_discovery.py`), with a
+  0-candidates hint to try `verify`.
+
 **DEFERRED (NOT done — do not claim otherwise):**
-- **Full passive endpoint discovery (proxy).** Not built. The no-spec degrade covers the **manual** case
-- **Full passive endpoint discovery (proxy).** Not built. The no-spec degrade covers the **manual** case
-  (operator supplies the endpoint list); the `catalog_from_har` proxy-capture path is still the
-  `NotImplementedError` stub (TECH_DEBT **D18** open half; ROADMAP §0 PLANNED item 2).
 - **AI-driven CLI orchestration.** Not built. AI drives candidate/collection **selection** only; the
   operator still drives the CLI (target, creds, id-source/login files) turn by turn.
+- **Target-file reference to a traffic/capture source.** Not built. The capture is a scan-time source
+  (`--traffic-file` / `--capture`); the target file does not yet carry a `traffic_path` field.
 
 ## The main line (three nodes)
 

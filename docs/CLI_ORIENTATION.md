@@ -35,15 +35,24 @@ surfaces (verdict logic untouched — they only assemble the inputs and reuse `e
   three red lines (scope fail-closed, attacker/owner identity isolation, `SecretStr` tokens) hold. Code in
   `backend/app/cli/external_verify.py`.
 - **`scan` — auto-discover many (REPL command, no subcommand).** Launch the console (`python run.py` with
-  no args) → `config` → `target` → `scan`. It builds a catalog (from the target's spec **or** a
-  `METHOD /path` endpoints list), has the model **propose** BOLA/IDOR candidates, **code-fences every op
-  twice**, sources ids **per-account (never cross-account, never fabricated → SKIP)**, runs each through
-  the existing confirm, and prints one tier-grouped report. Modules: `scan_run.py` (orchestration),
-  `scan_discovery.py` (AI proposal + code fences), `scan_ids.py` (id sourcing tiers a/b/c),
-  `scan_report.py` (tier-grouped render); REPL wiring in `console/controller.py:do_scan` +
-  `console/intro.py`. Full behavior + red lines: [`STATUS.md`](./STATUS.md) "Auto-discovery `scan`
-  onramp"; deferred hooks (tier-c response-body id parser, passive proxy discovery, AI CLI orchestration):
-  [`TECH_DEBT.md`](./TECH_DEBT.md) **D33**.
+  no args) → `config` → `target` → `scan`. It builds a catalog from **one** of four sources — the target's
+  spec, a `METHOD /path` endpoints list, a **captured-traffic file** (HAR/raw-HTTP), or a **LIVE `mitmdump`
+  capture** — then has the model **propose** BOLA/IDOR candidates, **code-fences every op twice**, sources
+  ids **per-account (never cross-account, never fabricated → SKIP)**, runs each through the existing confirm,
+  and prints one tier-grouped report. Modules: `scan_run.py` (orchestration), `scan_discovery.py` (AI
+  proposal + code fences), `scan_ids.py` (id sourcing tiers a/b/c), `scan_report.py` (tier-grouped render);
+  REPL wiring in `console/controller.py:do_scan` + `console/intro.py`. Full behavior + red lines:
+  [`STATUS.md`](./STATUS.md) "Auto-discovery `scan` onramp".
+  - **Passive discovery (built).** LIGHT: `scan_traffic.py` templatizes a HAR/raw-HTTP capture (scope-locked
+    to the target origin) into the endpoints list — non-interactive `run.py scan --traffic-file <cap>`, or the
+    interactive `scan` prompt. HEAVY: `scan_capture.py` + `proxy/capture_addon.py` drive a synchronous
+    `mitmdump` (clean process-tree teardown; no async ingest stack) writing scope-filtered flows to a temp
+    file the LIGHT loader reads — `run.py scan --capture [--capture-port N] [--capture-duration S]`. See
+    [`STATUS.md`](./STATUS.md) "Passive endpoint discovery — DONE".
+  - **CLI experience fixes (director hands-on run).** Robust Windows ANSI/VT color detection (plain, no raw
+    `\033[` leak, when unsupported); env-first owner+bystander tokens (masked, with a "from environment"
+    message); required-choice framing when no spec; token re-entry from the scan review; and non-numeric
+    `{templated}` id discovery (`{book_title}` etc.). Tests: `test_cli_regressions.py`.
 
 ## Two open observations (pending director feedback — do not freeze the UX)
 1. **ASCII dash** — the header uses `-`, not `—` (the Windows console mangles the em-dash).

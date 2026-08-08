@@ -205,10 +205,17 @@
     lets an operator feed a plain `METHOD /path` **endpoints list** when the target publishes no OpenAPI
     spec — the same catalog, byte-identical downstream. So *candidate selection over a known surface* is
     done; two pieces remain open below.
-  - **Still open — PASSIVE attack-surface discovery:** the catalog is still *fed* a source
-    (OpenAPI spec, or now a manual endpoints list). The system does **not** discover endpoints from
-    observed traffic on its own — `catalog_from_har` is still the `NotImplementedError` proxy-capture
-    stub. This is the remaining larger half of D18 (ROADMAP §0 PLANNED item 2).
+  - **✅ DONE — PASSIVE attack-surface discovery (commits `0c7510b` LIGHT, `6745b85` HEAVY):** the system
+    now discovers endpoints from OBSERVED TRAFFIC. LIGHT: `scan_traffic.endpoints_from_traffic_file` reads a
+    HAR/raw-HTTP capture, scope-locks to the target origin, and folds concrete paths to `{id}` templates via
+    the new pure `endpoint_catalog.templatize_endpoints` (variance across the capture + a shape fallback) —
+    feeding `scan`'s existing endpoints path (`--traffic-file`). HEAVY: `scan_capture.py` +
+    `proxy/capture_addon.py` drive a synchronous `mitmdump` (clean process-tree teardown; NOT the async
+    ingest stack) writing scope-filtered flows to a temp file the LIGHT loader reads (`scan --capture`).
+    Direction-safe: only produces candidates for the unchanged judge. NOTE: the OpenAPI-shaped
+    `catalog_from_har(spec)` dict adapter is still a `NotImplementedError` stub — the CLI path supersedes it
+    (it templatizes from parsed flows directly, not via a HAR→spec dict), so that stub is now moot for
+    discovery. Tests: `test_scan_traffic.py`, `test_scan_capture.py`.
   - **✅ DONE (committed `37769b3`) — a CONFIDENT cross-path verdict (B-1):** rather
     than wait for the model to *choose* the decisive `GET /api/audit-log` (it chose it 0/20
     unaided), the code gathers it deterministically and exempts the resulting `verified` from
