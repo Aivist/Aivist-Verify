@@ -237,3 +237,85 @@ def test_tier_a_and_b_take_priority_over_tier_c():
         catalog=_CATALOG, provider_factory=_stub_collection_provider("/api/reports")))
     assert res_b == ("1", "9")
     assert all(c["path"] == "/declared/collection" for c in cv.calls)   # tier b's declared path, not tier c's
+
+
+# ==============================================================================
+# tier-c response-body id PARSER (`_extract_ids`) — robust deterministic extraction across the REAL
+# collection shapes seen on the loopback lab (recon 2026-08-08): a wrapper key {"count":N,"<plural>":[…]},
+# a top-level array, id fields `id` / `<resource>_id` / camelCase `<resource>Id` / `uuid`, and the
+# `owner_id` DECOY that sits next to the object id in every item. Fail-safe: ambiguity -> [] -> SKIP,
+# never a fabricated or owner id. Only the PARSER changed; _harvest isolation is unchanged.
+# ==============================================================================
+def test_extract_ids_parses_the_real_lab_shapes():
+    # nested plural key + sibling `count` (the real GET /api/admin/users body), id field `id`
+    assert _extract_ids('{"count":3,"users":[{"id":1,"username":"a"},{"id":2},{"id":3}]}', "user_id") == ["1", "2", "3"]
+    # top-level array with <resource>_id AND the owner_id decoy -> picks the OBJECT id, not owner_id
+    assert _extract_ids('[{"invoice_id":1,"owner_id":9},{"invoice_id":2,"owner_id":9}]', "invoice_id") == ["1", "2"]
+    # gizmo real shape: plain `id` next to owner_id, id_param (gizmo_id) absent -> generic `id`, not owner_id
+    assert _extract_ids('[{"id":2,"owner_id":2,"code":"x"}]', "gizmo_id") == ["2"]
+    # nested under `data`, id field `uuid` (id_param absent) -> uuid fallback
+    assert _extract_ids('{"data":[{"uuid":"a1"},{"uuid":"a2"}]}', "id") == ["a1", "a2"]
+    # camelCase <resource>Id when id_param is snake_case and absent -> the single resource-specific id key
+    assert _extract_ids('[{"invoiceId":1},{"invoiceId":2}]', "invoice_id") == ["1", "2"]
+    # nested-under-results envelope
+    assert _extract_ids('{"results":[{"report_id":7},{"report_id":8}]}', "report_id") == ["7", "8"]
+
+
+def test_extract_ids_owner_id_decoy_is_never_picked():
+    # THE trap: an item whose only id-shaped field is a RELATION (owner) key -> no OBJECT id -> SKIP.
+    # This test FAILS if the parser fabricates ids from owner_id.
+    got = _extract_ids('[{"owner_id":9,"amount":5},{"owner_id":9,"amount":6}]', "invoice_id")
+    assert got == []                                          # never ["9","9"] / ["9"]
+
+
+def test_extract_ids_ambiguous_two_object_ids_is_skip():
+    # two equally-plausible object-id fields, neither the candidate's id_param nor a generic id -> SKIP.
+    got = _extract_ids('[{"foo_id":1,"bar_id":2},{"foo_id":3,"bar_id":4}]', "report_id")
+    assert got == []                                          # FAILS if the parser guessed foo_id or bar_id
+
+
+def test_extract_ids_no_id_shaped_values_is_skip():
+    assert _extract_ids('[{"name":"a"},{"name":"b"}]', "id") == []
+    assert _extract_ids('{"message":"you have no reports"}', "report_id") == []
+    assert _extract_ids('[{"flags":{"admin":true}}]', "id") == []    # nested dict is not an id scalar
+
+
+# ------------------------------------------------------------------ AI id-field slot (CODE-VALIDATED)
+def test_ai_slot_used_only_when_ambiguous_and_is_code_validated():
+    ambiguous = '[{"foo_id":1,"bar_id":2,"owner_id":9},{"foo_id":3,"bar_id":4,"owner_id":9}]'
+
+    # (1) a VALID proposal (exists + id-shaped in every item, not a relation) -> used
+    assert _extract_ids(ambiguous, "report_id", id_field_proposer=lambda keys, idp: "foo_id") == ["1", "3"]
+
+    # (2) a proposal for a NON-EXISTENT field -> rejected -> SKIP (never fabricated)
+    assert _extract_ids(ambiguous, "report_id", id_field_proposer=lambda keys, idp: "nope_id") == []
+
+    # (3) a proposal naming the OWNER/relation field -> rejected even via AI -> SKIP
+    assert _extract_ids(ambiguous, "report_id", id_field_proposer=lambda keys, idp: "owner_id") == []
+
+    # (4) a proposal whose values are NOT id-shaped -> rejected
+    assert _extract_ids('[{"a_id":{"x":1}},{"a_id":{"y":2}}]', "report_id",
+                        id_field_proposer=lambda keys, idp: "a_id") == []
+
+    # (5) the AI slot is consulted ONLY when deterministic resolution is ambiguous
+    called = []
+    def rec(keys, idp):
+        called.append((tuple(keys), idp)); return "id"
+    assert _extract_ids('[{"id":1},{"id":2}]', "report_id", id_field_proposer=rec) == ["1", "2"]
+    assert called == []                                       # deterministic resolved -> proposer NOT called
+
+
+# ------------------------------------------------------------------ ISOLATION unchanged (with the decoy shape)
+def test_tier_c_isolation_holds_with_owner_id_decoy_shape():
+    # attacker/owner lists carry BOTH the object id (report_id) and an owner_id decoy. The parser picks
+    # report_id (id_param); the victim id is the OWNER's report_id the attacker does NOT own — NEVER an
+    # owner_id value, NEVER a credential. Per-account creds are asserted (fails if swapped).
+    cv = _cv_stub('[{"report_id":"1","owner_id":"7"}]', '[{"report_id":"9","owner_id":"8"}]')
+    res = asyncio.run(source_ids(
+        _CAND, base_url="http://t", approved_host="t",
+        attacker_cred=_ATK, owner_cred=_OWN, control_view=cv, client_factory=_no_client,
+        catalog=_CATALOG, provider_factory=_stub_collection_provider("/api/reports")))
+    assert res == ("1", "9")                                  # object ids, not owner_id ("7"/"8")
+    assert res[1] not in ("7", "8")                           # the victim id is never an owner_id value
+    assert cv.calls[0]["cred"] == _ATK.header_value and cv.calls[1]["cred"] == _OWN.header_value
+    assert cv.calls[0]["cred"] != cv.calls[1]["cred"]         # attacker list w/ attacker cred; owner w/ owner cred
