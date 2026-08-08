@@ -197,6 +197,14 @@ def build_parser() -> argparse.ArgumentParser:
                          "raw-HTTP dump). scan keeps only in-scope (target-origin) requests, templatizes "
                          "their paths to {id} candidates, and discovers the attack surface - no spec or "
                          "hand-written endpoints list needed.")
+    sc.add_argument("--capture", action="store_true",
+                    help="For a SPEC-LESS target: start a LIVE mitmdump proxy (scoped to the target), have "
+                         "the user proxy their traffic through it, then discover + confirm from the capture. "
+                         "Requires mitmproxy installed. Stops on Enter (or --capture-duration).")
+    sc.add_argument("--capture-port", type=int, default=None,
+                    help="Listen port for --capture (default: the configured PROXY_LISTEN_PORT).")
+    sc.add_argument("--capture-duration", type=float, default=None,
+                    help="With --capture: capture for N seconds then auto-stop and scan (non-interactive).")
     sc.add_argument("--id-source", default=None,
                     help='OPTIONAL JSON {"ids": {...}, "collections": {...}} for id sourcing.')
     sc.add_argument("--assert-owner-only", action="store_true",
@@ -260,6 +268,14 @@ def main():
               f"(tokens from env TARGET_ATTACKER_TOKEN/_OWNER_TOKEN or --tokens-file)")
         sys.exit(0)
     if args.cmd == "scan":
+        if args.capture:
+            # LIVE-capture front (HEAVY B): spawn mitmdump -> capture to a file -> the LIGHT loader -> scan.
+            from backend.app.cli.scan_capture import run_scan_capture_from_file
+            sys.exit(run_scan_capture_from_file(
+                args.target_file, capture_port=args.capture_port, capture_duration=args.capture_duration,
+                tokens_file=args.tokens_file, id_source_file=args.id_source,
+                assert_owner_only=args.assert_owner_only, model=args.model,
+            ))
         from backend.app.cli.scan_cli import run_scan_from_file
         sys.exit(run_scan_from_file(
             args.target_file, tokens_file=args.tokens_file, endpoints_file=args.endpoints_file,
