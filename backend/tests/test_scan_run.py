@@ -343,3 +343,61 @@ def test_scan_summary_confirmed_is_code_confirmed_only():
     assert "0 confirmed cross-user bugs (act on these first)" in r    # signal/broken-for-all NOT counted
     assert "1 lead to verify (signal)" in r
     assert "1 need your review (broken-for-all)" in r
+
+
+# ==============================================================================
+# Honest-empty report — when ZERO candidates were discovered (0 records / 0 accepted), the report must
+# NOT print a '0 confirmed | 0 refuted' tally that reads as a clean/secure result (the VAmPI-bad-spec bug).
+# ==============================================================================
+def _empty_report_asserts(r):
+    assert "No testable BOLA/IDOR candidates were discovered" in r
+    assert "NOT a 'secure' result" in r and "did NOT test anything" in r
+    assert "Next: check the spec" in r
+    # the misleading tally / prioritized summary must NOT appear
+    assert "Where to start:" not in r
+    assert "confirmed (code-gated)" not in r and "confirmed cross-user bug" not in r
+
+
+def test_report_empty_catalog_is_not_a_secure_tally():
+    # the exact VAmPI failure: a non-spec file -> empty catalog -> 0 candidates -> AI never called.
+    r = render_scan_report({"records": [], "dropped": [], "accepted": [], "catalog": []}, "http://t", color=False)
+    _empty_report_asserts(r)
+    assert "0 endpoints were parsed" in r                    # names the empty-catalog cause
+
+
+def test_report_endpoints_seen_but_none_proposed():
+    r = render_scan_report({"records": [], "dropped": [], "accepted": [],
+                            "catalog": ["GET /health", "POST /login"]}, "http://t", color=False)
+    _empty_report_asserts(r)
+    assert "2 endpoint(s) were seen, but 0 were proposed" in r
+
+
+def test_report_all_candidates_dropped_by_fence():
+    r = render_scan_report({"records": [], "dropped": [{"reason": "failed_candidate_fence"}, {"reason": "x"}],
+                            "accepted": [], "catalog": ["GET /a/{id}"]}, "http://t", color=False)
+    _empty_report_asserts(r)
+    assert "2 candidate(s) proposed but ALL were rejected by the code fence" in r
+
+
+def test_report_with_records_still_shows_the_normal_tally():
+    # back-compat: when candidates WERE judged, the prioritized summary + tally render as before.
+    r = render_scan_report({"records": _mixed_records(), "dropped": [], "accepted": list(range(6))},
+                           "http://t", color=False)
+    assert "Where to start:" in r and "confirmed (code-gated)" in r
+    assert "No testable BOLA/IDOR candidates" not in r
+
+
+def test_report_all_refuted_prints_normal_tally_not_empty_message():
+    # THE distinction to verify: candidates WERE judged and all came back REFUTED (a real all-safe
+    # result) -> the NORMAL "0 confirmed | N refuted" tally must print, NOT the honest-empty message.
+    recs = [_rr(final_verdict="failed", guard_override="owner_view_not_corroborated", baseline_path="/api/r/1"),
+            _rr(final_verdict="failed", guard_override="owner_view_not_corroborated", baseline_path="/api/r/2")]
+    r = render_scan_report({"records": recs, "dropped": [], "accepted": [1, 2]}, "http://t", color=False)
+    # the honest-empty message must NOT appear (candidates WERE tested)
+    assert "No testable BOLA/IDOR candidates" not in r
+    assert "did NOT test anything" not in r
+    # the normal prioritized summary + tally DO appear — an all-0-confirmed-but-TESTED result
+    assert "Where to start:" in r
+    assert "0 confirmed cross-user bugs (act on these first)" in r and "2 safe (refuted)" in r
+    assert "0 confirmed (code-gated)" in r and "2 refuted" in r    # bottom Summary tally
+    assert "[REFUTED]" in r                                         # the two findings render

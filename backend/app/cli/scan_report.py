@@ -68,14 +68,45 @@ def _priority_summary(buckets: Dict[str, List[Dict[str, Any]]]) -> str:
     return "  Where to start: " + " | ".join(segs)
 
 
+def _no_candidates_report(catalog, accepted, dropped) -> str:
+    """Honest report when the scan discovered ZERO testable candidates. It did NOT test anything, so it
+    must NOT print a '0 confirmed | 0 refuted | ...' tally — that reads like a clean/secure bill of health.
+    Say plainly what happened, with the real numbers (endpoints seen; how many the AI proposed)."""
+    seen = len(catalog or [])
+    proposed = len(accepted or []) + len(dropped or [])        # AI proposals that reached the code fence
+    out = ["  No testable BOLA/IDOR candidates were discovered from this spec."]
+    if seen == 0:
+        out.append("  0 endpoints were parsed from the catalog - the spec is likely NOT a valid "
+                   "OpenAPI/Swagger document (no `paths`), so the AI candidate step was never even run.")
+    elif proposed == 0:
+        out.append(f"  {seen} endpoint(s) were seen, but 0 were proposed as BOLA/IDOR candidates "
+                   "(none had an id-shaped object parameter, or the model proposed none).")
+    else:
+        out.append(f"  {seen} endpoint(s) were seen; {proposed} candidate(s) proposed but ALL were "
+                   f"rejected by the code fence (0 survived, {len(dropped or [])} dropped) - none matched a "
+                   "real {id}-templated path / query id in the catalog.")
+    out.append("  This is NOT a 'secure' result - the scan did NOT test anything.")
+    out.append("  Next: check the spec is a real OpenAPI doc with {id}-templated object endpoints "
+               "(e.g. /books/v1/{book_title}), or provide an endpoints list / a candidate manually.")
+    return "\n".join(out)
+
+
 def render_scan_report(scan_result: Dict[str, Any], target: str, *, color: Optional[bool] = None) -> str:
     """Render the aggregated scan report. `scan_result` is the dict returned by scan_run.run_scan."""
     records = scan_result.get("records", [])
     dropped = scan_result.get("dropped", [])
-    buckets = _group(records)
 
     out: List[str] = []
     out.append(f"=== scan report: {target} ===")
+
+    # HONEST EMPTY: the scan judged/skipped NOTHING (0 records => 0 candidates accepted). It did not test
+    # anything, so do NOT print a tier tally (a row of zeros reads as 'secure'). Report the empty discovery.
+    if not records:
+        out.append(_no_candidates_report(
+            scan_result.get("catalog", []), scan_result.get("accepted", []), dropped))
+        return _redact("\n".join(out))
+
+    buckets = _group(records)
     out.append(_priority_summary(buckets))                 # the prioritized "where do I start" line, at the top
     out.append(f"  candidates accepted: {len(scan_result.get('accepted', []))}  |  "
                f"dropped by code fence: {len(dropped)}  |  ops judged: "
