@@ -192,6 +192,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "NEVER the target file. Omit to read the same keys from env vars.")
     sc.add_argument("--endpoints-file", default=None,
                     help="For a SPEC-LESS target: a 'METHOD /path' endpoints list (JSON array or lines).")
+    sc.add_argument("--traffic-file", default=None,
+                    help="For a SPEC-LESS target: a captured-traffic file (a browser/Burp HAR export or a "
+                         "raw-HTTP dump). scan keeps only in-scope (target-origin) requests, templatizes "
+                         "their paths to {id} candidates, and discovers the attack surface - no spec or "
+                         "hand-written endpoints list needed.")
     sc.add_argument("--id-source", default=None,
                     help='OPTIONAL JSON {"ids": {...}, "collections": {...}} for id sourcing.')
     sc.add_argument("--assert-owner-only", action="store_true",
@@ -258,7 +263,8 @@ def main():
         from backend.app.cli.scan_cli import run_scan_from_file
         sys.exit(run_scan_from_file(
             args.target_file, tokens_file=args.tokens_file, endpoints_file=args.endpoints_file,
-            id_source_file=args.id_source, assert_owner_only=args.assert_owner_only, model=args.model,
+            traffic_file=args.traffic_file, id_source_file=args.id_source,
+            assert_owner_only=args.assert_owner_only, model=args.model,
         ))
 
 

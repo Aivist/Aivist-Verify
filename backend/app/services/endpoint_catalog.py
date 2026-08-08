@@ -46,6 +46,7 @@
 # ==============================================================================
 
 import re
+from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
 # The operation keys an OpenAPI 3.x / Swagger 2.0 Path Item Object may carry. Any
@@ -201,6 +202,100 @@ def spec_from_endpoints(endpoints: List[str]) -> Dict[str, Any]:
         method, path = parsed
         paths.setdefault(path, {})[method.lower()] = {}
     return {"openapi": "3.0.0", "paths": paths}
+
+
+# ==============================================================================
+# Templatize CONCRETE paths into {id}-templated catalog entries (LIGHT passive discovery).
+#
+# Passive discovery from CAPTURED TRAFFIC yields CONCRETE paths ('/books/v1/alicebook', '/orders/7').
+# scan's discovery fence only accepts a path-id candidate when the id is a real {templated} segment
+# (scan_discovery.validate_candidate), so a concrete capture must first be folded back to its {id}
+# form. This does that with two SIGNALS, both PURE and target-agnostic:
+#
+#   * VARIANCE (the primary passive signal): across the captured set, a segment position that VARIES
+#     while every OTHER segment in its path is held constant is an object id — e.g. the capture holds
+#     '/books/v1/alicebook' AND '/books/v1/bobbook', so the trailing segment is the id and both fold
+#     to '/books/v1/{id}'. This is exactly how observed traffic reveals a path parameter.
+#   * SHAPE (a per-segment fallback for singletons): a segment that LOOKS like an id VALUE (numeric, a
+#     UUID, a long hex object id, or an alnum token carrying a digit) is templatized even with a single
+#     sample. A version token ('v1'/'v2') is explicitly NOT an id.
+#
+# DIRECTION-SAFE by construction: this only PRODUCES catalog entries for the existing judge. An
+# over-templatized path becomes a candidate the downstream engine confirms/refutes/SKIPs correctly (an
+# unsourceable id -> SKIP); it can NEVER manufacture a false positive, and it touches no verdict logic.
+# A segment already in {templated} form is preserved (idempotent).
+# ==============================================================================
+_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+_LONG_HEX_RE = re.compile(r"^[0-9a-fA-F]{8,}$")
+_VERSION_RE = re.compile(r"^v\d+$", re.IGNORECASE)
+_HAS_LETTER_RE = re.compile(r"[A-Za-z]")
+
+
+def _looks_like_id_value(seg: str) -> bool:
+    """True iff a CONCRETE path segment looks like an object-id VALUE (not a resource noun / version).
+    Conservative and target-agnostic: numeric, a UUID, a long hex object id, or an alnum token that
+    carries a digit. A version token ('v1', 'v2') is NEVER an id. This is the SINGLETON fallback used
+    when variance (the primary signal) has only one sample of a position."""
+    s = (seg or "").strip()
+    if not s or _is_template_segment(s):
+        return False
+    if _VERSION_RE.match(s):
+        return False
+    if s.isdigit():
+        return True
+    if _UUID_RE.match(s):
+        return True
+    if _LONG_HEX_RE.match(s) and any(c.isdigit() for c in s):
+        return True
+    if _HAS_LETTER_RE.search(s) and any(c.isdigit() for c in s):
+        return True                                   # an alnum id/slug value (e.g. 'user_42', 'a1b2c3')
+    return False
+
+
+def _mask_context(segs: List[str], k: int) -> tuple:
+    """The 'context' of position k in a path: (length, k, every OTHER segment). Two paths share a
+    context iff they are identical except (possibly) at position k — so a position that takes >1
+    distinct value WITHIN one context is a VARYING (id) position for that context (not across
+    unrelated paths, which keeps a differing resource noun from being mistaken for an id)."""
+    return (len(segs), k, tuple(s if i != k else None for i, s in enumerate(segs)))
+
+
+def templatize_endpoints(entries: List[str]) -> List[str]:
+    """Fold a list of (mostly CONCRETE) 'METHOD /path' entries into the {id}-templated catalog scan
+    consumes, using variance + shape (see section note). Produces the SAME normalized, de-duplicated,
+    sorted output as `catalog_from_endpoints`, so everything downstream is byte-identical regardless of
+    whether the endpoints came from a spec, a hand list, or captured traffic. Pure / offline; each
+    method's paths are templatized independently. Direction-safe: only produces candidates for the
+    existing judge, never a verdict."""
+    parsed: List[tuple] = []
+    for e in (entries or []):
+        p = _parse_endpoint_line(e if isinstance(e, str) else str(e))
+        if p:
+            parsed.append(p)                          # (METHOD, /path)
+    by_method: "defaultdict[str, List[str]]" = defaultdict(list)
+    for method, path in parsed:
+        by_method[method].append(path)
+
+    out: List[str] = []
+    for method, paths in by_method.items():
+        seg_lists = [p.split("/") for p in paths]     # '/a/b' -> ['', 'a', 'b'] (leading '' preserved)
+        ctx_values: "defaultdict[tuple, set]" = defaultdict(set)
+        for segs in seg_lists:
+            for k, s in enumerate(segs):
+                if _is_template_segment(s):
+                    continue
+                ctx_values[_mask_context(segs, k)].add(s)
+        for segs in seg_lists:
+            tsegs: List[str] = []
+            for k, s in enumerate(segs):
+                if _is_template_segment(s):
+                    tsegs.append(s)                   # already templated -> keep (idempotent)
+                elif len(ctx_values.get(_mask_context(segs, k), ())) > 1 or _looks_like_id_value(s):
+                    tsegs.append("{id}")              # varies across the capture, or shapes like an id
+                else:
+                    tsegs.append(s)
+            out.append(f"{method} {'/'.join(tsegs) or '/'}")
+    return _normalize(out)
 
 
 def catalog_from_har(har: Dict[str, Any]) -> List[str]:

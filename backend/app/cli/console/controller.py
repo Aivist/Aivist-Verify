@@ -679,24 +679,44 @@ class ConsoleController:
             except Exception:
                 spec = confirm_spec = None
         if spec is None:
-            self.echo("  This target has no usable OpenAPI spec - scan can run from an ENDPOINTS LIST")
-            self.echo("  (a plain 'METHOD /path' list; templated paths like /orders/{id} detect best).")
-            ep_path = self._ask_optional_existing_file(
-                "Endpoints file (METHOD /path list)",
-                hint="A JSON array of \"GET /path/{id}\" strings, OR newline-delimited METHOD /path lines.",
-                why="Lets scan discover candidates WITHOUT an OpenAPI spec; templated {id} paths detect best.")
-            if not ep_path:
-                self.echo("  ! scan needs either an OpenAPI spec (on the target) or an endpoints file. "
-                          "Nothing to scan.")
-                return
-            try:
-                from backend.app.cli.external_verify import _load_endpoints_file
-                from backend.app.services.endpoint_catalog import spec_from_endpoints
-                endpoints = _load_endpoints_file(ep_path)
+            self.echo("  This target has no usable OpenAPI spec. scan can discover the attack surface")
+            self.echo("  from CAPTURED TRAFFIC (proxy your app via mitmproxy/Burp or save a browser HAR),")
+            self.echo("  or from a plain 'METHOD /path' endpoints list.")
+            from backend.app.services.endpoint_catalog import spec_from_endpoints
+            tf_path = self._ask_optional_existing_file(
+                "Traffic capture file (HAR or raw-HTTP) - optional",
+                hint="A .har export (browser DevTools / Burp) or a raw-HTTP dump. Blank = use an endpoints list.",
+                why="No spec? Proxy your traffic and point scan at the capture - it finds the endpoints for "
+                    "you. Only requests to THIS target are used; off-target traffic is dropped.")
+            if tf_path:
+                from backend.app.cli.scan_traffic import endpoints_from_traffic_file
+                try:
+                    endpoints = endpoints_from_traffic_file(tf_path, t.base_url)
+                except Exception as ex:
+                    self.echo(f"  ! [NOT DATA] could not read the traffic file ({type(ex).__name__}): {ex}")
+                    return
+                if not endpoints:
+                    self.echo("  ! [NOT DATA] no in-scope requests found in the traffic file "
+                              f"(nothing matched {t.base_url}). Nothing to scan.")
+                    return
                 confirm_spec = spec_from_endpoints(endpoints)
-            except Exception as ex:
-                self.echo(f"  ! [NOT DATA] could not read the endpoints file ({type(ex).__name__}): {ex}")
-                return
+                self.echo(f"  Discovered {len(endpoints)} in-scope endpoint(s) from the capture.")
+            else:
+                ep_path = self._ask_optional_existing_file(
+                    "Endpoints file (METHOD /path list)",
+                    hint="A JSON array of \"GET /path/{id}\" strings, OR newline-delimited METHOD /path lines.",
+                    why="Lets scan discover candidates WITHOUT an OpenAPI spec; templated {id} paths detect best.")
+                if not ep_path:
+                    self.echo("  ! scan needs an OpenAPI spec, a traffic capture, or an endpoints file. "
+                              "Nothing to scan.")
+                    return
+                try:
+                    from backend.app.cli.external_verify import _load_endpoints_file
+                    endpoints = _load_endpoints_file(ep_path)
+                    confirm_spec = spec_from_endpoints(endpoints)
+                except Exception as ex:
+                    self.echo(f"  ! [NOT DATA] could not read the endpoints file ({type(ex).__name__}): {ex}")
+                    return
 
         # id hints (optional) — plain-language prompt; the tool sources ids itself when skipped (#5).
         id_map, collections = self._collect_id_source()

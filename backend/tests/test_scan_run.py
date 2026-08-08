@@ -360,7 +360,8 @@ def test_do_scan_uses_endpoints_file_when_target_has_no_spec(tmp_path, monkeypat
     eng = _ScriptedEngine()
     lines = []
     ctl = ConsoleController(
-        prompt=_prompts(str(eps_path), str(ids_path), "", "n"),   # endpoints file, id-source, login(blank), assert=n
+        # traffic-capture file (blank => use an endpoints list), endpoints file, id-source, login(blank), assert=n
+        prompt=_prompts("", str(eps_path), str(ids_path), "", "n"),
         secret_prompt=_prompts("atk", "own", ""),
         echo=lambda *a: lines.append(" ".join(str(x) for x in a)),
         config_path=str(tmp_path / "no-config.toml"),
@@ -368,7 +369,7 @@ def test_do_scan_uses_endpoints_file_when_target_has_no_spec(tmp_path, monkeypat
     ctl.selected = sel
     ctl.do_scan()
     out = "\n".join(lines)
-    assert "ENDPOINTS LIST" in out                         # the no-spec path was taken (discoverable)
+    assert "endpoints list" in out                         # the no-spec path was taken (discoverable)
     assert "scan report:" in out and "[CONFIRMED]" in out
     assert len(eng.calls) == 2                             # reports + users ran via the endpoints catalog
 

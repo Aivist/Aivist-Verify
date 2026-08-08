@@ -24,11 +24,12 @@ _HELP = [
      "After selecting a target; you'll paste the two tokens (hidden). Optional prompts: a third/"
      "bystander token (public-resource discrimination), an owner-private assertion (broken-for-all), "
      "and non-default account labels (#7 - a different configured account set)."),
-    ("scan",    "Auto-discover BOLA candidates from the target's spec (OR an endpoints list) and confirm each.",
+    ("scan",    "Auto-discover BOLA candidates from the target's spec (OR captured traffic / an endpoints list) and confirm each.",
      "After selecting a target; the AI proposes candidates, code vets them, the engine judges each. "
-     "Works WITHOUT an OpenAPI spec: create the target with a blank spec, then give scan a plain "
-     "'METHOD /path' endpoints file. Optional prompts: a bystander token and an owner-private "
-     "assertion (broken-for-all)."),
+     "Works WITHOUT an OpenAPI spec: no spec? Proxy your traffic (mitmproxy/Burp/browser HAR) and "
+     "point scan at the capture - it finds the endpoints for you (only in-scope requests are used). "
+     "Or give scan a plain 'METHOD /path' endpoints file. Optional prompts: a bystander token and an "
+     "owner-private assertion (broken-for-all)."),
     ("status",  "Show what's configured (API key redacted) and the selected target.",
      "To check your setup."),
     ("quit",    "Leave the console.",

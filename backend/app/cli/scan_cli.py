@@ -108,6 +108,7 @@ def run_scan_from_file(
     target_file_path: str, *,
     tokens_file: Optional[str] = None,
     endpoints_file: Optional[str] = None,
+    traffic_file: Optional[str] = None,
     id_source_file: Optional[str] = None,
     assert_owner_only: bool = False,
     model: Optional[str] = None,
@@ -158,7 +159,8 @@ def run_scan_from_file(
         err(f"  ! [NOT DATA] {reason}")
         return 2
 
-    # -- catalog source: the target's spec, else a --endpoints-file for a spec-less target -----------
+    # -- catalog source (exactly one, in precedence order): the target's spec, else a --endpoints-file,
+    #    else a --traffic-file (LIGHT passive discovery: HAR / raw-HTTP capture) for a spec-less target -
     spec = None
     endpoints = None
     confirm_spec = None
@@ -168,17 +170,32 @@ def run_scan_from_file(
         except Exception as ex:
             err(f"  ! [NOT DATA] could not read the target's spec ({type(ex).__name__}): {ex}")
             return 2
-    else:
-        if not endpoints_file:
-            err("  ! [NOT DATA] the target has no OpenAPI spec - pass --endpoints-file with a "
-                "'METHOD /path' list, or give the target a spec.")
-            return 2
+    elif endpoints_file:
         try:
             endpoints = _load_endpoints_file(endpoints_file)
             confirm_spec = spec_from_endpoints(endpoints)
         except Exception as ex:
             err(f"  ! [NOT DATA] could not read the endpoints file ({type(ex).__name__}): {ex}")
             return 2
+    elif traffic_file:
+        # LIGHT passive discovery: derive the endpoints list from a captured-traffic file (HAR / raw
+        # HTTP), scope-locked to the target origin. This ONLY produces the endpoints scan already
+        # consumes — the discovery/confirm engine is unchanged.
+        from backend.app.cli.scan_traffic import endpoints_from_traffic_file
+        try:
+            endpoints = endpoints_from_traffic_file(traffic_file, t.base_url)
+        except Exception as ex:
+            err(f"  ! [NOT DATA] could not read the traffic file ({type(ex).__name__}): {ex}")
+            return 2
+        if not endpoints:
+            err("  ! [NOT DATA] no in-scope requests found in the traffic file "
+                f"(nothing matched the target origin {t.base_url}). Nothing to scan.")
+            return 2
+        confirm_spec = spec_from_endpoints(endpoints)
+    else:
+        err("  ! [NOT DATA] the target has no OpenAPI spec - pass --endpoints-file (a 'METHOD /path' "
+            "list) or --traffic-file (a HAR / raw-HTTP capture), or give the target a spec.")
+        return 2
 
     id_map, collections = _load_id_source(id_source_file, err)
 
