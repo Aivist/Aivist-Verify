@@ -264,6 +264,7 @@ def _identity_collision_reason(
 def _resolve_tokens(
     config_path: str, prompt_secret: Callable[[str], str],
     *, attacker_key: str = _CFG_ATTACKER_KEY, owner_key: str = _CFG_OWNER_KEY,
+    echo: Callable[..., None] = lambda *a: None,
 ) -> Tuple[SecretStr, Optional[SecretStr]]:
     """Attacker (required) + owner (optional) tokens, as SecretStr. Read from the per-user
     config file if present, else a masked prompt. No raw-token CLI flag exists (avoids
@@ -288,25 +289,41 @@ def _resolve_tokens(
     except Exception:
         cfg = {}
 
-    attacker = str(os.environ.get(attacker_key) or cfg.get(attacker_key) or "").strip()   # env > config
-    if not attacker:
-        attacker = (prompt_secret("Attacker bearer token (input hidden): ") or "").strip()
+    def _env_or_cfg(key: str, role: str) -> str:
+        """env > config for one token; when read from the ENVIRONMENT, echo the SAME masked
+        confirmation the interactive console shows (#2 consistency) — the value itself is never printed."""
+        env_val = str(os.environ.get(key) or "").strip()
+        if env_val:
+            echo(f"  Using {role} token from environment ({key}, masked).")
+            return env_val
+        return str(cfg.get(key) or "").strip()
+
+    attacker = _env_or_cfg(attacker_key, "attacker")
+    if not attacker:                                         # example inline at the prompt (#4)
+        attacker = (prompt_secret("Attacker bearer token (input hidden; e.g. 'Bearer eyJ...'): ") or "").strip()
     if not attacker:
         raise ValueError("an attacker token is required")
 
-    owner = str(os.environ.get(owner_key) or cfg.get(owner_key) or "").strip()             # env > config
+    owner = _env_or_cfg(owner_key, "owner")
     if not owner:
-        owner = (prompt_secret("Owner/victim bearer token (hidden; blank to skip owner-view): ") or "").strip()
+        owner = (prompt_secret(
+            "Owner/victim bearer token (hidden; e.g. 'Bearer eyJ...'; blank to skip owner-view): ") or "").strip()
 
     return SecretStr(attacker), (SecretStr(owner) if owner else None)
 
 
-def _resolve_bystander_token(config_path: str, *, bystander_key: str = _CFG_BYSTANDER_KEY) -> Optional[SecretStr]:
-    """The D30 THIRD/bystander token as a SecretStr, or None. Read from the per-user config file
-    ONLY (default key TARGET_BYSTANDER_TOKEN) — deliberately NOT prompted, so the attacker/owner
-    masked-prompt sequence stays exactly as it was. Absent / unreadable => None => no bystander probe
-    (byte-identical behavior). `bystander_key` is a parameter so #7 per-finding can point it at a
-    different account's key across separate runs. Never raises."""
+def _resolve_bystander_token(config_path: str, *, bystander_key: str = _CFG_BYSTANDER_KEY,
+                             echo: Callable[..., None] = lambda *a: None) -> Optional[SecretStr]:
+    """The D30 THIRD/bystander token as a SecretStr, or None. SOURCE ORDER (#2): the process
+    ENVIRONMENT (default key TARGET_BYSTANDER_TOKEN) wins over the per-user config file — so a user who
+    exported the bystander token is not forced to paste, exactly like attacker/owner. Still NEVER
+    prompted (a bystander is optional). Absent / unreadable => None => no bystander probe (byte-identical
+    behavior). An env token is masked (never printed) with the same confirmation the console shows.
+    `bystander_key` is a parameter so #7 per-finding can point it at a different account's key. Never raises."""
+    env_val = str(os.environ.get(bystander_key) or "").strip()
+    if env_val:
+        echo(f"  Using bystander token from environment ({bystander_key}, masked).")
+        return SecretStr(env_val)
     try:
         if config_path and os.path.isfile(config_path):
             with open(config_path, "rb") as fh:
@@ -632,6 +649,7 @@ def run_external_verify(
                 cfg, prompt_secret,
                 attacker_key=f"TARGET_{labels['attacker']}_TOKEN",
                 owner_key=f"TARGET_{labels['owner']}_TOKEN",
+                echo=echo,
             )
         except Exception as e:
             err(f"[NOT DATA] no usable attacker token: {e}")
@@ -641,7 +659,7 @@ def run_external_verify(
         # bystander_credential below (never auth_context / owner_credential) — the same D30 path.
         bystander_tok = (SecretStr(bystander_token.strip()) if (bystander_token or "").strip()
                          else _resolve_bystander_token(
-                             cfg, bystander_key=f"TARGET_{labels['bystander']}_TOKEN"))
+                             cfg, bystander_key=f"TARGET_{labels['bystander']}_TOKEN", echo=echo))
         # #7 FP NAIL (static): DISTINCT identities required. attacker==owner -> the D24 owner-view
         # corroborates self-vs-self -> false [CONFIRMED]. Refuse BEFORE any verdict (fail-closed).
         _reason = _identity_collision_reason(
