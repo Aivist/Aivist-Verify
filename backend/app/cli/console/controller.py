@@ -118,11 +118,13 @@ class ConsoleController:
         return True
 
     # -- input helpers: guidance + validation + re-prompt ------------------
-    def _guide(self, hint=None, example=None, why=None, *, optional: bool = False) -> None:
-        """Show guidance BEFORE the input line (#3), one blank line above so blocks aren't cramped (#2),
-        dim-colored so it reads as guidance not answer (#1). `optional` appends a press-Enter-to-skip
-        hint (#9) so the user never has to ask 'do I skip this?'."""
-        self.echo("")                                        # blank line between Q&A blocks (#2)
+    def _guide(self, hint=None, example=None, why=None, *, optional: bool = False,
+               optional_hint: Optional[str] = None) -> None:
+        """Show guidance BEFORE the input line (#3/#4 - ALWAYS before, never after), one blank line above
+        so blocks aren't cramped, dim-colored so it reads as guidance not answer. `optional` appends a
+        press-Enter hint; `optional_hint` overrides its text (so a required CHOICE between inputs isn't
+        mislabeled a plain 'optional' - #3)."""
+        self.echo("")                                        # blank line between Q&A blocks
         if hint:
             self.echo(self._paint(f"  {hint}", "dim"))
         if example:
@@ -130,7 +132,7 @@ class ConsoleController:
         if why:
             self.echo(self._paint(f"    why: {why}", "dim"))
         if optional:
-            self.echo(self._paint("    (optional - just press Enter to skip)", "dim"))
+            self.echo(self._paint("    " + (optional_hint or "(optional - just press Enter to skip)"), "dim"))
 
     def _ask(self, label: str) -> str:
         """A single CLEAR-TEXT prompt (never masked). The label is highlighted (#1) so it stands apart
@@ -600,8 +602,8 @@ class ConsoleController:
             except OSError:
                 pass
 
-    def _ask_optional_existing_file(self, label: str, **g) -> str:
-        self._guide(**g, optional=True)
+    def _ask_optional_existing_file(self, label: str, *, optional_hint: Optional[str] = None, **g) -> str:
+        self._guide(**g, optional=True, optional_hint=optional_hint)
         while True:
             v = self._ask(label)
             if not v:
@@ -646,6 +648,7 @@ class ConsoleController:
         self.echo(f"    [1] treat resources as owner-private (broken-for-all): {'YES' if assert_owner_only else 'no'}")
         self.echo(f"    [2] id hints: " + (f"{n_ids} provided" if n_ids
                                            else "none - the tool auto-sources; an unsourced one is skipped"))
+        self.echo("    [3] re-enter tokens (fix a mistyped attacker / owner / bystander token)")   # #5
         if auth_spec_path:
             self.echo(f"    login:    {auth_spec_path} (auto-relogin)")
 
@@ -679,13 +682,17 @@ class ConsoleController:
             except Exception:
                 spec = confirm_spec = None
         if spec is None:
-            self.echo("  This target has no usable OpenAPI spec. scan can discover the attack surface")
-            self.echo("  from CAPTURED TRAFFIC (proxy your app via mitmproxy/Burp or save a browser HAR),")
-            self.echo("  or from a plain 'METHOD /path' endpoints list.")
+            # #3: this is a required CHOICE (spec / traffic / endpoints), not two independent "optionals".
+            # Frame it as "provide ONE source", and if the user supplies NEITHER, say exactly what's needed.
+            self.echo("")
+            self.echo("  This target has no OpenAPI spec. Provide ONE source for scan to discover from:")
+            self.echo("    * a CAPTURED-TRAFFIC file (proxy your app via mitmproxy/Burp or a browser HAR), OR")
+            self.echo("    * a plain 'METHOD /path' ENDPOINTS file.")
             from backend.app.services.endpoint_catalog import spec_from_endpoints
             tf_path = self._ask_optional_existing_file(
-                "Traffic capture file (HAR or raw-HTTP) - optional",
-                hint="A .har export (browser DevTools / Burp) or a raw-HTTP dump. Blank = use an endpoints list.",
+                "Traffic capture file (HAR or raw-HTTP)",
+                optional_hint="(press Enter to use an endpoints file instead)",
+                hint="A .har export (browser DevTools / Burp) or a raw-HTTP dump.",
                 why="No spec? Proxy your traffic and point scan at the capture - it finds the endpoints for "
                     "you. Only requests to THIS target are used; off-target traffic is dropped.")
             if tf_path:
@@ -704,11 +711,12 @@ class ConsoleController:
             else:
                 ep_path = self._ask_optional_existing_file(
                     "Endpoints file (METHOD /path list)",
+                    optional_hint="(press Enter only if you have NEITHER source - scan then cannot run)",
                     hint="A JSON array of \"GET /path/{id}\" strings, OR newline-delimited METHOD /path lines.",
                     why="Lets scan discover candidates WITHOUT an OpenAPI spec; templated {id} paths detect best.")
                 if not ep_path:
-                    self.echo("  ! scan needs an OpenAPI spec, a traffic capture, or an endpoints file. "
-                              "Nothing to scan.")
+                    self.echo("  ! You must provide one of: a spec (on the target), a traffic capture, or "
+                              "an endpoints file. Nothing to scan.")
                     return
                 try:
                     from backend.app.cli.external_verify import _load_endpoints_file
@@ -848,7 +856,29 @@ class ConsoleController:
                 if choice == "2":
                     id_map, collections = self._collect_id_source()
                     continue
-                self.echo("  ! Enter a number (1-2) to change a setting, blank to run, or 'q' to cancel.")
+                if choice == "3":
+                    # #5: correct a mistyped token WITHOUT restarting the whole flow. Re-collect all three
+                    # (env-first, masked), re-run the fail-closed collision guard; on any problem KEEP the
+                    # previous tokens (never leave the run with a half-updated / colliding identity set).
+                    a2 = self._env_or_secret("attacker", "Attacker token")
+                    o2 = self._env_or_secret("owner", "Owner/victim token")
+                    if not a2 or not o2:
+                        self.echo("  ! scan needs BOTH an attacker and an owner token; keeping the previous ones.")
+                        continue
+                    b2 = self._env_or_secret(
+                        "bystander", "Bystander / third-account token", optional=True,
+                        hint="A THIRD account that does NOT own the resource.",
+                        why="Lets scan tell a public/shared resource from a real cross-user leak.")
+                    r2 = _identity_collision_reason(a2, o2, b2 or None)
+                    if r2:
+                        self.echo(f"  ! [NOT DATA] {r2}  (keeping the previous tokens)")
+                        continue
+                    attacker, owner, bystander = a2, o2, b2
+                    attacker_tok, owner_tok = SecretStr(a2), SecretStr(o2)
+                    bystander_tok = SecretStr(b2) if b2 else _resolve_bystander_token(self.config_path)
+                    self.echo("  Tokens updated.")
+                    continue
+                self.echo("  ! Enter a number (1-3) to change a setting, blank to run, or 'q' to cancel.")
 
             async def run_op(op):
                 return await _verify_external(t.base_url, confirm_spec, op, attacker_tok, owner_tok,
