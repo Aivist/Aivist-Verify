@@ -86,6 +86,12 @@ def _no_candidates_report(catalog, accepted, dropped) -> str:
                    f"rejected by the code fence (0 survived, {len(dropped or [])} dropped) - none matched a "
                    "real {id}-templated path / query id in the catalog.")
     out.append("  This is NOT a 'secure' result - the scan did NOT test anything.")
+    # #6: if the surface DID carry a {templated}-id endpoint, auto-discovery whiffed but the endpoint is
+    # still directly testable - point the user at `verify` (pick the endpoint + the two ids) as the next step.
+    if any("{" in e for e in (catalog or [])):
+        out.append("  This surface HAS a {templated}-id endpoint (e.g. /books/v1/{book_title}) - to test it "
+                   "directly, run `verify` on that endpoint (pick it, give the attacker + victim ids) "
+                   "instead of auto-discovery.")
     out.append("  Next: check the spec is a real OpenAPI doc with {id}-templated object endpoints "
                "(e.g. /books/v1/{book_title}), or provide an endpoints list / a candidate manually.")
     return "\n".join(out)
