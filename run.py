@@ -210,6 +210,21 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--assert-owner-only", action="store_true",
                     help="Surface broken-for-all findings ([INCONCLUSIVE] human review) instead of suppressing.")
     sc.add_argument("--model", default=None, help="optional model override")
+
+    # run: fully NON-INTERACTIVE, programmatic entry — read ALL config from a JSON file (+ tokens from
+    # env), run the engine (verify OR scan), emit STRUCTURED JSON to stdout. For CI / scripting.
+    rc = sub.add_parser(
+        "run",
+        help="Non-interactive: read a JSON config (+ env tokens), run verify/scan, emit JSON to stdout.",
+    )
+    rc.add_argument("--config", required=True,
+                    help="Path to a JSON config file (mode=verify|scan, base_url, endpoint/ids OR a scan "
+                         "catalog source). Tokens come from env ONLY (TARGET_ATTACKER_TOKEN/_OWNER_TOKEN/"
+                         "_BYSTANDER_TOKEN), NEVER the config file.")
+    rc.add_argument("--json", action="store_true",
+                    help="Emit machine-readable JSON to stdout (the default and only stdout format).")
+    rc.add_argument("--pretty", action="store_true",
+                    help="Also print a short human summary to stderr (stdout stays pure JSON).")
     return ap
 
 
@@ -282,6 +297,13 @@ def main():
             traffic_file=args.traffic_file, id_source_file=args.id_source,
             assert_owner_only=args.assert_owner_only, model=args.model,
         ))
+    if args.cmd == "run":
+        # Non-interactive programmatic entry: JSON config in, structured JSON out. JSON goes to stdout;
+        # a --pretty human summary (if asked) goes to stderr so stdout stays pure JSON for piping.
+        from backend.app.cli.run_command import run_from_config
+        sys.exit(run_from_config(
+            args.config, pretty=args.pretty,
+            err=(lambda *a: print(*a, file=sys.stderr))))
 
 
 if __name__ == "__main__":
