@@ -24,7 +24,7 @@ from backend.app.cli import branding
 
 _REDACTED = "***REDACTED***"
 
-# Provider choices surfaced in the prompt. The relay/中转站/DeepSeek/Kimi/GLM/Qwen/
+# Provider choices surfaced in the prompt. The relay/DeepSeek/Kimi/GLM/Qwen/
 # Grok/Ollama ecosystem all ride the single 'openai' (OpenAI-compatible) provider
 # via base_url — that capability already exists at the provider layer.
 _PROVIDERS = ("gemini", "openai", "anthropic")

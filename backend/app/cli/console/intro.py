@@ -1,7 +1,7 @@
 # ==============================================================================
 # Calm, honest console copy — intro + a real command guide. No competitor-comparison
-# text, no raw-HTTP firehose, no hacker-movie styling (all explicitly rejected —
-# they break the tool's honest, credential-safe posture).
+# text, no raw-HTTP firehose, no hacker-movie styling — these would break the tool's
+# honest, credential-safe posture.
 # ==============================================================================
 from __future__ import annotations
 

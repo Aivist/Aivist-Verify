@@ -1,6 +1,6 @@
 # ==============================================================================
 # OpenAI-COMPATIBLE provider — ONE implementation for the whole compatible ecosystem
-# via a configurable base_url: OpenAI itself, any relay/gateway (中转站), DeepSeek,
+# via a configurable base_url: OpenAI itself, any relay/gateway, DeepSeek,
 # Kimi/Moonshot, GLM/Zhipu, Qwen, Grok/xAI, and local servers (Ollama/vLLM at /v1).
 # There is deliberately no per-vendor code — if a backend speaks the OpenAI chat API,
 # point LLM_BASE_URL at it. Lazy-imports `openai`; a clear install error if absent.

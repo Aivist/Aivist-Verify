@@ -30,7 +30,7 @@ zero-FP-measured path.
 
 ### 2. OpenAI-compatible (`LLM_PROVIDER=openai`)
 **ONE** implementation covers the whole compatible ecosystem via `LLM_BASE_URL`: OpenAI
-itself, relays/中转站, DeepSeek, Kimi/Moonshot, GLM/Zhipu, Qwen, Grok/xAI, and local
+itself, relays, DeepSeek, Kimi/Moonshot, GLM/Zhipu, Qwen, Grok/xAI, and local
 servers (Ollama / vLLM at `/v1`). Requires `pip install openai`.
 
 ```bash

@@ -128,10 +128,10 @@ file touched is `config.py`, and only to ADD a settings source (below). What shi
   `python run.py …` still works. `verify` is primary, `confirm` a back-compat alias. The brand token
   is provisional and derived from ONE constant `BRAND_NAME` in `backend/app/cli/branding.py`
   (currently `"lanivist"`); the `verify` suffix is locked (see Open decisions).
-- **Interactive config flow + relay/中转站 support** (`backend/app/cli/config_flow.py`, commit
+- **Interactive config flow + relay support** (`backend/app/cli/config_flow.py`, commit
   `4bb643b`). `lanivist config` prompts for provider / API key (masked via `getpass`) / base_url /
   model and writes `~/.<brand>/config.toml` at `0600` (where the OS honors it); the key is never
-  echoed/printed/logged. Relay/中转站/DeepSeek/Kimi/GLM/Qwen/Grok/Ollama all ride the existing
+  echoed/printed/logged. Relay/DeepSeek/Kimi/GLM/Qwen/Grok/Ollama all ride the existing
   `openai` (OpenAI-compatible) provider via `base_url` — the capability already existed at the
   provider layer; the flow surfaces it.
 - **`config.py` user-config source** (`_UserConfigTomlSource` + `settings_customise_sources`, commit
