@@ -65,10 +65,11 @@ You paste the two Bearer tokens (attacker + owner, hidden). `--op` is one operat
 query-string IDOR, `report_id 7→6`). Add `--auth <login.json>` to log in / auto-refresh tokens instead
 of pasting static ones.
 
-### `scan` — auto-discover BOLA/IDOR candidates and confirm each (interactive console)
+### `scan` — auto-discover BOLA/IDOR candidates and confirm each
 
-`scan` is a command **inside the interactive console** (there is no `scan` subcommand). Launch the
-console with **no arguments**, then walk the flow:
+`scan` runs **either** inside the interactive console **or** as a non-interactive subcommand
+(`python run.py scan --target-file <file> [--endpoints-file … | --traffic-file … | --capture]`, tokens
+from env). For the interactive walk, launch the console with **no arguments**:
 
 ```powershell
 python run.py          # no args → opens the interactive console
@@ -95,3 +96,22 @@ per-account), a **bystander / third-account token** (public-resource discriminat
 > **Red lines (why this is safe):** the AI only *proposes* candidates; **code fences every op twice** and
 > the **zero-FP engine judges** each; id harvesting is **per-account, never cross-account, never
 > fabricated** (→ SKIP). Full detail: [`STATUS.md`](./STATUS.md) "Auto-discovery `scan` onramp".
+
+### `run` — non-interactive, one config file → JSON (CI / scripting)
+
+The programmatic path: no prompts, no color, no getpass — everything from a JSON file (+ tokens from env),
+structured JSON out. Use this in CI or scripts (and while the **interactive** console's remaining polish is
+still being worked).
+
+```powershell
+$env:TARGET_ATTACKER_TOKEN="Bearer …"; $env:TARGET_OWNER_TOKEN="Bearer …"   # tokens: env ONLY, never the file
+python run.py run --config path\to\config.json            # JSON verdict/report to stdout
+python run.py run --config path\to\config.json --pretty   # + a one-line human summary to stderr
+```
+
+`config.json` carries `mode` (`"verify"` single-op OR `"scan"` auto-discover), `base_url`, and either the
+endpoint + ids (verify) or a catalog source `spec_path` / `endpoints` / `endpoints_file` / `traffic_file`
+(scan). Tokens come from `TARGET_ATTACKER_TOKEN` / `_OWNER_TOKEN` / `_BYSTANDER_TOKEN` **only** (a missing
+one → a clear JSON error, never a prompt; `attacker == owner` is refused). Exit code: **0** when a
+verdict/report is produced, **non-zero** on NOT DATA / setup error (so CI can branch); no token value ever
+appears in the JSON. Full detail: [`STATUS.md`](./STATUS.md) "Non-interactive `run`".

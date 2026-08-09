@@ -69,7 +69,7 @@ the earlier single-target record (140 SAFE / 70 VULN, one target), kept as histo
 
 | Suite | Command (from repo root) | Result |
 |---|---|---|
-| Backend | `python -m pytest backend/tests -q` | **824 passed** |
+| Backend | `python -m pytest backend/tests -q` | **833 passed** (committed HEAD; the parked CLI working tree is 848 — see "Uncommitted") |
 | Ground-truth target (`vulnerable_target`, integer-id) | `python -m pytest vulnerable_target -q` | **31 passed** |
 | Ground-truth target (`depot_target`, UUID-id) | `python -m pytest depot_target -q` | **23 passed** |
 
@@ -94,7 +94,9 @@ the earlier single-target record (140 SAFE / 70 VULN, one target), kept as histo
 > `mitmdump` capture → the light loader; `test_scan_capture.py`, commit `6745b85`), and the **CLI
 > experience/discovery fixes** from the director's hands-on run (robust Windows color, env-first
 > owner/bystander tokens, required-choice framing, token re-entry, non-numeric `{templated}` id
-> discovery; `test_cli_regressions.py`). See the "Auto-discovery `scan` onramp" block below.
+> discovery; `test_cli_regressions.py`); and **833** after the **non-interactive `run` command** — a
+> programmatic JSON entry point (`test_run_command.py` +9, commit `d455656`). See the "Auto-discovery
+> `scan` onramp" and "Non-interactive `run`" blocks below.
 
 ## Operator front door — CLI, packaging, config, external targets (code facts, re-verified 2026-08-02)
 
@@ -439,6 +441,19 @@ async proxy stack untouched):
   (`{book_title}`, `{slug}`, `{uuid}`) is proposed, not only numeric/`_id` (`scan_discovery.py`), with a
   0-candidates hint to try `verify`.
 
+**Non-interactive `run` — programmatic JSON entry point (✅ DONE, commit `d455656`).** `lanivist run
+--config <file.json> [--pretty]` (`run.py` `run` subcommand → `backend/app/cli/run_command.py`). Reads ALL
+config from a JSON file (`mode` = `verify` single-op OR `scan` auto-discover; `base_url`; the endpoint +
+ids OR a scan catalog source spec/endpoints/traffic), tokens from ENV ONLY, and emits STRUCTURED JSON to
+stdout (a `--pretty` human summary goes to stderr so stdout stays pure, ASCII-safe JSON). Zero interaction,
+zero color, zero getpass, zero per-field prompts — the CI/scripting path that sidesteps every
+terminal/interaction pitfall of the interactive console. It is a thin input-adapter + output-serializer:
+verify reuses the SAME `_verify_external` call `run_external_verify` makes (per-account token routing
+unchanged) flattened by `_record_from_result`; scan reuses `run_scan`. **No verdict/engine change.** Red
+lines: tokens env-only + masked + never in the config file, attacker≠owner collision guard fires, output
+passes the credential redactor (no live token), NOT DATA / setup error → non-zero exit so CI can branch.
+`test_run_command.py` (9).
+
 **DEFERRED (NOT done — do not claim otherwise):**
 - **AI-driven CLI orchestration.** Not built. AI drives candidate/collection **selection** only; the
   operator still drives the CLI (target, creds, id-source/login files) turn by turn.
@@ -653,6 +668,15 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
 
 ## Uncommitted right now (working tree)
 
+- **PARKED — interactive-CLI regression fixes (two briefs).** Left uncommitted ON PURPOSE because the
+  **interactive** console still has open issues under investigation; the non-interactive `run` path (above)
+  was landed first as the reliable programmatic entry. The parked work: `confirm_render.py` (Windows VT
+  color-enable hardening + a strip-ALL-escapes plain-mode fallback), `controller.py` (spec-less `verify`
+  builds the op from the target instead of dying on an empty `--spec`), and their tests
+  (`test_cli_realproc_{color,tokens,verify}.py` + `_cli_harness.py` — real-process spawns of `run.py`; plus
+  in-process `test_{color_degrade,env_tokens_interactive,spec_less_verify}.py`). Working tree = **848** with
+  these; committed HEAD = **833** without. NOTE: Bug-1's actual color RENDERING can only be confirmed on a
+  real Windows PowerShell window (a captured pipe is already plain) — a human check is still pending.
 - **Proxy Radar tab (frontend)** — `preview_dashboard.html` gains the Step-9 proxy UI
   (start/stop, live SSE stream, flows list, "send to Hunter"). Backend `/proxy/*` routes
   already existed and are tested; this is the UI wiring. **Left uncommitted on purpose** —
@@ -660,7 +684,9 @@ mechanism generalizes across vuln shapes with **zero false positives**. Where ea
 - `scripts/audit/` measurement drivers + `*.out.txt` transcripts — kept untracked
   (throwaway harnesses / evidence), not committed.
 
-> Everything else (docs restructure, B-1/M1.0, D22, D23, D23b, M1.1, and M1.2 A/B/C) is committed.
+> Everything else (docs, B-1/M1.0, D22/D23/D23b, M1.1, M1.2 A/B/C, the `scan` onramp + passive discovery,
+> and the non-interactive `run` command) is committed. The only NON-frontend uncommitted code is the
+> parked interactive-CLI fixes above.
 
 ## Runtime posture (defaults)
 

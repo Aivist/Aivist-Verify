@@ -97,11 +97,15 @@ No server needed:
 python run.py                 # no args → interactive console: config → target → verify / scan
 python run.py demo            # zero-setup: confirm a real BOLA on a built-in lab
 python run.py verify --target <url> --spec <openapi.json> --op <op.json>   # confirm ONE finding
+python run.py scan  --target-file <file> [--traffic-file <cap> | --capture]  # non-interactive scan (env tokens)
+python run.py run   --config <file.json> [--pretty]                          # non-interactive JSON in/out (CI)
 ```
-`scan` (auto-discover BOLA/IDOR candidates and confirm each, from a spec **or** a `METHOD /path`
-endpoints list) is a command inside the interactive console. Full run recipe:
-[`QUICKSTART.md`](./QUICKSTART.md); behavior + red lines: [`STATUS.md`](./STATUS.md) "Auto-discovery
-`scan` onramp".
+`scan` runs both inside the interactive console AND as the `scan` subcommand above (from a spec, a
+`METHOD /path` endpoints list, a captured-traffic file, or a live `mitmdump` capture). `run` is the fully
+non-interactive JSON entry point (verify OR scan) for CI/scripting — the reliable path while the
+interactive console's remaining fixes are parked (see [`STATUS.md`](./STATUS.md) "Uncommitted"). Full run
+recipe: [`QUICKSTART.md`](./QUICKSTART.md); behavior + red lines: [`STATUS.md`](./STATUS.md) "Auto-discovery
+`scan` onramp" and "Non-interactive `run`".
 
 ## 4. Frontend
 The canonical UI is the single file `preview_dashboard.html`. Just open it in a

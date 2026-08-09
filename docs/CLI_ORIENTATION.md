@@ -25,10 +25,11 @@ strategy doc.
   (`_boot_target` / `_stop_target` / `_rm_db`).
 - Commits: **`94d1fd5`** (spine), **`8727b12`** (offline test + full-caseset mode).
 
-## Beyond the lab confirmer — the real-target front doors (`verify`, `scan`)
+## Beyond the lab confirmer — the real-target front doors (`verify`, `scan`, `run`)
 
-The map above is the **lab caseset** renderer. Over the same engine there are now two real-target
-surfaces (verdict logic untouched — they only assemble the inputs and reuse `execute_deep_verification`):
+The map above is the **lab caseset** renderer. Over the same engine there are now **three** real-target
+surfaces (verdict logic untouched — they only assemble the inputs and reuse `execute_deep_verification`).
+Subcommands of `python run.py`: `verify · confirm · config · demo · target · scan · run`.
 
 - **`verify` — one finding.** Subcommand `python run.py verify --target <url> --spec <openapi> --op <op.json>`
   (`+ --auth <login.json>` for auto re-login). Assembles one operation into the same engine call; the
@@ -52,7 +53,19 @@ surfaces (verdict logic untouched — they only assemble the inputs and reuse `e
   - **CLI experience fixes (director hands-on run).** Robust Windows ANSI/VT color detection (plain, no raw
     `\033[` leak, when unsupported); env-first owner+bystander tokens (masked, with a "from environment"
     message); required-choice framing when no spec; token re-entry from the scan review; and non-numeric
-    `{templated}` id discovery (`{book_title}` etc.). Tests: `test_cli_regressions.py`.
+    `{templated}` id discovery (`{book_title}` etc.). Tests: `test_cli_regressions.py`. **Note:** a further
+    round of interactive fixes (VT-enable hardening + strip-all-escapes; spec-less `verify` op-build) is
+    **PARKED uncommitted** — the interactive console still has open issues. See [`STATUS.md`](./STATUS.md)
+    "Uncommitted".
+- **`run` — non-interactive, programmatic (CI / scripting).** Subcommand `python run.py run --config
+  <file.json> [--pretty]`. Reads ALL config from a JSON file (`mode` = `verify` OR `scan`; `base_url`;
+  endpoint + ids OR a scan catalog source) + tokens from **env only**, and emits **structured JSON** to
+  stdout (`--pretty` summary → stderr). Zero interaction / color / getpass / prompts, so it sidesteps the
+  interactive console's terminal pitfalls — the reliable path today. A thin input-adapter + output-serializer
+  that reuses `_verify_external` (verify) and `run_scan` (scan) **unchanged**; tokens env-only + masked +
+  never in the config file, collision guard fires, output redacted, NOT-DATA/error → non-zero exit. Code:
+  `backend/app/cli/run_command.py`; tests `test_run_command.py`. Full behavior: [`STATUS.md`](./STATUS.md)
+  "Non-interactive `run`".
 
 ## Two open observations (pending director feedback — do not freeze the UX)
 1. **ASCII dash** — the header uses `-`, not `—` (the Windows console mangles the em-dash).
