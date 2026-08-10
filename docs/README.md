@@ -1,36 +1,22 @@
-# Documentation Index
+# Documentation
 
-Developer/agent handoff docs for the Anti-Gravity AI Penetration Testing
-Platform. **All project documentation lives here in `docs/`** (the repo root keeps
-only a thin [`README.md`](../README.md) pointer).
-
-**Reading order:** [`STATUS.md`](./STATUS.md) (where we are *now*) →
-[`ROADMAP.md`](./ROADMAP.md) (strategy — why/where) →
-[`PROJECT_OVERVIEW.md`](./PROJECT_OVERVIEW.md) (acceptance snapshot — what exists,
-中文) → [`ARCHITECTURE.md`](./ARCHITECTURE.md) (engineering — how) → component docs
-(VERIFY_ENGINE / DEEP_VERIFY / …) → [`TECH_DEBT.md`](./TECH_DEBT.md) (known gaps).
+Docs for **Aivist Verify** — the local, CLI-first BOLA/IDOR access-control confirmation engine.
+Start at the root [`README.md`](../README.md); this folder holds the deeper references.
 
 | Doc | Read it for |
 |---|---|
-| [`STATUS.md`](./STATUS.md) | **Current-state snapshot** — progress, what's proven, what's uncommitted/in flight, what's deferred. *Where the project stands right now.* Includes the **Auto-discovery `scan` onramp** (spec/endpoints → AI candidates → code fence → confirm → tier-grouped report). **Read first.** |
-| [`QUICKSTART.md`](./QUICKSTART.md) | **Run it now** — the lab `confirm` demo, the real-target `verify` (one finding), the **`scan`** onramp (auto-discover + confirm many), and the non-interactive **`run`** command (JSON config → JSON out, for CI). *First-time user entry point.* |
-| [`ROADMAP.md`](./ROADMAP.md) | **Strategy** (human-owned) — the thesis, explicit non-goals, main-line direction (B-1 / D19 / scope-lock), authorization reality. *Why / where.* |
-| [`PROJECT_OVERVIEW.md`](./PROJECT_OVERVIEW.md) | **Acceptance snapshot (Chinese)** — product positioning, maturity, the end-to-end pipeline, API summary, run/verify checklist. Non-engineering entry point. |
-| [`ARCHITECTURE.md`](./ARCHITECTURE.md) | System overview, components, runtime/concurrency model, security posture, directory map. Includes the **Step 9 proxy radar** and the **unified WriterService**. **Engineering entry point.** |
-| [`DATA_MODEL.md`](./DATA_MODEL.md) | ORM tables, Step D columns, the **`captured_flows`** table (Step 9), the create_all migration gotcha. |
-| [`HUNTER_PIPELINE.md`](./HUNTER_PIPELINE.md) | AI Logic Hunter: HAR ingest → prune → parse → Gemini analyze → persist (Step D). |
-| [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md) | Differential fuzzing engine, oracle rules, auth-custody self-heal, parallel single-writer design (generalized to the app-wide WriterService in Step 9), and the read-only shadow **Phase 7**. **The core.** |
-| [`DEEP_VERIFY.md`](./DEEP_VERIFY.md) | `deep_verifier.py` — AI write-then-read verifier (**4-value**: adds `inconclusive` + the B-2.2 cross-resource guard, vs the rule oracle's 3-value); not API-wired, invoked **read-only** by the fuzzer's shadow-mode **Phase 7**. Two gates, both default `False`. Endpoint surface seeded by `services/endpoint_catalog.py` (**D18**). Also documents the in-flight **B-1** write-record machinery. |
-| [`../vulnerable_target/README.md`](../vulnerable_target/README.md) | Standalone ground-truth practice target (`:8001`) + planted-vuln answer key for benchmarks. |
-| [`API_REFERENCE.md`](./API_REFERENCE.md) | Every HTTP endpoint, request/response shapes, status codes — including the **`/proxy/*` radar** routes (Step 9). |
-| [`DEVELOPMENT.md`](./DEVELOPMENT.md) | Configure, run, test; Windows/PowerShell notes; DB reset recipe; manual E2E; **mitmproxy install + the two dependency pins** + proxy radar quickstart (Step 9). |
-| [`LLM_PROVIDERS.md`](./LLM_PROVIDERS.md) | **Bring your own model/gateway** — provider config (Gemini default · OpenAI-compatible · Anthropic), `base_url`/model/key, and the connectivity-not-zero-FP boundary. |
-| [`TECH_DEBT.md`](./TECH_DEBT.md) | Known issues / risks / what's already resolved (incl. Step 9 R4, the §5 integrity fix R6), with a suggested priority order. |
-| [`AUDIT.md`](./AUDIT.md) | **Full read-only audit register** — 11-area findings tiered by DIRECTION (DANGEROUS = false-positive / gates the zero-FP claim · SAFE = coverage · boundary), each anchored to `file:line`. **The authoritative "what's left before publication" map.** |
+| [`PROJECT_OVERVIEW.md`](./PROJECT_OVERVIEW.md) | What exists today and how the pieces fit — the orientation entry point. |
+| [`ARCHITECTURE.md`](./ARCHITECTURE.md) | How the engine is built: the two-layer verdict pipeline, the CLI surface, supporting layers. |
+| [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md) | The differential oracle (`fuzzer.py`) — rules, veto, escalation. |
+| [`DEEP_VERIFY.md`](./DEEP_VERIFY.md) | The deep verifier (`deep_verifier.py`) — the cross-resource guard + the four code-computed exemption channels. |
+| [`CLI_ORIENTATION.md`](./CLI_ORIENTATION.md) | A code-anchored map of the CLI front doors (`verify` / `scan` / `run` / `demo`). |
+| [`QUICKSTART.md`](./QUICKSTART.md) | Run it now — the lab demo, a real-target `verify`, `scan`, and the non-interactive `run`. |
+| [`DEVELOPMENT.md`](./DEVELOPMENT.md) | Contributor setup and how to run the test suites. |
+| [`LLM_PROVIDERS.md`](./LLM_PROVIDERS.md) | Bring your own model / gateway (Gemini default · OpenAI-compatible · Anthropic) and the connectivity-not-zero-FP boundary. |
 
-> All docs are grounded in the source tree and include file references (e.g.
-> `backend/app/services/fuzzer.py`). When code and docs disagree, the code wins —
-> please update the docs.
->
-> **Test counts:** `backend/tests` → **761** passed; `vulnerable_target` → **31**;
-> `depot_target` → **23** (separate suites; re-run 2026-08-07). See [`STATUS.md`](./STATUS.md).
+Evidence lives at the repo root: [`../RESULTS.md`](../RESULTS.md) (the zero-false-positive
+benchmark, recomputed from the committed artifact) and [`../REPRODUCE.md`](../REPRODUCE.md)
+(reproduce it yourself in three independent layers).
+
+> All docs are grounded in the source tree and cite file references. When code and docs
+> disagree, the code wins — please update the docs.

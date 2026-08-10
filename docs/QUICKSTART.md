@@ -6,24 +6,17 @@ access-control bug or **REFUTED**.
 
 ## Prerequisites
 
-- **Python 3.11.** On this machine the system interpreter is used (no virtualenv):
-  `C:\Users\Lang\AppData\Local\Programs\Python\Python311\python.exe`, and `python` is on PATH.
-- **Dependencies** (once, from the project root):
-  ```powershell
-  cd "C:\Users\Lang\Desktop\anti gravity"
-  python -m pip install -r backend/requirements.txt
+- **Python 3.11+** with `python` on PATH.
+- **Dependencies** (once, from the repo root):
+  ```bash
+  pip install -r backend/requirements.txt
   ```
-- **`GEMINI_API_KEY`** — the confirmer calls the real model. On this machine it is already
-  provided via `backend/.env` (auto-loaded); you do **not** need to set a shell variable. On a
-  fresh checkout, add a line `GEMINI_API_KEY=<your key>` to `backend/.env`.
+- **`GEMINI_API_KEY`** — the confirmer calls the real model. Set it with `aivist config`, a shell
+  environment variable, or a `GEMINI_API_KEY=<your key>` line in `backend/.env` (auto-loaded).
 
-## Run it (Windows PowerShell)
+## Run it
 
-Run from the project root — the path has a space, so keep it quoted:
-
-```powershell
-cd "C:\Users\Lang\Desktop\anti gravity"
-```
+Run everything from the repo root.
 
 **CONFIRMED demo** — a real cross-user write BOLA:
 ```powershell
@@ -40,11 +33,8 @@ Also: omit `--case` to confirm the whole caseset (one result per case + a one-li
 **Exit codes:** `0` = nothing confirmed · `1` = at least one CONFIRMED · `2` = run/degraded error (NOT DATA).
 
 ### If `python` is "not found" or you hit `ModuleNotFound`
-- Always `cd` into the project root first (above) — the relative caseset path is resolved from there.
-- If `python` is not on PATH in your shell, call the interpreter by full path:
-  ```powershell
-  & "C:\Users\Lang\AppData\Local\Programs\Python\Python311\python.exe" run.py confirm --caseset "scripts\measure\casesets\vulnerable_target.json" --case B1-X-CROSS
-  ```
+- Always run from the repo root — the relative caseset path is resolved from there.
+- If `python` is not on PATH, invoke your interpreter explicitly (on Windows, e.g. `py -3.11 run.py …`).
 
 ## Confirm a REAL target — `verify` (one finding) and `scan` (auto-discover many)
 
@@ -95,7 +85,7 @@ per-account), a **bystander / third-account token** (public-resource discriminat
 
 > **Red lines (why this is safe):** the AI only *proposes* candidates; **code fences every op twice** and
 > the **zero-FP engine judges** each; id harvesting is **per-account, never cross-account, never
-> fabricated** (→ SKIP). Full detail: [`STATUS.md`](./STATUS.md) "Auto-discovery `scan` onramp".
+> fabricated** (→ SKIP).
 
 ### `run` — non-interactive, one config file → JSON (CI / scripting)
 
@@ -114,4 +104,4 @@ endpoint + ids (verify) or a catalog source `spec_path` / `endpoints` / `endpoin
 (scan). Tokens come from `TARGET_ATTACKER_TOKEN` / `_OWNER_TOKEN` / `_BYSTANDER_TOKEN` **only** (a missing
 one → a clear JSON error, never a prompt; `attacker == owner` is refused). Exit code: **0** when a
 verdict/report is produced, **non-zero** on NOT DATA / setup error (so CI can branch); no token value ever
-appears in the JSON. Full detail: [`STATUS.md`](./STATUS.md) "Non-interactive `run`".
+appears in the JSON.

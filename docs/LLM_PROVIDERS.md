@@ -1,6 +1,6 @@
 # LLM Providers — bring your own model / gateway
 
-The AI calls (the deep verifier and Hunter `analyze`) go through a small provider seam
+The AI calls (the deep verifier, and scan's candidate proposal) go through a small provider seam
 (`backend/app/services/llm/`) so you can point the engine at any backend. **Default is
 Gemini, and with every `LLM_*` unset the behavior is byte-identical to before this seam
 existed.**
@@ -69,8 +69,8 @@ LLM_MODEL=claude-3-5-sonnet-latest
 - **JSON mode.** Gemini and OpenAI enforce JSON at the API layer
   (`response_mime_type` / `response_format`); Claude has no strict flag, so JSON relies on
   the system prompt (best-effort).
-- **Failure is graceful.** A provider error degrades to a fallback (Hunter) or an
-  `inconclusive` / degraded verdict (deep verifier) — it never crashes a batch.
+- **Failure is graceful.** A provider error degrades to an `inconclusive` / degraded
+  verdict (deep verifier) — it never crashes a batch.
 - **Design.** `services/llm/` = the `LLMProvider` protocol + `get_provider()` factory +
   `gemini.py` / `openai_compat.py` / `anthropic.py`. Only the model *call* sits behind it;
   the verdict logic (the four channels, the cross-resource guard, every anchor, the D24

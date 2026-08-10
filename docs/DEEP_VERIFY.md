@@ -93,7 +93,7 @@ Only stable, side-effect-free helpers are imported from `fuzzer.py`:
 - `ScopeViolationError` for host lock enforcement
 
 No changes to the fuzzer's verdict path; the rule-oracle tests stay green (backend
-suite: **761 passed** — see [`STATUS.md`](./STATUS.md)).
+suite passes).
 
 ---
 
@@ -143,8 +143,7 @@ five-point **DECISIVE-EVIDENCE STANDARD**:
    > **all three must agree.** M1.2(C) exists because they did not: code gathered a cross-path
    > object state and exempted it structurally while the prompt still forbade concluding from a
    > different path, so the model held decisive evidence and answered `inconclusive` 2/5.
-   > Keeping prompt and code in agreement is now a standing discipline
-   > ([`ROADMAP.md`](./ROADMAP.md) §6).
+   > Keeping prompt and code in agreement is now a standing discipline.
 
 ---
 
@@ -206,8 +205,7 @@ channel). Locked by `test_HAZARD_m12_causality_would_false_positive_on_mass_assi
 
 > **Known boundary (now handled):** causality assumes the written value is high-entropy. On boolean /
 > small-int / enum fields — or with concurrent runs writing the same value — it collides. That is
-> exactly what M1.4's state-jump gate replaces it with; see the M1.4 section below and
-> [`ROADMAP.md`](./ROADMAP.md) §7.
+> exactly what M1.4's state-jump gate replaces it with; see the M1.4 section below.
 
 ---
 
@@ -340,9 +338,7 @@ which usually lives on a *different* path (write `POST /api/users/{id}/gizmo`, s
 > **Caveats:** proven on **one vuln shape only**; the final verdict still depends on the model
 > reading the log correctly (a model-specific pillar — re-test on any model swap); and the
 > content-match is hardened on both axes — the id check binds to an owner/subject key
-> (**D23**) and the value check to non-primary-key content fields (**D23b**). See
-> [`STATUS.md`](./STATUS.md)
-> and [`TECH_DEBT.md`](./TECH_DEBT.md) B-1.
+> (**D23**) and the value check to non-primary-key content fields (**D23b**).
 
 The integrity floor (B-2.2) refuses a false verdict on a cross-path write but stops
 at `inconclusive` — it cannot yet *confirm*. B-1 aims to let the verifier confirm a
@@ -496,7 +492,7 @@ unchanged. Two seams feed it, both currently minimal:
   `METHOD /path`** and, when the spec declares them, now **carries the operation's
   genuine `tags` and `operationId`** (nothing invented — see the B-1 section below),
   so the model can tell what an endpoint *is* (e.g. that an audit/log endpoint is a
-  record of writes). See [`TECH_DEBT.md`](./TECH_DEBT.md) D18 / D21.
+  record of writes).
 
 ---
 
@@ -531,4 +527,4 @@ of the pytest count).
 
 - [`../vulnerable_target/README.md`](../vulnerable_target/README.md)
 - [`../vulnerable_target/benchmark/README.md`](../vulnerable_target/benchmark/README.md)
-- [`../vulnerable_target/benchmark/RESULTS.md`](../vulnerable_target/benchmark/RESULTS.md)
+- [`../RESULTS.md`](../RESULTS.md) — the cross-lab zero-false-positive benchmark

@@ -42,21 +42,16 @@ Subcommands of `python run.py`: `verify · confirm · config · demo · target �
   ids **per-account (never cross-account, never fabricated → SKIP)**, runs each through the existing confirm,
   and prints one tier-grouped report. Modules: `scan_run.py` (orchestration), `scan_discovery.py` (AI
   proposal + code fences), `scan_ids.py` (id sourcing tiers a/b/c), `scan_report.py` (tier-grouped render);
-  REPL wiring in `console/controller.py:do_scan` + `console/intro.py`. Full behavior + red lines:
-  [`STATUS.md`](./STATUS.md) "Auto-discovery `scan` onramp".
+  REPL wiring in `console/controller.py:do_scan` + `console/intro.py`.
   - **Passive discovery (built).** LIGHT: `scan_traffic.py` templatizes a HAR/raw-HTTP capture (scope-locked
     to the target origin) into the endpoints list — non-interactive `run.py scan --traffic-file <cap>`, or the
     interactive `scan` prompt. HEAVY: `scan_capture.py` + `proxy/capture_addon.py` drive a synchronous
     `mitmdump` (clean process-tree teardown; no async ingest stack) writing scope-filtered flows to a temp
-    file the LIGHT loader reads — `run.py scan --capture [--capture-port N] [--capture-duration S]`. See
-    [`STATUS.md`](./STATUS.md) "Passive endpoint discovery — DONE".
+    file the LIGHT loader reads — `run.py scan --capture [--capture-port N] [--capture-duration S]`.
   - **CLI experience fixes (director hands-on run).** Robust Windows ANSI/VT color detection (plain, no raw
     `\033[` leak, when unsupported); env-first owner+bystander tokens (masked, with a "from environment"
     message); required-choice framing when no spec; token re-entry from the scan review; and non-numeric
-    `{templated}` id discovery (`{book_title}` etc.). Tests: `test_cli_regressions.py`. **Note:** a further
-    round of interactive fixes (VT-enable hardening + strip-all-escapes; spec-less `verify` op-build) is
-    **PARKED uncommitted** — the interactive console still has open issues. See [`STATUS.md`](./STATUS.md)
-    "Uncommitted".
+    `{templated}` id discovery (`{book_title}` etc.). Tests: `test_cli_regressions.py`.
 - **`run` — non-interactive, programmatic (CI / scripting).** Subcommand `python run.py run --config
   <file.json> [--pretty]`. Reads ALL config from a JSON file (`mode` = `verify` OR `scan`; `base_url`;
   endpoint + ids OR a scan catalog source) + tokens from **env only**, and emits **structured JSON** to
@@ -64,8 +59,7 @@ Subcommands of `python run.py`: `verify · confirm · config · demo · target �
   interactive console's terminal pitfalls — the reliable path today. A thin input-adapter + output-serializer
   that reuses `_verify_external` (verify) and `run_scan` (scan) **unchanged**; tokens env-only + masked +
   never in the config file, collision guard fires, output redacted, NOT-DATA/error → non-zero exit. Code:
-  `backend/app/cli/run_command.py`; tests `test_run_command.py`. Full behavior: [`STATUS.md`](./STATUS.md)
-  "Non-interactive `run`".
+  `backend/app/cli/run_command.py`; tests `test_run_command.py`.
 
 ## Two open observations (pending director feedback — do not freeze the UX)
 1. **ASCII dash** — the header uses `-`, not `—` (the Windows console mangles the em-dash).
@@ -77,5 +71,4 @@ Subcommands of `python run.py`: `verify · confirm · config · demo · target �
    the credential goes — without any real token ever printed (extends the SecretStr redaction).
 
 ## Continuity
-Strategy / roadmap continuity lives with the director and the strategic node.
-**`STATUS.md` is the shared source of truth** for current state.
+Engine internals are documented in the sibling docs under `docs/`.

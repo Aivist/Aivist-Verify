@@ -1,317 +1,142 @@
-# ARCHITECTURE — Anti-Gravity AI Penetration Testing Platform
+# Aivist Verify — Architecture
 
-> Audience: a developer/agent taking over this codebase. This document is the
-> **engineering** entry point — it describes what the system is, how the pieces fit
-> together, the runtime/concurrency model, and the security posture. For the
-> **strategy/direction** entry point (thesis, non-goals, where it's going) start at
-> [`ROADMAP.md`](./ROADMAP.md). Every claim here is grounded in the current source
-> tree (see file references).
+> Audience: a developer reading the code for the first time. This describes what the system
+> **is** and how the pieces fit, grounded in the current source tree. It is a **local
+> command-line tool** — a BOLA/IDOR access-control *confirmation* engine. There is **no server,
+> HTTP API, or web UI**; `run.py` (the `aivist` command) is the only entry point.
 >
-> Companion docs:
-> - [`DATA_MODEL.md`](./DATA_MODEL.md) — database schema & ORM
-> - [`HUNTER_PIPELINE.md`](./HUNTER_PIPELINE.md) — AI Logic Hunter (HAR → analyze → persist)
-> - [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md) — differential fuzzing / verification engine
-> - [`DEEP_VERIFY.md`](./DEEP_VERIFY.md) — `deep_verifier.py` (AI write-then-read; shadow-mode Phase 7, not API-wired)
-> - [`API_REFERENCE.md`](./API_REFERENCE.md) — every HTTP endpoint
-> - [`DEVELOPMENT.md`](./DEVELOPMENT.md) — how to run & test
-> - [`TECH_DEBT.md`](./TECH_DEBT.md) — known issues / risks / TODO
+> Companion docs: [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md) (the differential oracle),
+> [`DEEP_VERIFY.md`](./DEEP_VERIFY.md) (the deep verifier + guard), [`PROJECT_OVERVIEW.md`](./PROJECT_OVERVIEW.md)
+> (orientation), [`../RESULTS.md`](../RESULTS.md) / [`../REPRODUCE.md`](../REPRODUCE.md) (the evidence).
 
 ---
 
-## 1. What this product is
+## 1. What it is
 
-A single-tenant, locally-run web application for **AI-assisted web application
-penetration testing**. Its core analysis subsystem, plus a passive feed, share
-one database and one frontend:
+You give Aivist Verify a **candidate** — an endpoint plus two identities (an attacker and an
+owner) — and it tells you, with a reproducible evidence chain, whether the attacker identity
+actually crosses a user boundary into the owner's resource. It is a *confirmation* layer, not a
+scanner and not a red-team tool, and it runs locally against targets you control.
 
-1. **AI Logic Hunter** — paste a raw HTTP request (or import a HAR file), Gemini
-   proposes business-logic exploit payloads (BOLA/IDOR, mass-assignment, etc.),
-   and a built-in **differential fuzzing engine** actively *verifies* whether
-   those payloads work against the live target. This Hunter → Verify path is the
-   product's novel, differentiated core.
+The whole value is that **a model can never talk it into a false positive.** That property is
+structural, and it lives in the two-layer verdict pipeline below.
 
-A second, **passive** front-end feeds the Hunter:
+## 2. The verdict pipeline — AI proposes, code disposes (downgrade-only)
 
-2. **Proxy Radar (Step 9)** — a supervised `mitmdump` subprocess acts as an
-   HTTP/S intercepting proxy. The operator points a browser at it; in-scope
-   dynamic flows are captured, scored, persisted to `captured_flows`, streamed
-   live to the UI over SSE, and can be promoted into the Hunter → Verify pipeline
-   with one click. It does not actively attack — it observes traffic the operator
-   generates.
+```
+ candidate (endpoint + attacker/owner identities)
+        │
+        ▼
+ [ AI proposes ]   the model reads the real baseline/attack traffic and proposes a candidate
+        │          verdict; it may request ONE extra evidence fetch, executed for real.
+        ▼
+ [ CODE disposes ] deterministic gates re-check the proposal against the attack's own runtime
+        │          bytes. They can only DOWNGRADE. A `verified` survives only if a structural
+        │          exemption, computed in code, actually holds.
+        ▼
+ verdict + evidence chain   (raw model verdict AND the gate's decision, recorded separately)
+```
 
----
+### Layer 1 — the differential oracle (`backend/app/services/fuzzer.py`)
 
-## 2. Tech stack
+`_differential_verdict(baseline, test_result, payload_instruction)` is deterministic. It sizes
+the baseline vs. attack responses and applies Rules 1–5 (server-error; BOLA/IDOR status+length
+divergence; mass-assignment; generic divergence; status change), then a **Veto** (a 200 OK whose
+body carries an explicit denial string is forced back to `failed`) and an **Escalation** (a
+`suspicious` row becomes `verified` only when sensitive keys appear in the attack response that
+were absent from the baseline). No model output is an input to this function.
 
-| Layer | Technology |
+### Layer 2 — the cross-resource guard + four exemption channels (`backend/app/services/deep_verifier.py`)
+
+`_apply_cross_resource_guard(...)` is the structural backstop. If a decisive verdict rests on a
+follow-up read-back of a **different concrete resource** than the one attacked, it is downgraded
+to `inconclusive`. The guard never upgrades. A cross-path `verified` is kept decisive **only**
+when one of four exemptions — each computed in code from the attack's own runtime parameters and
+the read-back bytes, never the model's say-so — holds:
+
+| Channel (engine constant) | Shape it confirms |
 |---|---|
-| Web framework | FastAPI (ASGI), served by uvicorn |
-| Validation | Pydantic v2 + `pydantic-settings` |
-| ORM | SQLAlchemy 2.0 **async** |
-| Database | SQLite via `aiosqlite` (WAL mode) |
-| HTTP client | `httpx.AsyncClient` (TLS verification disabled by design) |
-| Intercepting proxy | mitmproxy's `mitmdump` (subprocess, supervised by `ProxyManager`) |
-| AI | Pluggable LLM provider (`services/llm/`): **Gemini** default (`google-genai`) · OpenAI-compatible · Anthropic. See [`LLM_PROVIDERS.md`](./LLM_PROVIDERS.md). |
-| Frontend (canonical) | `preview_dashboard.html` — single-file React (CDN + Babel), Tailwind, light theme |
-| Frontend (legacy) | `frontend/` Vite + TypeScript app — **dark theme, mock data, NOT the product baseline** |
+| `write_record_readback_decisive` | cross-user write (a record carries the victim's id + this attack's written value) |
+| `state_readback_causally_decisive` | silent write / object-state (attacked object's own state now carries the injected value) |
+| `delete_readback_negative_assertion_decisive` | delete (pre-flight proved it existed; post-attack read shows it gone/soft-deleted) |
+| `state_jump_causally_decisive` | mass-assignment (every sent field jumped from a known pre-flight state to the injected value) |
 
-> **Frontend note:** `preview_dashboard.html` at the repo root is the canonical,
-> fully-wired UI. The `frontend/` Vite project is a historical/experimental
-> branch running on mock data; do not treat it as the source of truth unless a
-> migration is explicitly planned.
+A fifth shape, **read-type semantic equivalence**, is confirmed by a separate owner-view
+corroboration gate (D24): the attacker's response must match an independent re-fetch of the
+victim's object *as the victim*. The result object records the model's **raw** verdict
+(`ai_verdict_raw`) and the gate's decision (`guard_override`) as **separate fields**, so the
+evidence chain literally reads "the model proposed X; code decided Y." Neither the engine nor the
+CLI renderer (`backend/app/cli/confirm_render.py`, which reads the verdict from engine fields
+only) can manufacture a `verified`.
 
----
+## 3. The CLI surface (`run.py` → `backend/app/cli/`)
 
-## 3. Directory map
+`run.py` at the repo root is the `aivist` command (registered via `pyproject.toml`
+`[project.scripts]`). With no arguments it opens the interactive console; otherwise it dispatches
+subcommands:
+
+- **`verify`** — confirm one finding. *Lab mode* (`--caseset [--case]`) against a built-in
+  ground-truth caseset; *external mode* (`--target --spec --op [--auth]`) against a locally-run
+  real target. Code: `backend/app/cli/external_verify.py`.
+- **`scan`** — non-interactive auto-discovery + confirm; the model proposes candidates, code vets
+  each, and the same confirm runs on every one. Code: `backend/app/cli/scan_run.py`,
+  `scan_discovery.py`, `scan_ids.py`, `scan_report.py`.
+- **`run --config <json>`** — the fully non-interactive CI entry: JSON in, structured JSON to
+  stdout, tokens from env only. Code: `backend/app/cli/run_command.py`.
+- **`demo`** — zero-setup confirmation of a real cross-user write on the built-in lab.
+- **`target` / `config`** — save a reusable target file; set the AI provider/key/model.
+
+The interactive console is a presentation layer only (`backend/app/cli/console/`:
+`controller.py` holds the logic with I/O injected; `text_view.py` / `tui_view.py` are the stdlib
+and prompt_toolkit front-ends; `launcher.py` owns terminal-restore safety). It reuses the same
+engine calls — it structurally cannot manufacture a verdict.
+
+## 4. Supporting layers (inputs to the engine, not the verdict)
+
+- **Endpoint discovery** (`services/endpoint_catalog.py`) — builds a catalog from an OpenAPI
+  spec, a plain `METHOD /path` list, a captured-traffic file (`cli/scan_traffic.py`, HAR /
+  raw-HTTP), or a live mitmproxy capture (`cli/scan_capture.py` + `proxy/capture_addon.py`, a
+  standalone mitmdump addon with clean process-tree teardown).
+- **Token sourcing** — the three roles come from `TARGET_ATTACKER_TOKEN` / `TARGET_OWNER_TOKEN` /
+  `TARGET_BYSTANDER_TOKEN` (or a `--tokens-file` read at use-time, never persisted). Each becomes
+  a `SecretStr`, routed per-account; an `attacker == owner` collision is refused fail-closed
+  before the engine runs.
+- **Scope lock** (`services/scope.py`, `scope_psl.py`) — one audited host-scope policy; every
+  outbound request is scope-checked (fail-closed).
+- **AI provider seam** (`services/llm/`) — a small `get_provider()` factory over Gemini
+  (default), OpenAI-compatible, and Anthropic. Only the model *call* sits behind it; the verdict
+  logic is untouched. See [`LLM_PROVIDERS.md`](./LLM_PROVIDERS.md).
+- **DB/ORM as support, not verdict path** — `core/database.py` (SQLAlchemy async + aiosqlite) and
+  `models/scan.py` (the ORM) are imported by the fuzzer at module load, but the `verify` /
+  confirmation path does not depend on persisted state to reach a verdict; the DB is optional
+  support, not part of the adjudication.
+
+## 5. The two labs and their independent ground truth
+
+The engine is graded against two structurally different, self-contained vulnerable labs, each
+shipping its **own** ground-truth pytest suite (no API key required):
+
+- `vulnerable_target/` (integer ids) + `vulnerable_target/test_vulns.py`
+- `depot_target/` (UUID ids) + `depot_target/test_vulns.py`
+
+These suites prove — against the live target's real bytes, with no involvement from the verifier —
+that every case labelled REAL is genuinely exploitable cross-account and every case labelled
+SECURE genuinely resists it. They are the oracle: the engine is measured against them, never the
+reverse. The measurement harness (`scripts/measure/verdict_measure.py`) drives the real
+`execute_deep_verification` across both labs and writes the committed evidence artifact
+(`scripts/measure/results/sweep_highN.jsonl`). See [`../RESULTS.md`](../RESULTS.md).
+
+## 6. End-to-end flow
 
 ```
-anti gravity/
-├─ preview_dashboard.html         # CANONICAL frontend (single file, talks to :8000)
-├─ backend/
-│  ├─ .env                        # config (GEMINI_API_KEY, ...)
-│  ├─ run.py                      # uvicorn entrypoint (reload=True)
-│  ├─ requirements.txt            # runtime deps
-│  ├─ requirements-dev.txt        # pytest (dev-only)
-│  ├─ app/
-│  │  ├─ main.py                  # FastAPI app, lifespan create_all + schema check, CORS, routers
-│  │  ├─ core/
-│  │  │  ├─ config.py             # Pydantic Settings + validators (fail-fast)
-│  │  │  └─ database.py           # async engine, session factory, get_db, SQLite pragmas
-│  │  ├─ models/
-│  │  │  └─ scan.py               # VulnerabilityFinding, FuzzingRecord, CapturedFlow
-│  │  ├─ schemas/
-│  │  │  ├─ hunter.py             # Hunter + verify + HAR + batch schemas
-│  │  │  └─ proxy.py              # Step 9: ingest/projection/control/status contracts
-│  │  ├─ api/v1/
-│  │  │  └─ hunter.py             # /api/v1/hunter/* (Hunter, verify, HAR, batch, auth, proxy)
-│  │  ├─ proxy/
-│  │  │  └─ radar_addon.py        # Step 9: mitmdump addon (separate interpreter), Tier-1 filter + loopback POST
-│  │  ├─ cli/                     # Operator front door over the SAME engine (verdict logic untouched)
-│  │  │  ├─ external_verify.py    # `verify` real-target path (--target/--spec/--op/--auth); 3 red lines
-│  │  │  ├─ relogin.py            # per-account login + token auto-refresh (multi-step / CSRF / OAuth 2.0)
-│  │  │  ├─ confirm_render.py     # pure offline renderer (evidence chain + claim-tiering); no engine import
-│  │  │  ├─ scan_run.py           # `scan` onramp: catalog → AI candidates → 2× code fence → confirm → report
-│  │  │  ├─ scan_discovery.py     # AI candidate + tier-c collection proposal + the code fences
-│  │  │  ├─ scan_ids.py           # id sourcing tiers a/b/c (per-account harvest, never cross-account → SKIP)
-│  │  │  ├─ scan_report.py        # tier-grouped scan report (reuses confirm_render)
-│  │  │  └─ console/              # interactive REPL: config → target → verify / scan (controller, intro)
-│  │  └─ services/
-│  │     ├─ traffic_parser.py     # raw HTTP text → structured dict
-│  │     ├─ pruner.py             # heuristic exposure scoring / HAR noise filter (shared Tier-2 helpers)
-│  │     ├─ fuzzer.py             # differential fuzzing engine + auth custody (the core)
-│  │     ├─ proxy_pipeline.py     # Step 9: unified WriterService + SSEHub + ingest pipeline
-│  │     ├─ proxy_manager.py      # Step 9: mitmdump process state machine + OS-agnostic tree kill
-│  │     ├─ deep_verifier.py      # AI write-then-read verifier (shadow-mode Phase 7; not API-wired)
-│  │     └─ endpoint_catalog.py   # D18: OpenAPI → "METHOD /path [tags/operationId]" catalog + write-record queries (B-1)
-│  ├─ scripts/
-│  │  └─ deep_verify_live_check.py  # Manual Gemini+target check (not pytest)
-│  └─ tests/                      # pytest (761): pruner, step8_custody, scope (+enforcement),
-│                                 # step_d_hunter_link, api_endpoints, step9_proxy, verdict_oracle,
-│                                 # endpoint_catalog, d18_phase2_crosspath, d18_b22_guard, d18_b1_write_record,
-│                                 # d18_b1_shadow_integration, m1_evidence_anchoring, m12_object_scope,
-│                                 # m12_state_readback_exemption (M1.2A), m12b_state_gather (M1.2B),
-│                                 # m13_delete (M1.3 negative assertion),
-│                                 # m14_mass_assignment (M1.4 low-entropy state jump),
-│                                 # external_verify, console, scan_discovery, scan_ids, scan_run,
-│                                 # scan_relogin, scan_endpoints (the CLI verify/scan onramp)
-├─ vulnerable_target/            # Standalone ground-truth target (:8001), own DB, 31 pytest cases
-│  ├─ main.py
-│  ├─ test_vulns.py
-│  └─ benchmark/                  # BAC verification benchmark docs + RESULTS
-├─ scripts/audit/                # verdict-accuracy measurement harnesses/outputs (not product code)
-├─ README.md                     # thin root pointer into docs/
-└─ docs/                          # ALL project docs (ROADMAP, STATUS, PROJECT_OVERVIEW, this file, …)
+candidate ──► assemble op (endpoint + ids + tokens)  [cli/external_verify or scan_run]
+          ──► execute_deep_verification                [services/deep_verifier]
+                 ├─ baseline + attack sent (scope-locked, SecretStr auth)  [services/fuzzer]
+                 ├─ AI proposes a verdict (may request ONE follow-up)      [services/llm]
+                 └─ code disposes: differential oracle + cross-resource guard + 4 channels
+          ──► DeepVerificationResult (ai_verdict_raw, guard_override, anchors, evidence)
+          ──► render evidence chain                    [cli/confirm_render]
 ```
 
----
-
-## 4. Request → work flow (high level)
-
-### 4a. Hunter → Verify (the key path)
-```
-(optional) POST /hunter/ingest-har[-file]  → prune HAR → high-value endpoints
-POST /hunter/analyze            → parse raw HTTP + Gemini → report + automation_payloads
-POST /hunter/findings           → persist analysis as VulnerabilityFinding(source="hunter")   [Step D bridge]
-POST /hunter/verify/{id}        → BackgroundTasks: execute_differential_fuzzing(id)
-GET  /hunter/verify/{id}/results→ poll FuzzingRecord rows (verdicts + diffs)
-POST /hunter/verify/batch       → true-concurrent multi-endpoint fuzzing (shared auth custody)
-POST /hunter/auth/dry-run       → test an Identity Provider Anchor (re-auth) before a batch
-```
-
-> **AI deep verifier (shadow mode).** The fuzzer additionally has an
-> **AI-in-the-loop deep verifier** (`services/deep_verifier.py`) wired as an
-> additive, read-only **Phase 7** of `execute_parallel_fuzzing`. Gated by
-> `AI_DEEP_VERIFY_SHADOW` (default off; needs `AI_DEEP_VERIFY_ENABLED` too for a
-> live Gemini call), it re-checks `suspicious` records with a two-turn
-> write-then-read and **only logs** its verdict — it never changes the persisted
-> verdict or what the user sees. Unlike the rule oracle (`_differential_verdict`,
-> **3-value**: `verified`/`suspicious`/`failed`, unchanged), the AI verifier is
-> **4-value**: it adds `inconclusive` for a genuine evidence gap. A deterministic
-> structural **cross-resource guard** (B-2.2, `_apply_cross_resource_guard` /
-> `CROSS_RESOURCE_OVERRIDE_REASON`) downgrades a `verified`/`failed` that rests on a
-> follow-up read-back of a *different* path to `inconclusive`; the result preserves
-> the model's raw verdict and any override (`ai_verdict_raw` + `guard_override`,
-> with `ai_verdict` being the final post-guard value). Four **structural exemptions**
-> (all `verified`-only, cross-path-only, and mutually disjoint) can keep such a verdict decisive:
-> **B-1's write-record** match (`WRITE_RECORD_EXEMPTION_REASON`), **M1.2's object-state
-> read-back** (`STATE_READBACK_EXEMPTION_REASON`, gated on owner-identity ∧ caller!=owner ∧
-> **payload-causality** — the false-positive gate), and **M1.3's delete read-back**
-> (`DELETE_READBACK_EXEMPTION_REASON`, gated on a **pre-flight existence proof** ∧ a dual-track
-> **negative assertion** — physical 404/403 *or* a logical soft-delete status flip). The decisive
-> read-back is **code-gathered**, not model-chosen (`select_write_record_endpoint` /
-> `select_object_state_endpoint`); for a DELETE the code additionally takes a **pre-flight read
-> before the attack**, so an absence can be attributed to it. **M1.4** adds the **state-jump**
-> channel (`STATE_JUMP_EXEMPTION_REASON`) for LOW-ENTROPY writes (role/flag), where mere
-> presence of the written value proves nothing: it requires every field the attack sent to have
-> MOVED from a KNOWN pre-flight state (a present value, or proven-MISSING from a successful 2xx
-> read) to the injected value. **Routing:** whenever a pre-flight baseline exists for a
-> body-write the state-jump gate GOVERNS and payload-causality is suppressed — strictly fewer
-> exemptions, closing a mixed-field false positive. See
-> [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md) §Phase 7 and
-> [`DEEP_VERIFY.md`](./DEEP_VERIFY.md).
-
-### 4c. Proxy Radar (Step 9 — passive capture)
-```
-POST /hunter/proxy/start  → ProxyManager spawns mitmdump with radar_addon.py
-                            (env carries scope host, ingest URL, per-session token)
-browser → mitmdump:
-   Tier-1 (inline, <5ms): host-scope lock + static-asset veto (radar_addon.py)
-   in-scope dynamic flow → fire-and-forget loopback HTTP POST
-        → POST /hunter/proxy/internal-ingest  (loopback-only + token; include_in_schema=False)
-             → ProxyIngestPipeline bounded asyncio.Queue
-                  Tier-2 (async): calculate_exposure_score + detect_login_candidate
-                  → WriterService (single serialized SQLite writer) → captured_flows
-                  → SSEHub.publish(flow)
-GET /hunter/proxy/stream  → SSE fan-out of captured flows to the UI
-GET /hunter/proxy/flows   → recent captured flows (DB read projection)
-GET /hunter/proxy/cert    → download the mitmproxy CA cert (for HTTPS interception)
-POST /hunter/proxy/stop   → graceful stop + OS-agnostic process-tree kill
-```
-
-See [`HUNTER_PIPELINE.md`](./HUNTER_PIPELINE.md) and [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md) for the internals.
-
----
-
-## 5. Runtime & concurrency model
-
-- **One process, one event loop.** uvicorn runs the ASGI app. Long jobs are
-  offloaded with FastAPI `BackgroundTasks` (in-process, same loop), *not* a
-  separate queue/worker (no Celery/RQ/Redis).
-- **Fuzzing is fully async.** `fuzzer.py` runs concurrent `httpx` requests under
-  an `asyncio.Semaphore`, but **all database writes funnel through a single
-  consumer coroutine** draining an `asyncio.Queue`. This is the central design
-  rule: *parallelize the network, serialize the DB.*
-  → See the `async-session-custody` skill and [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md).
-- **Unified WriterService (Step 9).** The single-writer pattern was generalized
-  out of the fuzzer into an **app-wide** `WriterService` (in
-  `services/proxy_pipeline.py`): one long-lived consumer coroutine drains a queue
-  of `WriteJob` callables and executes them sequentially against one
-  `AsyncSession`. It is started in the lifespan and shared by **both** the proxy
-  ingest pipeline and the fuzzer. When the service is running the fuzzer forwards
-  its persistence jobs to it (so there is globally at most one SQLite writer);
-  when it isn't (e.g. an isolated unit test), the fuzzer falls back to an
-  ephemeral per-batch consumer. Net effect: *one writer for the whole process.*
-- **Proxy IPC is out-of-process (Step 9).** `mitmdump` runs in a **separate
-  Python interpreter**, so shared globals don't work. The `radar_addon.py` ships
-  captured flows back to FastAPI via a low-latency loopback HTTP POST to
-  `/hunter/proxy/internal-ingest`, which feeds an in-process `asyncio.Queue`.
-  `ProxyManager` supervises the child: a small state machine, bounded restarts
-  with backoff/circuit-breaker, and **OS-agnostic clean tree termination**
-  (`taskkill /F /T` on Windows, process-group signals on Unix) wired into the
-  lifespan so no orphan proxy survives a crash.
-- **SSE is non-blocking with cleanup (Step 9).** `SSEHub` fans out flows to
-  subscribers via **bounded per-client queues** (overflow drops oldest, never
-  blocks ingest), enforces a max-subscriber cap, emits heartbeats, and on client
-  disconnect catches `asyncio.CancelledError` to remove the queue — no memory
-  leak.
-- **SQLite tuning.** `database.py` sets `PRAGMA journal_mode=WAL`,
-  `busy_timeout=5000`, and `synchronous=NORMAL` so reads proceed during writes and
-  transient "database is locked" is waited out; writers wrap commits in a
-  `commit_with_retry` helper with exponential backoff.
-
----
-
-## 6. Configuration & startup
-
-- `backend/app/core/config.py` loads `backend/.env` via `pydantic-settings`.
-- `GEMINI_API_KEY` is optional; when missing, all AI calls return a graceful
-  Chinese "degraded" fallback string instead of crashing.
-- **AI deep-verify flags** (both default `False`, so off by default):
-  `AI_DEEP_VERIFY_ENABLED` (the `deep_verifier.py` component may run / call Gemini)
-  and `AI_DEEP_VERIFY_SHADOW` (the fuzzer runs the read-only Phase 7 shadow pass).
-  Both must be `True` for a live shadow second opinion. See
-  [`DEEP_VERIFY.md`](./DEEP_VERIFY.md).
-- On startup, `main.py`'s lifespan runs `Base.metadata.create_all`, then
-  `_verify_schema_integrity` (D1) — `create_all` **creates missing tables but
-  never alters existing ones**; the integrity check refuses to boot if an existing
-  DB is missing ORM columns (see [`DATA_MODEL.md`](./DATA_MODEL.md) §Migrations).
-- **Step 9 lifespan wiring:** the lifespan also **starts the `WriterService`**
-  (and the `ProxyIngestPipeline`/`SSEHub`) on startup, and after `yield`
-  **stops the proxy and drains/stops the writer** on shutdown, in that order, so
-  the proxy subprocess and the writer coroutine are torn down cleanly.
-- **Step 9 proxy config:** `config.py` adds `MITMDUMP_PATH` (validated; resolved
-  from PATH if blank), `PROXY_LISTEN_PORT`, and bounds — `PROXY_INGEST_QUEUE_MAX`,
-  `PROXY_SSE_MAX_CLIENTS`, `PROXY_SSE_CLIENT_QUEUE_MAX`, `PROXY_BODY_CAP`,
-  `PROXY_INGEST_MAX_BYTES`.
-- Health check: `GET /` returns status + the DB URL / log level.
-
----
-
-## 7. Security posture (read before deploying anywhere non-local)
-
-This is a **local pentesting tool**, and its defaults reflect that. The next
-agent must treat the following as deliberate-but-dangerous:
-
-| Aspect | Current state | Implication |
-|---|---|---|
-| API auth | **None.** No auth on any endpoint. | Anyone who can reach `:8000` can launch scans/fuzzing. Keep it bound to localhost. |
-| TLS verification | `verify=False` on every outbound `httpx` client. | Required for self-signed pentest targets; do not "fix" without understanding. |
-| CORS | Allows configured origins **plus `'null'`** (so the `file://` HTML preview works). | `'null'` origin is broad; tighten for any hosted deployment. |
-| Outbound scope | **Scope-lock** guards exist: the fuzzer's re-auth and the proxy radar (Tier-1 host lock) refuse to touch hosts outside the approved target. | This is the main guardrail against hitting third-party hosts (Stripe/AWS/etc.). Preserve it. |
-| Cookie header injection | `ScanRequest.cookie` validator rejects CRLF. | Minimal but present. |
-| Proxy internal ingest | `/hunter/proxy/internal-ingest` is **excluded from OpenAPI** (`include_in_schema=False`), guarded by an **application-level loopback check** (request client must be `127.0.0.1`/`::1`) **plus a per-session shared token** generated on each proxy start. Any failure → **404** (not 401/403, to avoid confirming the route exists). | Shared-socket design (no second uvicorn) — see note below. Do **not** put the app behind a reverse proxy that rewrites client IP without re-adding an equivalent guard. |
-| Proxy CA cert | `/hunter/proxy/cert` streams the generated mitmproxy CA so the operator can trust it for HTTPS interception. | The CA exists only after the proxy has run once; required for HTTPS capture. |
-
----
-
-## 8. Mental model for the next agent
-
-- The **fuzzer (`services/fuzzer.py`, ~1600 lines) is the heart** of the product
-  and the hardest file. Budget time there. It is heavily structured into
-  numbered "Sections 7.x / Step 8" matching the `async-session-custody` skill.
-- The **proxy radar (Step 9)** spans four files: `services/proxy_manager.py`
-  (process state machine + tree kill), `services/proxy_pipeline.py`
-  (`WriterService` + `SSEHub` + ingest pipeline), `proxy/radar_addon.py` (the
-  out-of-process mitmdump addon — Tier-1 filter), and the `/hunter/proxy/*`
-  routes. The addon imports **shared helpers from `pruner.py`**
-  (`is_static_path`, `host_in_scope`, `detect_login_candidate`) so Tier-1 and
-  Tier-2 share one definition of "static" / "in scope" / "login candidate".
-- Findings live in `vulnerability_findings` with a `source` discriminator column
-  (set manually; no SQLAlchemy polymorphic mapping). Since the nuclei subsystem
-  was removed, the AI Logic Hunter is the sole producer (`source="hunter"`).
-- **"Step D"** is the recently-added bridge that lets a Hunter analysis become a
-  fuzzable finding. Anything labelled Step D in code/comments is part of that
-  Hunter→Verify link.
-- **`deep_verifier.py`** is isolated from the fuzzer verdict path and has **no
-  HTTP route**. It is, however, invoked **read-only** by the fuzzer's additive
-  **shadow-mode Phase 7** (gated `AI_DEEP_VERIFY_SHADOW`, default off) — it logs an
-  AI second opinion on `suspicious` records but never changes a persisted verdict.
-  See [`DEEP_VERIFY.md`](./DEEP_VERIFY.md) and [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md)
-  §Phase 7. Manual script: `backend/scripts/deep_verify_live_check.py`. **Endpoint
-  discovery** is seeded by `services/endpoint_catalog.py` — `catalog_from_openapi`
-  emits `"METHOD /path"` entries that now carry the operation's genuine
-  `tags`/`operationId` when the spec declares them (enabling half of **B-1**);
-  `catalog_from_har` is a stub. `endpoint_catalog.py` also holds the **structural catalog
-  queries** the verifier uses to gather evidence deterministically instead of trusting the
-  model to pick it: `has_same_path_readback`, `select_write_record_endpoint` (B-1) and
-  `select_object_state_endpoint` (**M1.2(B)** — resolves the attacked object's own state
-  endpoint by resource-noun + object-scoping; the minimal slice of the future M2 graph).
-  The shadow pass reads its spec from
-  `settings.AI_DEEP_VERIFY_OPENAPI_SPEC` (via `getattr` — *not* a declared config
-  field, D21), else falls back to a same-resource placeholder. The benchmark attack
-  surface is the 36-route `vulnerable_target/` app (`app.openapi()` lists 32 path
-  templates; the +4 over the pre-M1.4 surface are the X-MASS membership/subscription routes). Two
-  known seams (auth-context, endpoint catalog/spec wiring) are tracked in
-  [`TECH_DEBT.md`](./TECH_DEBT.md) D18.
-- When something "doesn't persist," suspect the **stale-SQLite-schema** trap
-  documented in [`DATA_MODEL.md`](./DATA_MODEL.md) and [`DEVELOPMENT.md`](./DEVELOPMENT.md).
+It is a local CLI tool end to end: no listening socket, no authentication of its own, and it only
+ever acts as the identities whose tokens you supply, against the single target you point it at.

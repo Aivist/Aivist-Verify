@@ -118,7 +118,7 @@ Produces one of `verified` / `suspicious` / `failed`. Steps:
 ### Post-rules
 - **Veto** (anti false-positive): if verdict is verified/suspicious **and** test
   is 200 **and** body contains a `_VETO_KEYWORDS` denial string (`error`,
-  `forbidden`, `unauthorized`, `操作无权限`, `login`, …) → downgrade to `failed`.
+  `forbidden`, `unauthorized`, `操作无权限` (Chinese: "no permission"), `login`, …) → downgrade to `failed`.
 - **Escalation** (anti false-negative): if `suspicious` + 200 + tiny length-dev
   but a `_ESCALATION_KEYS` sensitive key (`email`, `token`, `password`, `ssn`,
   `admin`, `secret`, `credit_card`, `phone`) appears **only** in the test
@@ -268,10 +268,9 @@ model — measurement showed the model does not find it unaided (0/20, then 0/5)
 Why it exists: the rule oracle stalls at `suspicious` on **silent** cases (opaque
 `200 {"status":"ok"}` writes — Rule 2's ≤5% length-deviation branch) because it
 cannot observe a side effect from a single response. The deep verifier's
-write-then-read can. This is measured (see
-[`../vulnerable_target/benchmark/RESULTS.md`](../vulnerable_target/benchmark/RESULTS.md))
+write-then-read can. This is measured (see [`RESULTS.md`](../RESULTS.md))
 and, as of **D19** (default OFF), may also *promote* the rule oracle's `suspicious` band to `verified`
-when a deterministic code channel authorizes it — see [`TECH_DEBT.md`](./TECH_DEBT.md) D19.
+when a deterministic code channel authorizes it.
 
 Two seams feed it: the **auth-context** seam (live custody credential, else the
 finding's auth header) and the **endpoint-catalog** seam. Real endpoint discovery now
@@ -283,8 +282,7 @@ a `NotImplementedError` stub). `_shadow_endpoint_catalog` **merges** that real s
 with the placeholder when a spec source is provided (read from
 `settings.AI_DEEP_VERIFY_OPENAPI_SPEC` via `getattr` — a runtime-only seam, not a
 declared config field), else falls back byte-identically to the placeholder. Carrying
-semantics is the enabling half of **B-1** (see [`DEEP_VERIFY.md`](./DEEP_VERIFY.md) and
-[`TECH_DEBT.md`](./TECH_DEBT.md) D18/B-1).
+semantics is the enabling half of **B-1** (see [`DEEP_VERIFY.md`](./DEEP_VERIFY.md)).
 
 ## Related: `deep_verifier.py`
 
