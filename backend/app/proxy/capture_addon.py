@@ -2,8 +2,8 @@
 # CLI LIVE-capture mitmdump addon (HEAVY passive discovery, version B).
 #
 # Runs INSIDE mitmproxy's own interpreter (`mitmdump -s capture_addon.py`), a separate process from
-# the CLI. It is the file-writing counterpart of radar_addon.py — but with NONE of radar's async
-# coupling: it does NOT ship flows to a FastAPI ingest endpoint / WriterService / SQLite / SSE. It
+# the CLI. It writes captured traffic to a plain FILE — it does NOT ship flows to any server,
+# ingest endpoint, database, or SSE stream. It
 # appends each IN-SCOPE request to a plain FILE the LIGHT loader (scan_traffic) already reads, so the
 # heavy live-capture front reuses the light back half verbatim.
 #

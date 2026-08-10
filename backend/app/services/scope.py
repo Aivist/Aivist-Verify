@@ -10,11 +10,11 @@
 # ACTIVE side (a real outbound request): the `_send_request` chokepoint (`fuzzer.py`)
 # enforces the policy fail-closed and UNCONDITIONALLY — a LOCKED scope raises
 # `ScopeViolationError` before the socket opens and validates every redirect hop
-# against the same policy. The pre-send host checks (batch authorization in `fuzzer`
-# and `api/v1/hunter.py`, custody re-auth / dry-run, and the deep verifier's GET-only
+# against the same policy. The pre-send host checks (batch authorization in `fuzzer`,
+# custody re-auth / dry-run, and the deep verifier's GET-only
 # `fetch_owner_view`) all consult this same policy via `netloc_allowed` / `check`.
 # PASSIVE side (a flow the browser already originated): `pruner.host_in_scope` and the
-# mitmproxy `radar_addon` call `netloc_allowed` on this same policy, so the passive
+# mitmproxy capture addon call `netloc_allowed` on this same policy, so the passive
 # host decision is IDENTICAL to the active one (proven by `test_scope_enforcement.py`);
 # passive is host/port/wildcard only — the resolved-IP rebinding guard is an
 # active-connection concern.

@@ -99,7 +99,7 @@ def _concrete_path_in_catalog(method: str, concrete_path: str, catalog: List[str
 
 
 # ------------------------------------------------------------------------------
-# AI proposal (discovery) — mirrors api/v1/hunter's provider pattern; graceful on every failure.
+# AI proposal (discovery) — uses the shared LLM provider seam; graceful on every failure.
 # ------------------------------------------------------------------------------
 def _default_provider_factory() -> Any:
     # lazy import: the LLM service pulls provider SDKs; keep it out of module import for offline tests

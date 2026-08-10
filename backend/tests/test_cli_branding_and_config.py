@@ -24,9 +24,9 @@ from backend.app.cli.config_flow import run_config_flow, write_config, redacted_
 def _load_root_run():
     """Load the repo-root run.py by explicit PATH under a unique module name.
 
-    A bare `import run` is ambiguous: `backend/run.py` (the uvicorn server launcher) also
-    exists, and pytest puts `backend/` on sys.path, so `import run` would resolve to the
-    WRONG file. Loading by path pins the test to the CLI entry point we actually ship."""
+    A bare `import run` is ambiguous: pytest puts `backend/` on sys.path, so a bare
+    `import run` could resolve to the wrong module. Loading by path pins the test to the
+    CLI entry point we actually ship."""
     path = os.path.join(_REPO_ROOT, "run.py")
     spec = importlib.util.spec_from_file_location("_root_run_under_test", path)
     mod = importlib.util.module_from_spec(spec)

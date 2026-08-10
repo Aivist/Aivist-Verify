@@ -28,8 +28,8 @@ from backend.app.core.config import settings
 
 # ------------------------------------------------------------------ helpers
 def _load_cli_run():
-    """Load the repo-root run.py by PATH (a bare `import run` hits backend/run.py under
-    pytest — the D27 module-name collision). Pins the tests to the CLI entry we ship."""
+    """Load the repo-root run.py by PATH (a bare `import run` can hit another module under
+    pytest). Pins the tests to the CLI entry we ship."""
     path = os.path.join(_REPO_ROOT, "run.py")
     spec = importlib.util.spec_from_file_location("_root_run_console_test", path)
     mod = importlib.util.module_from_spec(spec)

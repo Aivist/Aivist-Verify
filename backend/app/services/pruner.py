@@ -63,8 +63,8 @@ _TELEMETRY_ROUTES: tuple = (
 # =============================================================================
 # Shared deterministic helpers (single source of truth)
 #
-# Reused by: HAR ingestion (api/v1/hunter.py) and the Step 9 proxy radar —
-# both the mitmdump Tier-1 hook (addon) and the FastAPI Tier-2 pipeline — so the
+# Reused by the CLI's traffic discovery (scan_traffic) and the mitmdump capture addon
+# (proxy/capture_addon.py) — so the
 # scope lock, static veto, and login-endpoint detection never drift between
 # subsystems.
 # =============================================================================
