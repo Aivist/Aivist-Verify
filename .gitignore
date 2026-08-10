@@ -1,5 +1,5 @@
 # ==============================================================================
-# Anti-Gravity — Git ignore rules
+# Aivist Verify — Git ignore rules
 # ==============================================================================
 
 # --- Secrets / local config (NEVER commit) ---
@@ -64,3 +64,17 @@ scripts/audit/shadow_*.py
 # public remote. A .gitignore rule does not untrack an already-tracked file, so files
 # moved in here are also `git rm --cached`-ed in the same commit (they remain on disk).
 docs/handoffs/
+
+# --- Excluded from the public release (kept locally, not uploaded) ---
+# Internal / pre-publication docs and docs tied to the removed FastAPI server layer.
+# These were `git rm --cached`-ed (they remain on disk). A .gitignore rule does not
+# untrack an already-tracked file, so the cache removal is what actually excludes them.
+docs/API_REFERENCE.md
+docs/HUNTER_PIPELINE.md
+docs/AUDIT.md
+docs/audit/
+docs/STATUS.md
+docs/ROADMAP.md
+docs/TECH_DEBT.md
+docs/DATA_MODEL.md
+.agents/skills/
