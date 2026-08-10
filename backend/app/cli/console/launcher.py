@@ -92,7 +92,7 @@ def _guarded_run(controller: ConsoleController, read_line: Callable[[], str],
 
 
 def launch_console(*, engine: Optional[Callable] = None) -> int:
-    """Entry point for `lanivist` with no args. Picks TUI or text and runs it safely."""
+    """Entry point for `aivist` with no args. Picks TUI or text and runs it safely."""
     try:
         mode = _select_mode()
         if mode == "tui":

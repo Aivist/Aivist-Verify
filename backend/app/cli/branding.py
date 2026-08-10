@@ -20,19 +20,19 @@ from __future__ import annotations
 import os
 
 # TODO(naming): brand name pending director sign-off — single point of change.
-BRAND_NAME = "lanivist"  # PROVISIONAL — umbrella name not finalized; single point of change.
+BRAND_NAME = "aivist"  # PROVISIONAL — umbrella name not finalized; single point of change.
 
 # The locked product suffix. Deliberately a plain constant, not derived/parameterized.
 VERIFY_SUFFIX = "verify"
 
 
 def command_name() -> str:
-    """The console command a user types (also argparse `prog`), e.g. 'lanivist'."""
+    """The console command a user types (also argparse `prog`), e.g. 'aivist'."""
     return BRAND_NAME
 
 
 def display_name() -> str:
-    """Human-readable brand, e.g. 'Lanivist'."""
+    """Human-readable brand, e.g. 'Aivist'."""
     return BRAND_NAME.capitalize()
 
 
@@ -42,7 +42,7 @@ def product_name() -> str:
 
 
 def verify_command() -> str:
-    """How the verify tool is invoked, e.g. 'lanivist verify'."""
+    """How the verify tool is invoked, e.g. 'aivist verify'."""
     return f"{command_name()} {VERIFY_SUFFIX}"
 
 

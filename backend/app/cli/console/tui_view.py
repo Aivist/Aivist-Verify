@@ -23,7 +23,7 @@ from backend.app.cli.console.intro import COMMANDS
 
 def make_tui_console(engine: Optional[Callable] = None) -> Tuple[ConsoleController, Callable[[], str]]:
     # TWO sessions on purpose: `is_password=True` PERSISTS on a prompt_toolkit session, so a single
-    # shared session leaks masking onto the NEXT prompt (the `lanivist>` command, a later field) after a
+    # shared session leaks masking onto the NEXT prompt (the `aivist>` command, a later field) after a
     # masked token entry — rendering it as `****`. Masked input gets its OWN session; the main session is
     # NEVER masked (and every main call passes is_password=False explicitly, belt-and-suspenders).
     session: PromptSession = PromptSession()          # commands + normal fields, NEVER masked

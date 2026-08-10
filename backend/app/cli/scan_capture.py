@@ -274,7 +274,7 @@ def run_scan_capture_from_file(
         return 2
 
     port = capture_port or settings.PROXY_LISTEN_PORT
-    fd, flow_file = tempfile.mkstemp(prefix="lanivist-capture-", suffix=".http")  # OUTSIDE the repo
+    fd, flow_file = tempfile.mkstemp(prefix="aivist-capture-", suffix=".http")  # OUTSIDE the repo
     os.close(fd)                                         # the child writes it; we only read it later
     try:
         try:

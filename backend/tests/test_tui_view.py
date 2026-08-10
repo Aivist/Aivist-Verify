@@ -2,7 +2,7 @@
 # TUI view — two view-layer contracts pinned offline (Linux-verifiable; no real TTY needed):
 #
 #  1. MASKING (prior commit): `is_password=True` PERSISTS on a prompt_toolkit PromptSession, so a shared
-#     session leaked masking onto the NEXT prompt after a hidden token entry (`lanivist>`, later fields
+#     session leaked masking onto the NEXT prompt after a hidden token entry (`aivist>`, later fields
 #     rendered `****`). Masked input has its OWN session; the main session is never masked.
 #  2. ANSI WRAP (this commit): the controller paints labels with raw ANSI SGR codes, and prompt_toolkit
 #     renders a raw `str` message LITERALLY (it does not interpret embedded ANSI), so on conhost the codes
@@ -44,9 +44,9 @@ def test_tui_wraps_every_prompt_in_ansi_and_keeps_masking_isolated(monkeypatch):
     assert main_session is not secret_session                # masked input on a DEDICATED session
 
     # Replay the transcript order that exposed both bugs: a masked token, THEN the next command at
-    # `lanivist>`, THEN a later normal field in the same flow.
+    # `aivist>`, THEN a later normal field in the same flow.
     controller.secret_prompt("Attacker token (input hidden): ")   # _secret  -> masked
-    read_line()                                                   # the `lanivist>` command (e.g. quit)
+    read_line()                                                   # the `aivist>` command (e.g. quit)
     controller.prompt("Owner id: ")                               # a later normal field
 
     # (1) ANSI WRAP: EVERY message handed to prompt_toolkit is an ANSI instance (never a raw str), so no

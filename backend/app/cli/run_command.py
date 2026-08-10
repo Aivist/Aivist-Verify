@@ -1,5 +1,5 @@
 # ==============================================================================
-# `lanivist run --config <file.json>` — a NON-INTERACTIVE, programmatic entry point for CI / scripting.
+# `aivist run --config<file.json>` — a NON-INTERACTIVE, programmatic entry point for CI / scripting.
 #
 # Zero interaction, zero color, zero getpass, zero per-field prompts: it reads ALL config from a JSON
 # file, tokens from ENV ONLY, runs the SAME engine the interactive CLI runs, and emits a STRUCTURED JSON

@@ -1,7 +1,7 @@
 # ==============================================================================
-# Interactive console for Lanivist — the "download, configure, use" front door.
+# Interactive console for Aivist — the "download, configure, use" front door.
 #
-# A PRESENTATION LAYER only. `lanivist` with no args opens this console; it wraps the
+# A PRESENTATION LAYER only. `aivist` with no args opens this console; it wraps the
 # EXISTING machinery (run_external_verify, the config flow, confirm_render) and does
 # NOT touch the engine, verdict logic, four channels, guard, D24, D19,
 # fuzzer._differential_verdict, or scope.py enforcement. The verdict still comes only

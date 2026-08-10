@@ -43,7 +43,7 @@ httpx>=0.27.0,<0.29.0
 # Multipart form data parsing (required by FastAPI UploadFile / Form)
 python-multipart>=0.0.9,<0.1.0
 
-# Interactive console (`lanivist` with no args) — a mature, cross-platform terminal
+# Interactive console (`aivist` with no args) — a mature, cross-platform terminal
 # library that handles Windows Terminal AND classic conhost. Used line-oriented (no
 # alt-screen) for safe terminal restoration; provides masked input. Pure-Python, only
 # pulls `wcwidth` — deliberately NOT `rich`/`textual` (keeps the dependency surface lean).

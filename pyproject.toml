@@ -14,7 +14,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lanivist-verify"
+name = "aivist-verify"
 version = "0.1.0"
 description = "A local, single-tenant BOLA/IDOR access-control verification engine (CLI front door)."
 requires-python = ">=3.11"
@@ -22,7 +22,7 @@ dynamic = ["dependencies"]
 
 [project.scripts]
 # key = the console command the user types; value = <module>:<callable> entry.
-lanivist = "run:main"
+aivist = "run:main"
 
 [tool.setuptools]
 # The flat top-level run.py is the entry module. The `backend` package is NOT

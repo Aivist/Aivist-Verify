@@ -1,5 +1,5 @@
 # ==============================================================================
-# `lanivist run --config <file.json>` — the non-interactive, programmatic entry point. Fully coverable
+# `aivist run --config<file.json>` — the non-interactive, programmatic entry point. Fully coverable
 # (unlike the interactive path): a JSON config + env tokens -> the SAME engine -> structured JSON out.
 # Proves: verify + scan modes produce correct JSON; tokens are ENV-ONLY (missing -> JSON error, never a
 # prompt; attacker==owner refused; never read from the config file; never appear in the JSON output);

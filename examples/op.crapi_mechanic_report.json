@@ -1,5 +1,5 @@
 {
-  "_comment": "Real --op template: crAPI query-string IDOR (hand-verified). Attacker reads report_id=7 (their own); the attack swaps only that query id to the victim's 6. Run: `lanivist verify --target <base_url> --spec <crapi-openapi.json> --op examples/op.crapi_mechanic_report.json`. Tokens are prompted (masked), never in this file.",
+  "_comment": "Real --op template: crAPI query-string IDOR (hand-verified). Attacker reads report_id=7 (their own); the attack swaps only that query id to the victim's 6. Run: `aivist verify --target <base_url> --spec <crapi-openapi.json> --op examples/op.crapi_mechanic_report.json`. Tokens are prompted (masked), never in this file.",
   "method": "GET",
   "baseline_path": "/workshop/api/mechanic/mechanic_report?report_id=7",
   "body": null,
