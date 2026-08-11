@@ -1,4 +1,4 @@
-<!-- Drop your logo at docs/assets/logo.png (or update the path below). -->
+<!-- Logo lives at docs/assets/logo.png -->
 <p align="center">
   <img src="docs/assets/logo.png" alt="Aivist Verify" width="140"/>
 </p>
@@ -6,97 +6,59 @@
 <h1 align="center">Aivist Verify</h1>
 
 <p align="center">
-  <em>A BOLA/IDOR access-control confirmation engine — <strong>code</strong> adjudicates every verdict, not the model, and each confirmation ships with a reproducible evidence chain.</em>
+  <strong>A BOLA/IDOR access-control confirmation engine that a model cannot talk into a false positive.</strong>
+</p>
+
+<p align="center">
+  The AI proposes. <strong>Code</strong> decides — and the code can only ever say <em>no</em>.
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+"/>
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT"/>
-  <img src="https://img.shields.io/badge/status-pre--release-orange" alt="Status: pre-release"/>
+  <img src="https://img.shields.io/badge/false%20positives-0%2F300-brightgreen" alt="0 false positives on the benchmark"/>
 </p>
 
 ---
 
-Aivist Verify doesn't just flag candidates — it **confirms** whether one user can actually reach another user's resource. Every verdict is adjudicated by **code, not the model**: the AI can *propose* a finding, but a deterministic, **downgrade-only** gate decides what counts as a real violation. So the model can never talk the tool into a false positive, and every confirmation carries a **reproducible evidence chain you can re-run yourself**.
+Most access-control tools hand you a pile of *maybe* — suspected IDORs you still have to verify by hand, at 2 a.m., one by one. **Aivist Verify hands you proof, or an honest "no."** You give it a candidate — one endpoint, two identities — and it tells you whether the attacker actually crosses a user boundary into the victim's resource, with a reproducible evidence chain attached.
 
-It runs **locally**, from the command line, against **authorized targets you control**.
+The part that matters: **the verdict is decided by code, not the model.** The AI reads the traffic and *proposes*; a deterministic, downgrade-only gate *disposes*. On a 430-run benchmark, the model's raw output asked to mark a **secure** endpoint `verified` **79 times** — and the code gate refused **every single one of them**. Zero false positives. Not "fewer." Zero — by construction, on a benchmark you can re-run yourself in one command.
 
-## What it is — and what it isn't
+## Why this exists
 
-**It is** a *confirmation* engine for Broken Object-Level Authorization (BOLA / IDOR — OWASP API Security Top 10, and Broken Access Control in the OWASP Top 10). You point it at a candidate — an endpoint plus two identities — and it tells you, with proof, whether the attacker identity actually crosses a user boundary into the owner's resource.
+Two kinds of tools already sit around this problem, and both leave the same gap:
 
-**It is not:**
+- **Open-source scanners** are good at surfacing *maybe*. They flag suspected IDORs and — often in their own README — hand the actual confirmation back to you.
+- **Closed SaaS validators** do run exploitability checks, but the logic is a black box, the finding is a report you can't independently reproduce, and "fewer false positives" is a statistical hope, not a structural guarantee.
 
-- **Not a scanner.** Scanners are good at surfacing *maybe*. They crawl and flag suspected IDORs that you still have to verify by hand. Aivist Verify is the layer *after* that: feed it a candidate, and it returns a confirmed verdict with evidence — or an honest "not confirmed." It doesn't add to the pile; it clears it.
-- **Not a red-team / exploitation tool.** It confirms reachability across a user boundary for blue-team verification. It is not built to weaponize or mass-exploit.
-- **Not a magic box.** It runs against locally-hosted targets, it has no authentication of its own, and it only ever tests what you point it at, with credentials you supply. See [Scope & safety](#-scope--safety).
+Aivist Verify is the layer between them: **open-source, local, and structurally incapable of emitting a false `verified`** — with an evidence chain any reviewer can replay. It didn't start here. It started as a full AI penetration-testing *platform* — a server, an API, a dashboard. Somewhere in the build it became obvious that the world doesn't need another thing that surfaces *maybe*; it needs something that *confirms*. So the entire server layer got deleted, and everything collapsed onto the one part with real value: the confirmation engine. What's left is small on purpose.
 
-### Why this exists
-
-Two kinds of tools sit around this problem, and both leave a gap:
-
-- **Open-source scanners** flag candidates and — often explicitly — leave confirmation to you. A list of *suspected* IDORs is still a day of manual verification.
-- **Closed SaaS validators** do run exploitability checks, but the logic is a black box, the finding is a report you can't independently reproduce, and "fewer false positives" is a statistical promise, not a structural guarantee.
-
-Aivist Verify occupies the gap between them: **open-source and local**, a **structural** zero-false-positive design (the code gate can only *downgrade* the model's opinion, never invent a `verified`), and an **evidence chain any reviewer can re-run**. That combination — not any single feature — is the point.
-
-## How it works — the moat
-
-Confirmation runs in two layers, and **both are adjudicated by code**:
+## How it works — AI proposes, code disposes
 
 ```
  candidate (endpoint + attacker/owner identities)
         │
         ▼
- [ AI proposes ]   the model reads the traffic and proposes a candidate verdict
-        │           (it can request ONE extra piece of evidence, executed for real)
+ [ AI proposes ]   the model reads the real baseline/attack traffic and proposes a candidate
+        │          verdict; it may request ONE extra evidence fetch, executed for real.
         ▼
- [ CODE disposes ] a deterministic gate re-checks the proposal against the
-        │           attack's own runtime bytes. It can ONLY DOWNGRADE:
-        │           a `verified` survives only if a structural exemption,
-        │           computed in code, actually holds. The model's say-so is
-        │           never one of the inputs.
+ [ CODE disposes ] deterministic gates re-check the proposal against the attack's own runtime
+        │          bytes. They can only DOWNGRADE. A `verified` survives only if a structural
+        │          exemption, computed in code, actually holds. The model's opinion is not an input.
         ▼
- verdict  +  reproducible evidence chain
- (what the attacker sent, what the owner-view read,
-  which code rule decided, and a curl you can replay)
+ verdict + evidence chain   (the model's RAW verdict AND the gate's decision, recorded separately)
 ```
 
-The result records the model's **raw** verdict *and* the code gate's decision **separately** — so the evidence chain literally reads "model said X, code decided Y." The verdict a user sees is never manufactured by the model, and never manufactured by the CLI.
+This is not "AI is useless, code does the real work." It's the opposite: **you need both, and most tools get the split wrong.** Only the model can read messy, business-specific traffic and pick out which of a thousand endpoints is *worth checking* — code can't guess that. And only code can then rule on whether the access *actually* crossed a user boundary — because a model, left to decide, will state a false positive with total confidence. The model is the prospector that smells where the gold might be; the code is the assay that never mistakes pyrite for gold. Aivist Verify puts each where it belongs: **the AI has range, the code has the final word, and the final word can only ever be to take a claim away** — never to invent one. That is why a model can't talk it into a false positive.
 
-**Why "downgrade-only" matters, measured:** across every SECURE control case in the benchmark below, the model's raw output asked for `verified` on **79 runs** — and the code gate refused **every single one**. On the read-semantic shape it flipped to `verified` once where, without the gate, it *would have been a false positive*. The line is held by code, not by the model happening to behave.
+Every result records the model's **raw** verdict (`ai_verdict_raw`) *and* the gate's decision (`guard_override`) as **separate fields**, so the evidence chain literally reads "the model proposed X; code decided Y." Neither the engine nor the CLI can manufacture a `verified`.
 
-## Quickstart
+## See it — a real confirmation, unedited
 
-You need Python 3.11+ and a Gemini API key (`GEMINI_API_KEY`). Then:
-
-```bash
-pip install -e .          # installs the `aivist` command (see Installation below)
-aivist config             # choose provider, paste your API key (hidden), pick a model
-aivist demo               # zero-setup: confirm a BOLA on the built-in lab — no Docker, no target, no tokens
-```
-
-`aivist demo` spins up a built-in vulnerable lab, runs a real cross-user attack with two identities, and prints a confirmed verdict with its full evidence chain. It's the fastest way to see exactly what a confirmation looks like — and because it's built-in, anyone who clones the repo can reproduce it.
-
-To confirm on your **own** locally-running target, the shortest path is the interactive console:
-
-```bash
-aivist                    # opens the console; `demo`, `help`, `config`, `target`, `targets`, `verify`, `scan`
-```
-
-…or drive it non-interactively (see [Installation & full usage](#installation--full-usage)).
-
-## Example output
-
-Here is a real `aivist demo` run — a confirmed cross-user write on the built-in lab. Note that the verdict is authorized by a **deterministic code channel**, and the model's raw opinion is explicitly recorded as *not* the basis:
-
-<details>
-<summary>Full <code>aivist demo</code> output (verbatim)</summary>
+`aivist demo` boots a built-in vulnerable lab and confirms a real cross-user write end to end — no Docker, no target, no tokens. This is the actual, unmodified render:
 
 ```text
-Aivist Verify demo - confirming a real BOLA on the built-in lab (no Docker, no target, no tokens to supply).
-Booting a local vulnerable app and confirming one cross-user access bug end-to-end...
-
 [CONFIRMED]  cross-user write (BOLA) - POST /api/users/1/display-name
   Verdict: verified  (confirming channel: write-record read-back)  (guard_override=write_record_readback_decisive)
   Basis: a deterministic code gate authorized this (write-then-independent-read proof), not the model's opinion alone.
@@ -111,7 +73,7 @@ Booting a local vulnerable app and confirming one cross-user access bug end-to-e
        POST http://127.0.0.1:8001/api/users/2/display-name
        Content-Type: application/json
        Authorization: ***REDACTED***
-       Body: {"display_name": "vm-1-be010bcd9f"}
+       Body: {"display_name": "vm-1-eae9d9d20e"}
     2. Attack response received:
        -> HTTP 200 | Content-Length: 15
        {"status":"ok"}
@@ -126,7 +88,7 @@ Booting a local vulnerable app and confirming one cross-user access bug end-to-e
     curl -X POST 'http://127.0.0.1:8001/api/users/2/display-name' \
     -H 'Content-Type: application/json' \
     -H 'Authorization: <REDACTED>' \
-    --data '{"display_name": "vm-1-be010bcd9f"}'
+    --data '{"display_name": "vm-1-eae9d9d20e"}'
   So what / Next step:
     A real cross-user access bug: the attacker could write to the victim's
     object. It is reproducible (the request above).
@@ -134,133 +96,139 @@ Booting a local vulnerable app and confirming one cross-user access bug end-to-e
   [lab oracle] lab label=REAL (expects verified); engine said 'verified' - AGREES. (informational only; NEVER an input to the verdict)
 ```
 
-</details>
+And when the attacker gains nothing, the tool says so: a run with no cross-user effect returns **`[REFUTED]`** ("the code gate held the line — no cross-user effect confirmed"); a run that gets rate-limited or hits an expired token returns **`[NOT DATA]`** and claims **no verdict at all** — neither safe nor vulnerable. It refuses to guess. That refusal is the whole point.
 
-> The lab's display-name value (`vm-1-…`) is a fresh high-entropy token generated per run, so your own `aivist demo` will show a different one — the labels and channel are what stay fixed.
+## The proof — 430 runs, zero false positives
 
-And — just as important — the tool is honest when it *doesn't* confirm. A run where the attacker gains nothing returns `[REFUTED]` — verdict `inconclusive`, "the code gate held the line — no cross-user effect confirmed." A run that gets rate-limited or hits an expired token returns `[NOT DATA]` and claims **no verdict at all** — it is neither safe nor vulnerable. The engine refuses to guess.
-
-## Installation & full usage
-
-### Install
-
-```bash
-git clone <your-repo-url>
-cd aivist-verify
-pip install -e .
-```
-
-This registers the `aivist` command. Configuration (your API key and saved targets) lives under `~/.aivist/`. Set your model provider key once with `aivist config`, or export `GEMINI_API_KEY`.
-
-### The subcommands
-
-**`aivist verify` — confirm a single finding.** Two modes:
-
-```bash
-# LAB mode: confirm against a built-in caseset (ground-truth benchmark)
-aivist verify --caseset <caseset.json>           # confirm every case in the set
-aivist verify --caseset <caseset.json> --case <id>
-
-# EXTERNAL mode: a locally-run REAL target = base URL + OpenAPI spec + one operation
-aivist verify \
-  --target http://localhost:8888 \
-  --spec   ./openapi.json \
-  --op     ./operation.json          # {method, baseline_path, body, payload, shape}
-# optional: --auth ./login.json for automatic re-login instead of static tokens
-```
-
-**`aivist target` — save a reusable target as one editable file.**
-
-```bash
-aivist target --dump-template ./mytarget.txt   # write a fully-commented form
-# fill it in, then:
-aivist target --from-file ./mytarget.txt        # validates ALL fields at once; saves nothing if any is invalid
-```
-
-**`aivist scan` — non-interactive auto-discovery + confirm.** Works from an OpenAPI spec *or* spec-less:
-
-```bash
-# from a saved target file; tokens from env (or --tokens-file)
-aivist scan --target-file ./mytarget.txt
-
-# SPEC-LESS: give it an endpoints list, a captured-traffic file, or a live proxy
-aivist scan --target-file ./mytarget.txt --endpoints-file ./endpoints.txt
-aivist scan --target-file ./mytarget.txt --traffic-file   ./capture.har     # browser/Burp HAR or raw-HTTP dump
-aivist scan --target-file ./mytarget.txt --capture                          # live mitmdump proxy (needs mitmproxy)
-
-# surface "broken for all" findings for human review instead of suppressing them
-aivist scan --target-file ./mytarget.txt --assert-owner-only
-```
-
-**`aivist run --config` — the professional, fully non-interactive entry (CI / scripting).** JSON in, structured JSON to stdout. **This is the main path for automated use** — no prompts, tokens read from the environment only:
-
-```bash
-aivist run --config ./config.json            # emits machine-readable JSON on stdout
-aivist run --config ./config.json --pretty   # + a short human summary on stderr (stdout stays pure JSON)
-```
-
-The config selects `mode=verify|scan`, the base URL, and the endpoint/ids or scan catalog source. **Tokens are never read from the config file** — only from the environment. Run `aivist run --help` for the exact schema.
-
-### Tokens
-
-All three roles are read from environment variables (or, for `scan`, an optional `--tokens-file` that is read at use-time and never persisted):
-
-```bash
-export TARGET_ATTACKER_TOKEN=...    # the attacker identity (the attack is sent as this account)
-export TARGET_OWNER_TOKEN=...       # the victim/owner (re-read only, as the owner)
-export TARGET_BYSTANDER_TOKEN=...   # a third account that does NOT own the resource (tells a shared resource from a real leak)
-```
-
-The interactive console reads these automatically and shows a masked "from environment" receipt; it never echoes or logs a token.
-
-## Zero-false-positive evidence — and how to reproduce it
-
-The headline claim is *reproducible zero-false-positive confirmation*. That claim is only worth as much as your ability to check it, so here is the evidence and exactly how to re-run it yourself.
-
-**The benchmark (controlled, not real-world).** Five confirmation shapes — cross-user write, read-type semantic equivalence, silent-write / object-state, delete / negative-assertion, and mass-assignment / low-entropy state-jump — are exercised against **two structurally different self-contained vulnerable labs** (`vulnerable_target/` and `depot_target/`), driven by a **real** `gemini-2.5-pro` loop, with **N=20** SAFE/control and **N=10** VULN per case, freshly seeded every run.
+Five confirmation shapes — cross-user write, read-type semantic equivalence, silent-write / object-state, delete / negative-assertion, and mass-assignment / low-entropy state-jump — run against **two structurally different, self-contained vulnerable labs** (integer ids and UUID ids), driven by a **real** `gemini-2.5-pro` loop, freshly seeded every run:
 
 | | Result |
 |---|---|
-| SAFE / control runs → **final `verified`** | **300 → 0** — zero false positives |
-| VULN runs → **final `verified`** | **130 → 130** — every real vulnerability caught, via its expected channel |
+| SECURE / control runs → final `verified` | **300 → 0** — zero false positives |
+| Real-vulnerability runs → final `verified` | **130 → 130** — every planted flaw caught, via its expected channel |
 | Usable runs | **430 / 430**, zero degraded |
-| Model raw-said `verified` on SAFE, refused by the code gate | **79 / 79** |
+| Times the model's raw output asked to `verified` a SECURE endpoint — and the gate refused | **79 / 79** |
 
-These are **controlled lab targets, freshly seeded** — a benchmark that proves the *code gate is not moved by the model*, **not** a tally of real-world kills. Real-world clean confirmations are genuinely rare; this project's honest headline is **discriminative power + a zero-false-positive discipline**, not a screen full of `CONFIRMED`.
+Read that last row again: on **79** separate runs the AI wanted to confirm a vulnerability that wasn't there, and the code gate stopped all 79 from ever reaching a `verified`. That is the moat, measured.
 
-**Three independently verifiable layers** (you don't have to trust a transcript):
+**This is a controlled benchmark on two labs — not a tally of real-world kills.** Clean real-world confirmations are genuinely rare, and this project's honest headline is *discriminative power plus a zero-false-positive discipline*, not a screen full of `CONFIRMED`. Every number above is recomputed from the committed artifact `scripts/measure/results/sweep_highN.jsonl` — see [`RESULTS.md`](./RESULTS.md).
+
+## Quickstart
+
+Python 3.11+ and a Gemini API key (`GEMINI_API_KEY`):
+
+```bash
+pip install -e .          # installs the `aivist` command
+aivist config             # choose provider, paste your API key (hidden), pick a model
+aivist demo               # confirm a real BOLA on the built-in lab — zero setup
+```
+
+Then point it at your **own** locally-running target — the shortest path is the interactive console:
+
+```bash
+aivist                    # opens the console: demo · config · target · verify · scan
+```
+
+…or drive it non-interactively (below).
+
+## Installation & full usage
+
+```bash
+git clone git@github.com:Aivist/Aivist-Verify.git
+cd Aivist-Verify
+pip install -e .          # registers the `aivist` command; config lives under ~/.aivist/
+```
+
+**`aivist verify` — confirm one finding.**
+
+```bash
+# LAB mode: confirm against a built-in ground-truth caseset
+aivist verify --caseset <caseset.json> [--case <id>]
+
+# EXTERNAL mode: a locally-run real target = base URL + OpenAPI spec + one operation
+aivist verify --target http://localhost:8888 --spec ./openapi.json --op ./operation.json
+# optional: --auth ./login.json for automatic re-login instead of static tokens
+```
+
+**`aivist scan` — non-interactive auto-discovery + confirm.** From an OpenAPI spec *or* spec-less:
+
+```bash
+aivist scan --target-file ./mytarget.txt
+aivist scan --target-file ./mytarget.txt --endpoints-file ./endpoints.txt   # plain METHOD /path list
+aivist scan --target-file ./mytarget.txt --traffic-file   ./capture.har     # browser/Burp HAR or raw-HTTP
+aivist scan --target-file ./mytarget.txt --capture                          # live mitmproxy capture
+aivist scan --target-file ./mytarget.txt --assert-owner-only                # surface "broken for all" for review
+```
+
+**`aivist run --config <json>` — the fully non-interactive entry (CI / scripting).** JSON in, structured JSON to stdout, tokens from the environment only — no prompts. **This is the main path for automated use:**
+
+```bash
+aivist run --config ./config.json            # machine-readable JSON on stdout
+aivist run --config ./config.json --pretty   # + a human summary on stderr (stdout stays pure JSON)
+```
+
+**`aivist target` / `aivist config`** — save a reusable target as one editable file (`--dump-template` / `--from-file`, all-errors-at-once validation); set the AI provider/key/model.
+
+**Tokens** come from the environment (or, for `scan`, a `--tokens-file` read at use-time and never persisted):
+
+```bash
+export TARGET_ATTACKER_TOKEN=...    # the attacker (the attack is sent as this account)
+export TARGET_OWNER_TOKEN=...       # the victim/owner (re-read only, as the owner)
+export TARGET_BYSTANDER_TOKEN=...   # a third account that does NOT own the resource
+```
+
+An `attacker == owner` collision is refused fail-closed before the engine runs; tokens are never echoed or logged.
+
+## Reproduce it yourself
+
+You don't have to trust a transcript — the evidence is re-runnable in three independent layers:
 
 ```bash
 # Layer 1 — the labs' own ground truth, NO API key. The engine is graded against these, never the reverse.
-python -m pytest vulnerable_target/test_vulns.py -q
-python -m pytest depot_target/test_vulns.py -q
+python -m pytest vulnerable_target/test_vulns.py -q      # 31 tests
+python -m pytest depot_target/test_vulns.py -q           # 23 tests
 
-# Layer 2 — the structured result artifacts, NO API key. One JSON row per run: raw verdict → final verdict,
-# which exemption fired, every anchor, and a per-row regression check. Small and diffable.
+# Layer 2 — the committed result artifact, NO API key: one JSON row per run, raw verdict -> final verdict,
+# which exemption fired, every anchor, a per-row regression check. Small and diffable.
 #   scripts/measure/results/sweep_highN.jsonl
 
-# Layer 3 — regenerate Layer 2 from Layer 1 with YOUR OWN Gemini key (≈430 calls for the full pass).
+# Layer 3 — regenerate Layer 2 from Layer 1 with YOUR OWN Gemini key (~430 calls).
 python scripts/measure/verdict_measure.py \
   --caseset scripts/measure/casesets/vulnerable_target.json \
   --caseset scripts/measure/casesets/depot.json \
   --n-safe 20 --n-vuln 10 --out scripts/measure/results/sweep_highN.jsonl
 ```
 
-For the full case-by-case matrix and the documented **bounds** of each channel (notably the read-semantic gate's calibration limits), see [`RESULTS.md`](./RESULTS.md) and [`REPRODUCE.md`](./REPRODUCE.md).
+Full method and the documented **bounds** of each channel: [`REPRODUCE.md`](./REPRODUCE.md) and [`RESULTS.md`](./RESULTS.md).
+
+## ⚠️ Scope & safety
+
+**Read this before pointing it at anything.**
+
+- **Authorized targets only.** Confirming a BOLA/IDOR sends real cross-user requests with real credentials. Only run against systems you own or have **explicit written permission** to test. Unauthorized testing may be illegal.
+- **Localhost / self-hosted targets.** Built and tested for locally-run targets you control. It is not a tool for scanning third-party or internet-facing systems, and it is not a mass-scanner.
+- **No authentication of its own.** Aivist Verify has no access control around itself — run it locally, never expose it as a service.
+- **You supply the credentials.** It only ever acts as the identities whose tokens you provide, against the single target you point it at.
+
+A tool whose entire value is *honesty* has to be honest about its own boundaries. The narrower and clearer the scope, the more the zero-false-positive claim can be trusted.
+
+## Capabilities & honest limits
+
+**Supported (built and audited in-repo):** OpenAPI-spec and spec-less discovery (manual endpoint lists, HAR / raw-HTTP parsing, live mitmproxy capture); static-token *and* automatic re-login auth; a challenge/rate-limit circuit-breaker that aborts to `NOT DATA` rather than hammer a target; three model providers behind one seam (Gemini default, OpenAI-compatible, Anthropic); and the fully non-interactive `run --config` entry for CI.
+
+**Limits, stated plainly:** the zero-false-positive record is measured on **two controlled labs**, not validated at scale across diverse real-world targets — "supported" means the capability exists and is audited, not that it's been battle-tested in the wild. The read-semantic confirmation gate has **documented bounds** (see `RESULTS.md`). The tool has **no authentication** and targets **localhost**.
 
 ## Repository layout
 
 ```
-aivist-verify/
+Aivist-Verify/
 ├─ run.py                    # CLI entry point (the `aivist` command)
-├─ README.md                 # you are here
-├─ RESULTS.md                # the zero-false-positive benchmark, case by case
-├─ REPRODUCE.md              # reproduce the evidence — three independent layers
+├─ README.md · RESULTS.md · REPRODUCE.md · LICENSE
 ├─ backend/app/
 │   ├─ services/             # the confirmation engine: differential oracle, deep verifier, exemption gates
 │   └─ cli/                  # the command line and interactive console
-├─ vulnerable_target/        # a self-contained lab + its own independent ground-truth test suite
-├─ depot_target/             # a second, structurally different lab + ground-truth suite
+├─ vulnerable_target/        # lab 1 (integer ids) + its independent ground-truth test suite
+├─ depot_target/             # lab 2 (UUID ids) + ground-truth suite
 ├─ scripts/measure/          # the measurement harness + committed result artifacts (sweep_*.jsonl)
 └─ docs/                     # architecture and engine documentation
 ```
@@ -269,38 +237,14 @@ aivist-verify/
 
 - [`RESULTS.md`](./RESULTS.md) — the full zero-false-positive benchmark, case by case, with each channel's documented bounds.
 - [`REPRODUCE.md`](./REPRODUCE.md) — reproduce the evidence yourself, three independent layers.
-- [`docs/PROJECT_OVERVIEW.md`](./docs/PROJECT_OVERVIEW.md) — what exists today and how the pieces fit together.
-- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — how the engine is built.
-- [`docs/VERIFY_ENGINE.md`](./docs/VERIFY_ENGINE.md) — the differential oracle and the deep verifier, in depth.
+- [`docs/PROJECT_OVERVIEW.md`](./docs/PROJECT_OVERVIEW.md) — what exists today and how the pieces fit.
+- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — the two-layer verdict pipeline in depth.
+- [`docs/VERIFY_ENGINE.md`](./docs/VERIFY_ENGINE.md) / [`docs/DEEP_VERIFY.md`](./docs/DEEP_VERIFY.md) — the differential oracle and the deep verifier + the four exemption channels.
 
-## Capabilities & honest limits
+## License
 
-**Supported (built and audited in-repo):** OpenAPI-spec and spec-less discovery (manual endpoint lists, HAR / raw-HTTP traffic parsing, live mitmproxy capture); static-token *and* automatic re-login auth flows; a challenge/rate-limit circuit-breaker that aborts to `NOT DATA` rather than hammer a target; and the fully non-interactive `run --config` entry for CI.
-
-**Honest limits:**
-
-- The zero-false-positive record is measured on **two controlled labs**, not validated at scale across diverse real-world targets. "Supports X" means the capability exists and is audited — not that it has been battle-tested in the wild.
-- The AI layer currently targets a **single provider** (Gemini via the `google.genai` SDK); there is no provider-abstraction layer yet.
-- The read-semantic confirmation gate has **documented bounds** (threshold calibrated on deterministic lab data; public/shared resources are a residual gap). See `RESULTS.md`.
-- The tool itself has **no authentication** and is designed for **localhost** targets. It is not, and is not intended to be, an internet-facing or mass-scanning service.
-
-## ⚠️ Scope & safety
-
-**Read this before pointing it at anything.**
-
-- **Authorized targets only.** Only run Aivist Verify against systems you own or have **explicit written permission** to test. Confirming a BOLA/IDOR sends real cross-user requests with real credentials. Unauthorized testing may be illegal.
-- **Localhost / self-hosted targets.** The tool is built and tested for locally-run targets you control. It is not a tool for scanning third-party or internet-facing systems.
-- **No authentication of its own.** Aivist Verify has no access control around itself. Do not expose it as a service. Run it locally.
-- **You supply the credentials.** It only ever acts as the identities whose tokens you provide, against the single target you point it at.
-
-A tool whose entire value is *honesty* has to be honest about its own boundaries. The narrower and more clearly-stated the scope, the more the zero-false-positive discipline can be trusted.
-
-## License & status
-
-**Status:** pre-release. The confirmation engine and its evidence are stable; interactive-CLI polish is ongoing.
-
-**License:** MIT — see [`LICENSE`](./LICENSE).
+MIT © 2026 Lang Li — see [`LICENSE`](./LICENSE).
 
 ---
 
-<p align="center"><sub>Aivist Verify confirms; it does not merely flag. Code adjudicates; the model only proposes.</sub></p>
+<p align="center"><sub>Aivist Verify confirms; it does not merely flag. The AI proposes; code disposes; and code can only take a claim away, never invent one.</sub></p>
