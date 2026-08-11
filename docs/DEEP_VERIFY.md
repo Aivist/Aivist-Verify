@@ -26,7 +26,7 @@
 > `depot_target` UUID-id) × real gemini-2.5-pro, N=20 SAFE/control, N=10 VULN, fresh-seeded per run:
 > **300 SAFE/control runs → 0 false positives; 130 VULN runs → all `verified`** via their expected
 > channel; **430/430 usable, 0 degraded**. Artifact `scripts/measure/results/sweep_highN.jsonl`
-> (committed, diffable; reproduce per `scripts/measure/REPRODUCE.md`). Across all SAFE cases the model
+> (committed, diffable; reproduce per `REPRODUCE.md`). Across all SAFE cases the model
 > **raw-said `verified` on 79 runs** and code held the line on every one. *Supersedes the single-target
 > 140/70 record (kept as history in `RESULTS.md`).* The per-shape `5/5` figures below are original runs.
 >
