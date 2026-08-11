@@ -78,3 +78,9 @@ docs/ROADMAP.md
 docs/TECH_DEBT.md
 docs/DATA_MODEL.md
 .agents/skills/
+
+# --- Legacy web vestiges (untracked from the public repo; kept on disk) ---
+# The old client/server split's web UI (Vite mock frontend + single-file dashboard).
+# `git rm --cached`-ed (they remain on disk); these rules keep them out of the public repo.
+frontend/
+preview_dashboard.html
