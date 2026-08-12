@@ -1,0 +1,70 @@
+# VAmPI /books/v1/{book_title} BOLA  |  attacker=name1 owner=name2 bystander=name3
+# image erev0s/vampi@sha256:0a5a224b6e14ae7da6a6ea265178ff71286ff903aec74adee98f660bb0e4ca12
+# op: attacker_book_a1 (own) -> victim_book_b2 (name2's); tokens: attacker+owner+bystander; assert_owner_only=NO
+# UTC 2026-08-12T05:36:18Z
+===== aivist run --config (JSON to stdout, --pretty summary to stderr) =====
+[verify] http://localhost:5000  GET /books/v1/attacker_book_a1  -> tier=refuted verdict=inconclusive (exit 0)
+{
+  "mode": "verify",
+  "target": "http://localhost:5000",
+  "result": {
+    "verdict": "inconclusive",
+    "tier": "refuted",
+    "guard_override": "public_resource_read_not_cross_user",
+    "method": "GET",
+    "baseline_path": "/books/v1/attacker_book_a1",
+    "attack_path": "/books/v1/victim_book_b2",
+    "body": null,
+    "degraded": false,
+    "degraded_reason": null,
+    "caller_identity": "owner_not_found",
+    "payload_causality": "no_payload",
+    "state_jump": null,
+    "negative_assertion": null,
+    "owner_view_corroborated": false,
+    "broken_for_all_suspected": null,
+    "scan_skip_reason": null,
+    "evidence": {
+      "baseline": {
+        "request": {
+          "method": "GET",
+          "headers": {
+            "Authorization": "***REDACTED***"
+          },
+          "url": "http://localhost:5000/books/v1/attacker_book_a1",
+          "body": null
+        },
+        "response": {
+          "status_code": 200,
+          "content_length": 84,
+          "url": "http://localhost:5000/books/v1/attacker_book_a1",
+          "body": "{\"book_title\": \"attacker_book_a1\", \"owner\": \"name1\", \"secret\": \"***REDACTED***\"}"
+        }
+      },
+      "attack": {
+        "request": {
+          "method": "GET",
+          "headers": {
+            "Authorization": "***REDACTED***"
+          },
+          "url": "http://localhost:5000/books/v1/victim_book_b2",
+          "body": null
+        },
+        "response": {
+          "status_code": 200,
+          "content_length": 93,
+          "url": "http://localhost:5000/books/v1/victim_book_b2",
+          "body": "{\"book_title\": \"victim_book_b2\", \"owner\": \"name2\", \"secret\": \"***REDACTED***\"}"
+        }
+      },
+      "owner_view": {
+        "status": 200,
+        "reason": "ok",
+        "corroborated": false,
+        "body": "{\"book_title\": \"victim_book_b2\", \"owner\": \"name2\", \"secret\": \"***REDACTED***\"}"
+      }
+    }
+  },
+  "exit_code": 0
+}
+===== process exit=0 =====

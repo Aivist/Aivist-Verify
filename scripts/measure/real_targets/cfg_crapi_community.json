@@ -1,0 +1,11 @@
+{
+  "mode": "verify",
+  "name": "crapi-community-post-D30-live",
+  "base_url": "http://localhost:8888",
+  "method": "GET",
+  "path_template": "/community/api/v2/community/posts/{postId}",
+  "id_location": "path",
+  "id_param": "postId",
+  "attacker_id": "CkLMnHw7oH4Un4E2Sej8MZ",
+  "victim_id": "mRLAnMrQT8bKpADW8WxAVV"
+}

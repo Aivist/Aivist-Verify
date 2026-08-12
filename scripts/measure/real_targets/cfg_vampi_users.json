@@ -1,0 +1,11 @@
+{
+  "mode": "verify",
+  "name": "vampi-users-getuser",
+  "base_url": "http://localhost:5000",
+  "method": "GET",
+  "path_template": "/users/v1/{username}",
+  "id_location": "path",
+  "id_param": "username",
+  "attacker_id": "name1",
+  "victim_id": "name2"
+}

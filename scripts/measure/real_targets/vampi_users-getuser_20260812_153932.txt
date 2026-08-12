@@ -1,0 +1,68 @@
+# VAmPI GET /users/v1/{username}  |  attacker=name1 reads name2 (endpoint is PUBLIC / no-auth, per manual probe)
+# UTC 2026-08-12T05:39:33Z
+===== aivist run --config =====
+[verify] http://localhost:5000  GET /users/v1/name1  -> tier=refuted verdict=inconclusive (exit 0)
+{
+  "mode": "verify",
+  "target": "http://localhost:5000",
+  "result": {
+    "verdict": "inconclusive",
+    "tier": "refuted",
+    "guard_override": "public_resource_read_not_cross_user",
+    "method": "GET",
+    "baseline_path": "/users/v1/name1",
+    "attack_path": "/users/v1/name2",
+    "body": null,
+    "degraded": false,
+    "degraded_reason": null,
+    "caller_identity": "owner_not_found",
+    "payload_causality": "no_payload",
+    "state_jump": null,
+    "negative_assertion": null,
+    "owner_view_corroborated": false,
+    "broken_for_all_suspected": null,
+    "scan_skip_reason": null,
+    "evidence": {
+      "baseline": {
+        "request": {
+          "method": "GET",
+          "headers": {
+            "Authorization": "***REDACTED***"
+          },
+          "url": "http://localhost:5000/users/v1/name1",
+          "body": null
+        },
+        "response": {
+          "status_code": 200,
+          "content_length": 48,
+          "url": "http://localhost:5000/users/v1/name1",
+          "body": "{\"username\": \"name1\", \"email\": \"mail1@mail.com\"}"
+        }
+      },
+      "attack": {
+        "request": {
+          "method": "GET",
+          "headers": {
+            "Authorization": "***REDACTED***"
+          },
+          "url": "http://localhost:5000/users/v1/name2",
+          "body": null
+        },
+        "response": {
+          "status_code": 200,
+          "content_length": 48,
+          "url": "http://localhost:5000/users/v1/name2",
+          "body": "{\"username\": \"name2\", \"email\": \"mail2@mail.com\"}"
+        }
+      },
+      "owner_view": {
+        "status": 200,
+        "reason": "ok",
+        "corroborated": false,
+        "body": "{\"username\": \"name2\", \"email\": \"mail2@mail.com\"}"
+      }
+    }
+  },
+  "exit_code": 0
+}
+===== process exit=0 =====

@@ -1,0 +1,69 @@
+# crAPI GET /community/api/v2/community/posts/{postId}  |  attacker reads owner's post; +bystander
+# THE PENDING D30 LIVE RE-CONFIRMATION (public community feed). crapi-community@sha256:8ba0c7ed... VERSION=latest
+# attacker_post=CkLMnHw7oH4Un4E2Sej8MZ victim_post=mRLAnMrQT8bKpADW8WxAVV ; UTC 2026-08-12T05:47:06Z
+===== aivist run --config =====
+[verify] http://localhost:8888  GET /community/api/v2/community/posts/CkLMnHw7oH4Un4E2Sej8MZ  -> tier=refuted verdict=inconclusive (exit 0)
+{
+  "mode": "verify",
+  "target": "http://localhost:8888",
+  "result": {
+    "verdict": "inconclusive",
+    "tier": "refuted",
+    "guard_override": "public_resource_read_not_cross_user",
+    "method": "GET",
+    "baseline_path": "/community/api/v2/community/posts/CkLMnHw7oH4Un4E2Sej8MZ",
+    "attack_path": "/community/api/v2/community/posts/mRLAnMrQT8bKpADW8WxAVV",
+    "body": null,
+    "degraded": false,
+    "degraded_reason": null,
+    "caller_identity": "owner_not_found",
+    "payload_causality": "no_payload",
+    "state_jump": null,
+    "negative_assertion": null,
+    "owner_view_corroborated": false,
+    "broken_for_all_suspected": null,
+    "scan_skip_reason": null,
+    "evidence": {
+      "baseline": {
+        "request": {
+          "method": "GET",
+          "headers": {
+            "Authorization": "***REDACTED***"
+          },
+          "url": "http://localhost:8888/community/api/v2/community/posts/CkLMnHw7oH4Un4E2Sej8MZ",
+          "body": null
+        },
+        "response": {
+          "status_code": 200,
+          "content_length": 294,
+          "url": "http://localhost:8888/community/api/v2/community/posts/CkLMnHw7oH4Un4E2Sej8MZ",
+          "body": "{\"id\":\"CkLMnHw7oH4Un4E2Sej8MZ\",\"title\":\"attacker-own-post\",\"content\":\"ATTACKER-OWN-content-1122\",\"author\":{\"nickname\":\"Atk\",\"email\":\"attacker@crapi.io\",\"vehicleid\":\"\",\"profile_pic_url\":\"\",\"created_at\":\"2026-08-12T05:47:05.57Z\"},\"comments\":[],\"authorid\":8,\"CreatedAt\":\"2026-08-12T05:47:05.57Z\"}\n"
+        }
+      },
+      "attack": {
+        "request": {
+          "method": "GET",
+          "headers": {
+            "Authorization": "***REDACTED***"
+          },
+          "url": "http://localhost:8888/community/api/v2/community/posts/mRLAnMrQT8bKpADW8WxAVV",
+          "body": null
+        },
+        "response": {
+          "status_code": 200,
+          "content_length": 295,
+          "url": "http://localhost:8888/community/api/v2/community/posts/mRLAnMrQT8bKpADW8WxAVV",
+          "body": "{\"id\":\"mRLAnMrQT8bKpADW8WxAVV\",\"title\":\"owner-secret-post\",\"content\":\"OWNER-POST-CONTENT-xyz-9931\",\"author\":{\"nickname\":\"Own\",\"email\":\"owner@crapi.io\",\"vehicleid\":\"\",\"profile_pic_url\":\"\",\"created_at\":\"2026-08-12T05:46:14.574Z\"},\"comments\":[],\"authorid\":9,\"CreatedAt\":\"2026-08-12T05:46:14.574Z\"}\n"
+        }
+      },
+      "owner_view": {
+        "status": 200,
+        "reason": "ok",
+        "corroborated": false,
+        "body": "{\"id\":\"mRLAnMrQT8bKpADW8WxAVV\",\"title\":\"owner-secret-post\",\"content\":\"OWNER-POST-CONTENT-xyz-9931\",\"author\":{\"nickname\":\"Own\",\"email\":\"owner@crapi.io\",\"vehicleid\":\"\",\"profile_pic_url\":\"\",\"created_at\":\"2026-08-12T05:46:14.574Z\"},\"comments\":[],\"authorid\":9,\"CreatedAt\":\"2026-08-12T05:46:14.574Z\"}\n"
+      }
+    }
+  },
+  "exit_code": 0
+}
+===== process exit=0 =====

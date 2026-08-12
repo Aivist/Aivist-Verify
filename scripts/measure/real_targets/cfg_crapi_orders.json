@@ -1,0 +1,11 @@
+{
+  "mode": "verify",
+  "name": "crapi-shop-orders-bola",
+  "base_url": "http://localhost:8888",
+  "method": "GET",
+  "path_template": "/workshop/api/shop/orders/{order_id}",
+  "id_location": "path",
+  "id_param": "order_id",
+  "attacker_id": "7",
+  "victim_id": "6"
+}

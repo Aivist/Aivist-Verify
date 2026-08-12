@@ -1,0 +1,12 @@
+# crAPI GET /workshop/api/mechanic/mechanic_report?report_id=  |  MANUAL BOLA observation (engine run NOT completed)
+# UTC 2026-08-12T05:52:37Z  crapi-workshop@sha256:d4d2d94d... VERSION=latest
+#
+# WHY NO ENGINE RUN: the engine's owner-view (D24) gate needs the REPORT OWNER's token to corroborate.
+# crAPI seeds report_id=1 owned by mechanic TRAC_JHN / vehicle owner robot001@example.com (no creds available).
+# Creating a report owned by a credential-controlled user needs the vehicle-claim -> contact_mechanic flow;
+# the seeded welcome emails (mailhog) contained NO VIN/pincode (empty bodies), so vehicle claim was blocked.
+#
+# MANUAL BOLA CHECK: owner@crapi.io (a regular user, NOT the report owner) reads seed report_id=1:
+----- GET /workshop/api/mechanic/mechanic_report?report_id=1  (as owner@crapi.io) -----
+{"id":1,"mechanic":{"id":1,"mechanic_code":"TRAC_JHN","user":{"email":"jhon@example.com","number":""}},"vehicle":{"id":3,"vin":"0NKPZ09IHOP508673","owner":{"email":"robot001@example.com","number":"9876570001"}},"problem_details":"My car BMW - 5 Series is having issues.\nCan you give me a call on my mobile 9876570001,\nOr send me an email at robot001@example.com\nThanks,\nRobot.\n","status":"completed","created_on":"12 August, 2026, 05:44:35","updated_on":null,"comments":[]}
+[HTTP 200]
