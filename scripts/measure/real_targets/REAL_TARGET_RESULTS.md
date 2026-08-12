@@ -4,10 +4,14 @@ Live measurement of the Aivist Verify engine against third-party public vulnerab
 Every verdict below is recorded verbatim (raw output files alongside this doc), including
 [REFUTED], [NOT DATA], false positives, and misses. **The engine was not tuned to make any
 target pass.** Runs use the non-interactive `aivist run --config` path (env tokens → structured
-JSON); the `tier` field maps to the human verdict badge: `confirmed`→[CONFIRMED],
-`refuted`→[REFUTED], `broken_for_all`→[INCONCLUSIVE broken-for-all], `notdata`→[NOT DATA].
+JSON); the `tier` field maps to the human verdict badge: `confirmed`→`[CONFIRMED]`,
+`refuted`→`[REFUTED]`, `notdata`→`[NOT DATA]`, and `broken_for_all`→`[INCONCLUSIVE]` (the renderer
+prints the badge as `[INCONCLUSIVE]  <shape> - <METHOD> <path>`; the broken-for-all framing and the
+"human review" wording appear in the body lines beneath it, not in the badge itself). Below, the
+shorthand "[INCONCLUSIVE broken-for-all]" is a DESCRIPTION of that tier, never a quote of CLI output.
 
-Model: `gemini-2.5-pro`. Run date: 2026-08-12 (UTC).
+Model: `gemini-2.5-pro`. Run dates: 2026-08-12 (UTC) — VAmPI + crAPI community/orders in the first
+session, crAPI `mechanic_report` in a second session the same day (see the session note under TARGET 2).
 
 ---
 
@@ -31,7 +35,7 @@ Model: `gemini-2.5-pro`. Run date: 2026-08-12 (UTC).
 ### VAmPI takeaways (honest)
 
 - **The `/books` BOLA is real but broken-for-all.** The engine's verdict is config-dependent: it **CONFIRMS** with two accounts, **REFUTES as public** the moment a bystander is supplied, and surfaces **[broken-for-all / human review]** when the operator asserts owner-privacy.
-- **This is a genuine limitation to state plainly:** by default (with a bystander), the D30 public-resource gate **misses** VAmPI's documented `/books` BOLA — because "readable by every authenticated user" is, black-box, indistinguishable from "shared by design." The *correct* way to catch a broken-for-all BOLA with this tool is `--assert-owner-only`, which flags it for human review rather than confirming it.
+- **This is a genuine limitation to state plainly:** by default (with a bystander), the D30 public-resource gate **misses** VAmPI's documented `/books` BOLA — because "readable by every authenticated user" is, black-box, indistinguishable from "shared by design." The *correct* way to catch a broken-for-all BOLA with this tool is the owner-only assertion **plus a bystander token** (`--assert-owner-only` on `scan`, or `"assert_owner_only": true` on a `run --config` op) — the assertion on its own is inert, because the disclosure path only runs after the bystander probe has shown that a third identity can read the object. It flags the finding for human review rather than confirming it.
 - No run degraded — VAmPI's 60-second JWT expiry did not bite (each verify finished well under 60 s).
 
 ---
@@ -45,24 +49,62 @@ Model: `gemini-2.5-pro`. Run date: 2026-08-12 (UTC).
 - **Setup:** signed up + logged in three users `attacker@crapi.io` / `owner@crapi.io` / `bystander@crapi.io`
   (password `Crapi@1234`). crAPI JWTs are long-lived (no expiry issue). Created real resources per endpoint.
 
+> **Session note — `mechanic_report` was measured in a SECOND session, on a FRESH database state.**
+> The `mechanic_report` rows below did **not** continue the first session. When that endpoint was
+> re-attempted, the crAPI stack had been torn down and brought back up, and the first session's
+> `@crapi.io` accounts were **no longer in the database** (the persisted volume held a different set of
+> users). Same target, same image digests, same `VERSION=latest` — but a **new** run with **new**
+> accounts (`mrAtk…@crapi.io` / `mrOwn…@crapi.io` / `mrBys…@crapi.io`) and new resources. It is
+> recorded as a new run, not as a resumed one. The community-post, orders, `/books` and `/users` rows
+> are untouched first-session results.
+
 ### Results
 
 | Endpoint | Config | What it should be (ground truth + source) | Verdict recorded | Correct? | Raw file |
 |---|---|---|---|---|---|
 | `GET /community/api/v2/community/posts/{postId}` | attacker+owner+bystander | **PUBLIC community feed** — every user sees every post by design; reading another's post is NOT a violation. (This is the endpoint that produced the **D30 false positive** in the prior session; the D30 fix was only fixture-validated → live re-confirmation was pending.) | **[REFUTED]** `inconclusive` (`guard_override=public_resource_read_not_cross_user`) | **Correct (true negative)** — ✅ **THE PENDING D30 LIVE RE-CONFIRMATION PASSES**: the false positive is fixed on the real target | `crapi_community-post_D30_20260812_154703.txt` |
 | `GET /workshop/api/shop/orders/{order_id}` | attacker+owner+bystander | **REAL BOLA** — crAPI docs list BOLA on orders. Auth-required; the attack response leaked the owner's **email + partial card number** (`XXXXXXXXXXXX6374`, MasterCard) + transaction id. But it is **broken-for-all** (the bystander also read order #6 → HTTP 200). | **[REFUTED]** `inconclusive` (`guard_override=public_resource_read_not_cross_user`) | **Miss (by design)** — a real, sensitive BOLA the tool does **not** confirm because it's readable by every authenticated user (same D30 tradeoff as VAmPI books) | `crapi_shop-orders_20260812_154834.txt` |
-| `GET /workshop/api/mechanic/mechanic_report?report_id=` | — (engine run **not** completed) | **REAL BOLA** — crAPI docs list BOLA on mechanic_report (query-string id). Manually confirmed present: `owner@crapi.io` (a non-owner) read seed `report_id=1` → HTTP 200, obtaining `robot001@example.com`'s vehicle report (VIN `0NKPZ09IHOP508673`, phone, problem details). | **NOT MEASURED** (setup-blocked) | n/a — see note | `crapi_mechanic-report_MANUAL_setup-blocked_20260812_155237.txt` |
+| `GET /workshop/api/mechanic/mechanic_report?report_id=` | attacker+owner, **no bystander** | **REAL BOLA** — crAPI docs list BOLA on mechanic_report (**query-string** id). Ground truth re-established by hand before the engine ran: the attacker read the owner's report → HTTP 200 disclosing the owner's email, phone, VIN `7R5XWJ6HCY2FJUR03` and the private work-order text. | **[CONFIRMED]** `verified` (`owner_view_corroborated=true`, `guard_override=null`) | **True positive** — the attacker really read the victim's private work order across accounts | `crapi_mechanic-report_no-bystander_20260812_163905.txt` |
+| `GET /workshop/api/mechanic/mechanic_report?report_id=` | attacker+owner+**bystander** | same BOLA — but the endpoint is broken-for-all (the bystander also read the owner's `report_id` → HTTP 200) | **[REFUTED]** `inconclusive` (`guard_override=public_resource_read_not_cross_user`) | **Miss (by design)** — the same D30 tradeoff as VAmPI `/books` and crAPI `/shop/orders` | `crapi_mechanic-report_with-bystander_20260812_163928.txt` |
+| `GET /workshop/api/mechanic/mechanic_report?report_id=` | attacker+owner+bystander **+`assert_owner_only`** | same BOLA — operator asserts the work order should be owner-private | **`broken_for_all` tier** — `inconclusive` (`guard_override=broken_for_all_owner_assertion_human_review`, `broken_for_all_suspected=true`) | **Correct handling** — engine logged the anonymous probe as a clean denial (`anon_status=401 reason='non_2xx:401'`) and LOCKED the verdict inconclusive for human review; never confirmed | `crapi_mechanic-report_assert-owner-only_20260812_163948.txt` |
 
-**mechanic_report — why not measured (honest):** the engine's D24 owner-view gate needs the **report owner's** token to corroborate a confirm. crAPI's readable report (`report_id=1`) is owned by seed user `robot001@example.com` (no credentials available), and creating a report owned by a credential-controlled user requires crAPI's vehicle-claim → `contact_mechanic` flow — which needs a VIN/pincode that the seeded welcome emails (mailhog) did **not** contain (empty bodies). So a clean owner-corroborated run was not completable this session. The BOLA is present; the engine confirmation is pending a proper report-owner setup. (Prior session had it **[CONFIRMED]** after the D29 fix, with a controlled owner.)
+**mechanic_report — measured, and what it took (honest).** The first session recorded this endpoint as
+**NOT MEASURED (setup-blocked)**; it has now been run. Both blockers were **target-environment problems,
+not engine limits**, and neither required any change to Aivist Verify:
+
+1. **The VIN/pincode source.** The engine's D24 owner-view gate needs the **report owner's** token to
+   corroborate a confirm, so the report must belong to a credential-controlled user. That needs crAPI's
+   vehicle-claim → `contact_mechanic` flow, which needs a VIN + pincode normally delivered by the signup
+   welcome email — and this deployment's mailhog delivered **empty bodies**. **Worked around by reading
+   the pincode directly out of crAPI's own `vehicle_details` table** (unclaimed vehicles sit in a pool
+   with their pincodes in plaintext), then claiming the vehicle through the **real `add_vehicle` API**
+   exactly as a user would. **This is target-environment setup, not engine behaviour** — a reproducer
+   who gets working welcome emails will not need the database step, and the database was read only to
+   obtain a credential crAPI intended to mail to its own user.
+2. **`contact_mechanic` requires https.** crAPI's own OpenAPI example gives the callback as
+   `mechanic_api: http://localhost:8000/workshop/api/mechanic/receive_report`, but this deployment runs
+   with `TLS_ENABLED=true`, so the workshop service serves **HTTPS** on port 8000 and every `http://`
+   callback fails with `400 {"message":"Could not connect to mechanic api."}`. Using
+   `https://localhost:8000/...` succeeds. This blocker was **not** diagnosed in the first session — even
+   with a valid VIN, the earlier attempt would still have failed here.
+
+**Query-string coverage.** `mechanic_report` carries its object id in the **query string**
+(`?report_id=`), not in the path. These three runs therefore extend the archive to the query-param id
+path (`build_op` → `location: "query_param"`); the earlier VAmPI/crAPI runs all exercised path-segment
+ids only.
+
+The first session's manual observation of the seed report (`report_id=1`, owned by `robot001@example.com`)
+is kept alongside as `crapi_mechanic-report_MANUAL_setup-blocked_20260812_155237.txt` — the record of the
+block, not of a verdict.
 
 ---
 
 ## Bottom line (honest)
 
 - **The single most important run passed:** the crAPI **community-post D30 false positive is fixed on the live target** — [REFUTED] as public, not a spurious [CONFIRMED]. The previously fixture-only validation now holds live.
-- **The tool produced ZERO false positives across all 6 completed engine runs** — no public/shared resource was ever confirmed as a cross-user BOLA.
-- **The dominant limitation, measured on two real targets:** the D30 public-resource gate **misses genuine broken-for-all BOLAs** — VAmPI `/books` (secret disclosure) and crAPI `/shop/orders` (email + partial card-number disclosure) are both real, serious BOLAs that the tool **[REFUTED]** by default, because "readable by every authenticated user" is black-box-indistinguishable from "shared by design." The correct way to surface these is `--assert-owner-only`, which flags them as **[INCONCLUSIVE broken-for-all / human review]** (demonstrated on VAmPI) rather than confirming them.
-- **Clean private cross-user BOLA (attacker+owner, no bystander):** confirmed on VAmPI `/books` ([CONFIRMED] verified). No crAPI endpoint tested here was a *private* cross-user resource (community = public; orders/mechanic_report = broken-for-all), so no crAPI [CONFIRMED] was produced — consistent with the prior session's "crAPI did not yield a clean cross-user BOLA headline."
+- **The tool produced ZERO false positives across all 9 completed engine runs** (6 in the first session + 3 `mechanic_report` runs in the second) — no public/shared resource was ever confirmed as a cross-user BOLA.
+- **The dominant limitation, measured on two real targets:** the D30 public-resource gate **misses genuine broken-for-all BOLAs** — VAmPI `/books` (secret disclosure), crAPI `/shop/orders` (email + partial card-number disclosure) and crAPI `mechanic_report` (email, phone, VIN, private work-order text) are all real, serious BOLAs that the tool **[REFUTED]** once a bystander token is supplied, because "readable by every authenticated user" is black-box-indistinguishable from "shared by design." The way to surface these is the owner-only assertion — `--assert-owner-only` on `scan`, or `"assert_owner_only": true` on a `run --config` op — **together with a bystander token** (the assertion alone is inert: the disclosure path only runs after the bystander probe has established that a third identity can read the object). It then reports them as the `broken_for_all` tier — inconclusive, flagged for human review — rather than confirming them. Demonstrated live on **both** targets (VAmPI `/books`, crAPI `mechanic_report`).
+- **Clean cross-user BOLA (attacker+owner, no bystander): confirmed on BOTH targets** — VAmPI `/books` and crAPI `mechanic_report`, each **[CONFIRMED]** `verified` through the D24 owner-view channel. Neither endpoint is a *private-by-design* resource: both are **broken-for-all**, so on both targets the verdict is **config-dependent in exactly the same way** — `verified` with two accounts, `[REFUTED]` as public the moment a bystander is supplied, and `broken_for_all` / human review when the operator asserts owner-privacy. crAPI's remaining endpoints behave as before (community = public by design; `/shop/orders` = broken-for-all, not confirmed).
 - **No engine tuning, no retries-until-green.** Every verdict is the first/only run, archived verbatim.
 
 ---
