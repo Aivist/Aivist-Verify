@@ -16,7 +16,11 @@ Start at the root [`README.md`](../README.md); this folder holds the deeper refe
 
 Evidence lives at the repo root: [`../RESULTS.md`](../RESULTS.md) (the zero-false-positive
 benchmark, recomputed from the committed artifact) and [`../REPRODUCE.md`](../REPRODUCE.md)
-(reproduce it yourself in three independent layers).
+(reproduce it yourself in three independent layers). For the **third-party** runs — the engine against
+two public vulnerable targets it was not built for — see
+[`../scripts/measure/real_targets/REAL_TARGET_RESULTS.md`](../scripts/measure/real_targets/REAL_TARGET_RESULTS.md)
+(9 runs on crAPI + VAmPI, every capture archived verbatim; an engineering signal on hand-verified
+ground truth, **not** an extension of the statistical benchmark).
 
 > All docs are grounded in the source tree and cite file references. When code and docs
 > disagree, the code wins — please update the docs.

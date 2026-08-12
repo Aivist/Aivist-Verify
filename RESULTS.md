@@ -61,12 +61,19 @@ corroboration gate rather than a cross-path exemption.
   discipline*, not a screen full of `CONFIRMED`.
 - **Read-semantic / D24 gate bounds.** The owner-view corroboration threshold is calibrated on
   deterministic lab data; a **public/shared** resource that every authenticated user can read (but
-  anonymous cannot) is a residual gap — surfaced, on opt-in, as an `[INCONCLUSIVE broken-for-all /
-  human review]` finding rather than confirmed.
+  anonymous cannot) is a residual gap — surfaced, on opt-in (and only when a bystander token is also
+  supplied), as an inconclusive **broken-for-all / human review** finding rather than confirmed. Two
+  live instances of this miss are archived: VAmPI `/books` and crAPI `mechanic_report`.
 - **Single measured model.** The zero-FP property is measured on `gemini-2.5-pro` only; it does not
   transfer to other providers.
-- **No real-target zero-FP claim.** Against a real target there is no ground truth, so the tool makes
-  **no** zero-FP claim there; a timeout / 401 / 403 / 429 is reported as `NOT DATA`, never a verdict.
+- **No real-target zero-FP *claim*.** Against a real target there is no independent ground truth, so
+  the **statistical** zero-FP record stays a lab result; a timeout / 401 / 403 / 429 is reported as
+  `NOT DATA`, never a verdict. The engine *has* been run against two public third-party targets
+  (crAPI + VAmPI) with ground truth established **by hand before each run** — 9 runs, zero false
+  positives, every run archived verbatim in
+  [`scripts/measure/real_targets/`](scripts/measure/real_targets/) and written up in
+  [`REAL_TARGET_RESULTS.md`](scripts/measure/real_targets/REAL_TARGET_RESULTS.md). Read that as an
+  engineering signal, not as an extension of the benchmark below.
 
 ## Reproduce it
 
