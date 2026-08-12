@@ -23,7 +23,7 @@
 
 Most access-control tools hand you a pile of *maybe* — suspected IDORs you still have to verify by hand, at 2 a.m., one by one. **Aivist Verify hands you proof, or an honest "no."** You give it a candidate — one endpoint, two identities — and it tells you whether the attacker actually crosses a user boundary into the victim's resource, with a reproducible evidence chain attached.
 
-The part that matters: **the verdict is decided by code, not the model.** The AI reads the traffic and *proposes*; a deterministic, downgrade-only gate *disposes*. On a 430-run benchmark, the model's raw output asked to mark a **secure** endpoint `verified` **79 times** — and the code gate refused **every single one of them**. Zero false positives. Not "fewer." Zero — by construction, on a benchmark you can re-run yourself in one command.
+The part that matters: **the verdict is decided by code, not the model.** The AI reads the traffic and *proposes*; a deterministic, downgrade-only gate *disposes*. On a 430-run benchmark, the model's raw output asked to mark a **secure** endpoint `verified` **79 times** — and the code gate refused **every single one of them**. Zero false positives. Not "fewer." Zero — by construction, on a benchmark you can re-run yourself in one command. Then we took it to two public vulnerable targets we didn't write — crAPI and VAmPI — and it confirmed two real cross-user BOLAs there without a single false positive.
 
 ## Why this exists
 
@@ -112,6 +112,72 @@ Five confirmation shapes — cross-user write, read-type semantic equivalence, s
 Read that last row again: on **79** separate runs the AI wanted to confirm a vulnerability that wasn't there, and the code gate stopped all 79 from ever reaching a `verified`. That is the moat, measured.
 
 **This is a controlled benchmark on two labs — not a tally of real-world kills.** Clean real-world confirmations are genuinely rare, and this project's honest headline is *discriminative power plus a zero-false-positive discipline*, not a screen full of `CONFIRMED`. Every number above is recomputed from the committed artifact `scripts/measure/results/sweep_highN.jsonl` — see [`RESULTS.md`](./RESULTS.md).
+
+## Validated on real, public targets — not just our own labs
+
+The benchmark above runs on labs we built. So we took the engine to **two public, deliberately-vulnerable
+targets we did not write** — [crAPI](https://github.com/OWASP/crAPI) and
+[VAmPI](https://github.com/erev0s/VAmPI) — and ran it against their documented BOLAs. **Nine engine runs,
+two real cross-user BOLAs confirmed, zero false positives** — and one genuine false positive found,
+fixed, and re-confirmed live. Every run below is archived verbatim in
+[`scripts/measure/real_targets/`](./scripts/measure/real_targets/).
+
+| Target | Endpoint | Ground truth | Verdict | Outcome |
+|---|---|---|---|---|
+| **crAPI** | `GET /workshop/api/mechanic/mechanic_report?report_id=` | real BOLA — leaks the owner's email, phone, VIN and private work-order text | **`verified`** | ✅ **true positive** |
+| **VAmPI** | `GET /books/v1/{book_title}` | real BOLA — owner-private book with a secret | **`verified`** | ✅ **true positive** |
+| **crAPI** | `GET /community/api/v2/community/posts/{postId}` | public feed — *this endpoint once produced a false positive* | `inconclusive` (public) | ✅ **the fix, re-confirmed live** |
+| **crAPI** | `GET /workshop/api/shop/orders/{order_id}` | real BOLA, but readable by every authenticated user | `inconclusive` | ⚠️ **missed by design** — see below |
+| **VAmPI** | `GET /users/v1/{username}` | public / no auth — not a cross-user BOLA | `inconclusive` (public) | ✅ true negative |
+
+Both confirmations arrived through the same code-adjudicated channel as the lab runs — the owner-view
+gate corroborating that the attacker received the owner's authentic data. The crAPI case also exercises a
+**query-string** object id rather than a path parameter.
+
+### The false positive we found in ourselves
+
+On an earlier real-target run, crAPI's **public community feed** was confirmed as a cross-user
+violation. It wasn't one — the posts are public by design. That was a real false positive, in the one
+place it hurts most: the guarantee this whole tool is built on.
+
+So it was fixed — a public-resource probe that reads the same object as an unrelated third identity, and
+suppresses the confirmation when that third party can read it too. The fix was validated on fixtures, and
+then **re-run against live crAPI**, where the same endpoint now returns `inconclusive`. That live
+re-confirmation is archived with the rest.
+
+We publish this because a tool that has never been wrong in public has usually never been tested in
+public. The interesting question is not whether a false positive ever happened — it is what the tool does
+the second time.
+
+### What it will miss — and why that is the trade
+
+The same probe that fixed the community-feed false positive causes a deliberate miss. When **every
+authenticated user** can read a resource, the engine refuses to confirm it — even when it is a real
+vulnerability. Both crAPI's `/shop/orders` (leaking an owner's email and partial card number) and VAmPI's
+`/books` are exactly that: real BOLAs, returned as `inconclusive`.
+
+This is not a bug, and it is not fixable by a better algorithm. Black-box, **"every authenticated user can
+read this because authorization is broken" and "every authenticated user can read this by design" produce
+byte-identical responses.** The distinguishing fact is the API author's *intent*, and intent is not present
+in any HTTP response. OpenAPI `security` metadata cannot decide it either — it declares *authentication*
+requirements, not row-level ownership. Guessing from content (e.g. "this contains PII, so it should be
+private") would manufacture false positives: a public staff directory legitimately exposes emails.
+
+So the engine takes the trade deliberately: **it would rather miss a real finding than invent one.**
+
+When you *know* a resource is meant to be owner-private, you can supply that intent yourself. With a
+bystander token configured, `--assert-owner-only` (on `scan`, or `"assert_owner_only": true` in a
+`run --config` op) makes the engine probe anonymously, and if every authenticated identity could read the
+object while an anonymous request was cleanly refused, it surfaces the finding as
+**`inconclusive` — broken-for-all, flagged for human review.** Even then it never auto-confirms: operator
+intent can raise a finding for review, but it can never manufacture a `verified`. Demonstrated live on
+both targets.
+
+> **Scope of this claim.** These are nine hand-verified runs on two targets — an engineering signal, not
+> the statistical zero-false-positive record the lab benchmark provides. Ground truth here was established
+> by hand (each endpoint's true status verified manually before the engine ran); the lab benchmark's ground
+> truth is independent and machine-checkable. Read them as what they are: the labs prove the discipline at
+> scale, the real targets prove it survives contact with software we didn't write.
 
 ## Quickstart
 
@@ -216,7 +282,7 @@ A tool whose entire value is *honesty* has to be honest about its own boundaries
 
 **Supported (built and audited in-repo):** OpenAPI-spec and spec-less discovery (manual endpoint lists, HAR / raw-HTTP parsing, live mitmproxy capture); static-token *and* automatic re-login auth; a challenge/rate-limit circuit-breaker that aborts to `NOT DATA` rather than hammer a target; three model providers behind one seam (Gemini default, OpenAI-compatible, Anthropic); and the fully non-interactive `run --config` entry for CI.
 
-**Limits, stated plainly:** the zero-false-positive record is measured on **two controlled labs**, not validated at scale across diverse real-world targets — "supported" means the capability exists and is audited, not that it's been battle-tested in the wild. The read-semantic confirmation gate has **documented bounds** (see `RESULTS.md`). The tool has **no authentication** and targets **localhost**.
+**Limits, stated plainly:** the **statistical** zero-false-positive record comes from **two controlled labs**; the engine has additionally been validated against **two public real targets** (crAPI and VAmPI — nine hand-verified runs, [above](#validated-on-real-public-targets--not-just-our-own-labs)), but it has **not** been run at scale across diverse production systems — "supported" means the capability exists and is audited, not that it's been battle-tested in the wild. The read-semantic confirmation gate has **documented bounds** (see `RESULTS.md`), including a deliberate miss on broken-for-all resources. The tool has **no authentication** and targets **localhost**.
 
 ## Repository layout
 
