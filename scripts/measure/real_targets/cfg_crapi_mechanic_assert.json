@@ -1,0 +1,12 @@
+{
+  "mode": "verify",
+  "base_url": "http://localhost:8888",
+  "method": "GET",
+  "path_template": "/workshop/api/mechanic/mechanic_report",
+  "id_location": "query",
+  "id_param": "report_id",
+  "attacker_id": "9",
+  "victim_id": "10",
+  "name": "crapi-mechanic-report-bola-assert-owner-only",
+  "assert_owner_only": true
+}
