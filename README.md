@@ -127,7 +127,8 @@ fixed, and re-confirmed live. Every run below is archived verbatim in
 | **crAPI** | `GET /workshop/api/mechanic/mechanic_report?report_id=` | real BOLA — leaks the owner's email, phone, VIN and private work-order text | **`verified`** | ✅ **true positive** |
 | **VAmPI** | `GET /books/v1/{book_title}` | real BOLA — owner-private book with a secret | **`verified`** | ✅ **true positive** |
 | **crAPI** | `GET /community/api/v2/community/posts/{postId}` | public feed — *this endpoint once produced a false positive* | `inconclusive` (public) | ✅ **the fix, re-confirmed live** |
-| **crAPI** | `GET /workshop/api/shop/orders/{order_id}` | real BOLA, but readable by every authenticated user | `inconclusive` | ⚠️ **missed by design** — see below |
+| **crAPI** | `GET /workshop/api/mechanic/mechanic_report?report_id=` (+ bystander) | the same real BOLA, but readable by every authenticated user | `inconclusive` | ⚠️ **missed by design** — see below |
+| **crAPI** | `GET /workshop/api/shop/orders/{order_id}` | public / no auth — an anonymous request reads the whole order, so not a cross-user BOLA | `inconclusive` (public) | ✅ true negative |
 | **VAmPI** | `GET /users/v1/{username}` | public / no auth — not a cross-user BOLA | `inconclusive` (public) | ✅ true negative |
 
 Both confirmations arrived through the same code-adjudicated channel as the lab runs — the owner-view
@@ -153,8 +154,10 @@ the second time.
 
 The same probe that fixed the community-feed false positive causes a deliberate miss. When **every
 authenticated user** can read a resource, the engine refuses to confirm it — even when it is a real
-vulnerability. Both crAPI's `/shop/orders` (leaking an owner's email and partial card number) and VAmPI's
-`/books` are exactly that: real BOLAs, returned as `inconclusive`.
+vulnerability. Both crAPI's `mechanic_report` (leaking an owner's email, phone, VIN and private
+work-order text) and VAmPI's `/books` are exactly that: real BOLAs that flip to `inconclusive` the
+moment a bystander token is supplied. In both cases an anonymous request is cleanly refused — the
+resources are genuinely broken, not genuinely public — and the engine still declines to confirm.
 
 This is not a bug, and it is not fixable by a better algorithm. Black-box, **"every authenticated user can
 read this because authorization is broken" and "every authenticated user can read this by design" produce
