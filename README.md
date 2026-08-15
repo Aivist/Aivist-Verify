@@ -1,3 +1,5 @@
+[English](./README.md) · [简体中文](./README.zh-CN.md)
+
 <!-- Logo lives at docs/assets/logo.png -->
 <p align="center">
   <img src="docs/assets/logo.png" alt="Aivist Verify" width="140"/>
