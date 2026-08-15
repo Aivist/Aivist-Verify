@@ -21,6 +21,10 @@
   <img src="https://img.shields.io/badge/false%20positives-0%2F300-brightgreen" alt="0 false positives on the benchmark"/>
 </p>
 
+<p align="center">
+  <a href="https://aivist.dev"><strong>aivist.dev</strong></a>
+</p>
+
 ---
 
 Most access-control tools hand you a pile of *maybe* — suspected IDORs you still have to verify by hand, at 2 a.m., one by one. **Aivist Verify hands you proof, or an honest "no."** You give it a candidate — one endpoint, two identities — and it tells you whether the attacker actually crosses a user boundary into the victim's resource, with a reproducible evidence chain attached.
@@ -306,6 +310,7 @@ Aivist-Verify/
 
 ## Documentation
 
+- [aivist.dev](https://aivist.dev) — the project site: the mechanism, the benchmark, and the real-target runs at a glance.
 - [`RESULTS.md`](./RESULTS.md) — the full zero-false-positive benchmark, case by case, with each channel's documented bounds.
 - [`REPRODUCE.md`](./REPRODUCE.md) — reproduce the evidence yourself, three independent layers.
 - [`docs/PROJECT_OVERVIEW.md`](./docs/PROJECT_OVERVIEW.md) — what exists today and how the pieces fit.

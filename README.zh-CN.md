@@ -21,6 +21,10 @@
   <img src="https://img.shields.io/badge/false%20positives-0%2F300-brightgreen" alt="0 false positives on the benchmark"/>
 </p>
 
+<p align="center">
+  <a href="https://aivist.dev"><strong>aivist.dev</strong></a>
+</p>
+
 ---
 
 大多数访问控制工具交给你的是一堆*可能*——一批疑似 IDOR，你还得在凌晨 2 点一个一个手工去验。**Aivist Verify 交给你的是证据，或者一个诚实的"没有"。** 你给它一个候选项——一个端点、两个身份——它告诉你攻击者是否真的跨越了用户边界、拿到了受害者的资源，并附上一条可复现的 evidence chain。
@@ -275,6 +279,7 @@ Aivist-Verify/
 
 ## 文档
 
+- [aivist.dev](https://aivist.dev) —— 项目站点：一眼看清工作机制、基准测试与真实目标运行结果。
 - [`RESULTS.md`](./RESULTS.md) —— 完整的零 false positive 基准测试，逐个用例，并附每条通道已记录在案的边界。
 - [`REPRODUCE.md`](./REPRODUCE.md) —— 自己复现这些证据，三个彼此独立的层面。
 - [`docs/PROJECT_OVERVIEW.md`](./docs/PROJECT_OVERVIEW.md) —— 今天存在哪些东西，以及各部分如何组合。
