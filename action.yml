@@ -18,9 +18,7 @@
 # does). Discovery (the `scan` surface) is a separate concern.
 # ==============================================================================
 name: 'Aivist Verify — Access-Control Confirmation Gate'
-description: >-
-  Confirm known BOLA/IDOR access-control candidates against a running target with two
-  identities, and fail CI when the deterministic gate confirms a real cross-user bug.
+description: 'Confirm known BOLA/IDOR candidates against a running target with two identities and fail CI when the code gate confirms one.'
 author: 'Aivist Verify'
 
 branding:
