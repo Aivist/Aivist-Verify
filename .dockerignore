@@ -1,0 +1,32 @@
+# Trim the build context to what `pip install -e .` and the runtime need.
+# KEPT (do not ignore): run.py, pyproject.toml, backend/, scripts/measure/
+# (run.py imports verdict_measure at module load), depot_target/ and
+# vulnerable_target/ (the self-test boots a lab from this same image),
+# .github/action/ (the entrypoint + LLM stub).
+
+.git
+.gitignore
+.dockerignore
+
+# Docs / site / writing — never imported at runtime.
+docs/
+
+# Non-committed or heavy measurement side-artifacts (gitignored upstream too).
+scripts/audit/
+scripts/measure/repro/
+
+# Python / test / editor cruft.
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.db
+*.sqlite
+*.sqlite3
+.venv/
+venv/
+env/
+node_modules/
+.idea/
+.vscode/

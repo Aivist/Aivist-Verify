@@ -1,0 +1,95 @@
+# ==============================================================================
+# Aivist Verify — BOLA/IDOR Confirmation Gate (GitHub Action)
+#
+# A THIN WRAPPER around the repo's EXISTING external-target confirmation path
+# (`python run.py run --config <file> --pretty`, mode="verify" — see
+# backend/app/cli/run_command.py). It adds NO verdict logic: it assembles the
+# inputs into the SAME engine call the CLI already makes and maps the CLI's
+# structured JSON result onto a CI exit code.
+#
+# WHAT IT DOES:  point it at a RUNNING target with two identities and a set of
+# ALREADY-KNOWN BOLA/IDOR candidate operations. For each candidate it runs the
+# deterministic access-control confirmer and FAILS THE BUILD when the code gate
+# CONFIRMS a real cross-user access bug.
+#
+# WHAT IT DOES NOT DO:  it does NOT discover candidates. Confirmation, not
+# discovery, is deliberate — it is why the zero-false-positive property of the
+# gate is meaningful here (the gate confirms; the model's raw opinion alone never
+# does). Discovery (the `scan` surface) is a separate concern.
+# ==============================================================================
+name: 'Aivist Verify — Access-Control Confirmation Gate'
+description: >-
+  Confirm known BOLA/IDOR access-control candidates against a running target with two
+  identities, and fail CI when the deterministic gate confirms a real cross-user bug.
+author: 'Aivist Verify'
+
+branding:
+  icon: 'shield'
+  color: 'red'
+
+inputs:
+  target-url:
+    description: 'Base URL of the RUNNING target to confirm against, e.g. http://localhost:8002 or https://staging.example.com'
+    required: true
+  candidates:
+    description: >-
+      The already-known BOLA/IDOR candidate operations to confirm. Either a path to a JSON
+      file (relative to the workspace) OR inline JSON. Shape: a JSON array of operations, or
+      {"candidates": [...]}. Each op: {name?, method, path_template, id_param, id_location?
+      (path|query, default path), attacker_id, victim_id, spec_path?, assert_owner_only?}.
+    required: true
+  attacker-token:
+    description: >-
+      Identity-A (ATTACKER) credential — a bearer token, "Bearer <token>", or "Header-Name: value".
+      Supply from a GitHub secret. Used ONLY as the attack identity, never as the owner view.
+    required: true
+  owner-token:
+    description: >-
+      Identity-B (OWNER/VICTIM) credential — same formats as attacker-token. Supply from a secret.
+      Used ONLY for the custody-free owner-view read-back, never for an attack request.
+    required: true
+  bystander-token:
+    description: >-
+      OPTIONAL third/bystander credential (a principal that owns none of the attacked objects) for
+      D30 public-resource discrimination. Absent => no bystander probe (D30 unmitigated).
+    required: false
+    default: ''
+  provider-api-key:
+    description: >-
+      API key for the LLM the engine calls to reach its RAW verdict (the deterministic code gate then
+      decides the final verdict). Supply from a GitHub secret. Optional when llm-base-url points at a
+      keyless/local model. Set as both GEMINI_API_KEY and LLM_API_KEY for the chosen provider.
+    required: false
+    default: ''
+  llm-provider:
+    description: "LLM backend the engine uses: 'gemini' (default) | 'openai' (OpenAI-compatible via llm-base-url) | 'anthropic'."
+    required: false
+    default: 'gemini'
+  llm-base-url:
+    description: "OpenAI-compatible base_url (used when llm-provider=openai; a relay/gateway/local server, e.g. http://localhost:11434/v1)."
+    required: false
+    default: ''
+  llm-model:
+    description: 'Model identifier override for the chosen provider (empty => the provider default).'
+    required: false
+    default: ''
+  fail-on-confirm:
+    description: 'Fail the build (exit 1) when >=1 candidate is CODE-CONFIRMED. Set false to report only (always exit 0 unless the gate could not run).'
+    required: false
+    default: 'true'
+
+outputs:
+  confirmed-count:
+    description: 'Number of candidates the deterministic code gate CONFIRMED (the headline count).'
+  signal-count:
+    description: 'Number of candidates that were "verified" by model opinion only (a lead, NOT a code-confirmation).'
+  refuted-count:
+    description: 'Number of candidates the gate refuted (no cross-user effect).'
+  notdata-count:
+    description: 'Number of candidates that produced NO usable verdict (challenge / rate-limit / transport failure).'
+  verdicts-path:
+    description: 'Path to a JSON file holding the full per-candidate results (credentials redacted).'
+
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
