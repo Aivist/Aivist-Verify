@@ -1,0 +1,129 @@
+# ==============================================================================
+# Living self-test for the Aivist Verify confirmation-gate Action.
+#
+# It builds the action image, boots a COMMITTED seeded lab (depot_target) and the
+# deterministic always-verified LLM stub from that SAME image on an isolated Docker
+# network, then runs the CONTAINERIZED action twice and asserts the regression-gate
+# contract:
+#     SAFE candidate  (DP-READ-SAFE-ECHO) -> nothing confirmed -> exit 0 (build passes)
+#     REAL candidate  (DP-READ-VULN)      -> vuln confirmed     -> exit 1 (build fails)
+#
+# No live LLM key is used: the stub supplies the model's raw opinion, so the
+# DETERMINISTIC CODE GATE is the only thing that can decide the verdict. If the gate
+# ever stopped refuting the SAFE case or confirming the REAL one, this job goes red.
+# ==============================================================================
+name: Aivist Verify - Action self-test
+
+on:
+  push:
+    paths:
+      - 'action.yml'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.github/action/**'
+      - '.github/workflows/aivist-verify-selftest.yml'
+      - 'backend/**'
+      - 'depot_target/**'
+      - 'scripts/measure/**'
+      - 'run.py'
+      - 'pyproject.toml'
+  pull_request:
+    paths:
+      - 'action.yml'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.github/action/**'
+      - '.github/workflows/aivist-verify-selftest.yml'
+      - 'backend/**'
+      - 'depot_target/**'
+      - 'scripts/measure/**'
+      - 'run.py'
+      - 'pyproject.toml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: aivist-verify-action:selftest
+      NET: aivist-selftest
+      ATTACKER: 'Bearer alice-depot-token-aaaa'
+      OWNER: 'Bearer bob-depot-token-bbbb'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build the action image
+        run: docker build -t "$IMAGE" .
+
+      - name: Create an isolated network
+        run: docker network create "$NET"
+
+      - name: Boot the seeded depot lab (from the action image)
+        run: |
+          docker run -d --name lab --network "$NET" \
+            -e DEPOT_TARGET_DATABASE_URL="sqlite+aiosqlite:////tmp/depot.db" \
+            --entrypoint python "$IMAGE" \
+            -m uvicorn depot_target.main:app --host 0.0.0.0 --port 8002 --log-level warning
+
+      - name: Start the deterministic LLM stub (from the action image)
+        run: |
+          docker run -d --name stub --network "$NET" \
+            --entrypoint python "$IMAGE" \
+            /action/.github/action/llm_stub.py --host 0.0.0.0 --port 9099
+
+      - name: Wait for the lab to be ready
+        run: |
+          for i in $(seq 1 40); do
+            if docker run --rm --network "$NET" --entrypoint python "$IMAGE" -c \
+              "import urllib.request; urllib.request.urlopen('http://lab:8002/openapi.json', timeout=2); print('lab ready')"; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::lab did not become ready"; docker logs lab || true; exit 1
+
+      - name: SAFE candidate must PASS the build (exit 0)
+        run: |
+          set +e
+          docker run --rm --network "$NET" \
+            -e INPUT_TARGET_URL="http://lab:8002" \
+            -e INPUT_CANDIDATES="/action/.github/action/examples/candidates.depot-safe.json" \
+            -e INPUT_ATTACKER_TOKEN="$ATTACKER" \
+            -e INPUT_OWNER_TOKEN="$OWNER" \
+            -e INPUT_PROVIDER_API_KEY="stub-key" \
+            -e INPUT_LLM_PROVIDER="openai" \
+            -e INPUT_LLM_BASE_URL="http://stub:9099/v1" \
+            -e INPUT_LLM_MODEL="aivist-stub" \
+            -e INPUT_FAIL_ON_CONFIRM="true" \
+            "$IMAGE"
+          code=$?
+          echo "SAFE exit code = $code"
+          if [ "$code" -ne 0 ]; then echo "::error::expected exit 0 for the SAFE case, got $code"; exit 1; fi
+
+      - name: REAL candidate must FAIL the build (exit 1)
+        run: |
+          set +e
+          docker run --rm --network "$NET" \
+            -e INPUT_TARGET_URL="http://lab:8002" \
+            -e INPUT_CANDIDATES="/action/.github/action/examples/candidates.depot-real.json" \
+            -e INPUT_ATTACKER_TOKEN="$ATTACKER" \
+            -e INPUT_OWNER_TOKEN="$OWNER" \
+            -e INPUT_PROVIDER_API_KEY="stub-key" \
+            -e INPUT_LLM_PROVIDER="openai" \
+            -e INPUT_LLM_BASE_URL="http://stub:9099/v1" \
+            -e INPUT_LLM_MODEL="aivist-stub" \
+            -e INPUT_FAIL_ON_CONFIRM="true" \
+            "$IMAGE"
+          code=$?
+          echo "REAL exit code = $code"
+          if [ "$code" -ne 1 ]; then echo "::error::expected exit 1 for the REAL case, got $code"; exit 1; fi
+
+      - name: Teardown
+        if: always()
+        run: |
+          docker rm -f lab stub >/dev/null 2>&1 || true
+          docker network rm "$NET" >/dev/null 2>&1 || true

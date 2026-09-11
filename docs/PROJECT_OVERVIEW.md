@@ -111,6 +111,11 @@ subcommands:
 - **`run --config <json>`** — the fully non-interactive, programmatic entry for CI /
   scripting: JSON config in, structured JSON to stdout. Tokens are read only from the
   environment, never from the config file.
+- **GitHub Action** (`action.yml` + `Dockerfile`, repo root) — a thin container wrapper over
+  `run --config` (mode=`verify`) that turns it into an access-control **regression gate**:
+  confirm a list of already-known BOLA/IDOR candidates against a running target with two
+  identities and fail the build when the deterministic gate confirms one. Confirm-only (no
+  discovery); new wrapper files only, engine untouched. See README "Use in CI (GitHub Action)".
 - **`demo`** — a zero-setup confirmation of a real cross-user write on the built-in lab
   (no Docker, no external target, no tokens to supply). It needs only an API key.
 - **`target`** / **`config`** — save a reusable target as one editable file; set the AI

@@ -1,0 +1,11 @@
+[
+  {
+    "name": "DP-READ-SAFE-ECHO",
+    "method": "GET",
+    "path_template": "/depot/bonds/{id}",
+    "id_location": "path",
+    "id_param": "id",
+    "attacker_id": "a11ce000-0000-4000-8000-000000000001",
+    "victim_id": "b0b00000-0000-4000-8000-000000000002"
+  }
+]

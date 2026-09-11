@@ -60,6 +60,17 @@ Subcommands of `python run.py`: `verify · confirm · config · demo · target �
   that reuses `_verify_external` (verify) and `run_scan` (scan) **unchanged**; tokens env-only + masked +
   never in the config file, collision guard fires, output redacted, NOT-DATA/error → non-zero exit. Code:
   `backend/app/cli/run_command.py`; tests `test_run_command.py`.
+- **`run` wrapped as a GitHub Action — the CI regression gate.** `action.yml` + `Dockerfile` at the repo ROOT
+  package a container action that loops `python run.py run --config` (mode=`verify`) over a list of
+  ALREADY-KNOWN BOLA/IDOR candidates and maps the aggregate onto a CI exit code (0 nothing confirmed · 1 a
+  code-confirmed bug when `fail-on-confirm` · 2 the gate could not run). It is NEW WRAPPER FILES ONLY — zero
+  verdict logic, the engine / labs / committed artifacts untouched. Entrypoint: `.github/action/entrypoint.py`.
+  It confirms known candidates and does NOT discover them (that is why the zero-FP property is meaningful here).
+  A deterministic, no-live-key self-test — an always-verified OpenAI-compatible stub (`.github/action/llm_stub.py`)
+  driving the engine via the documented `LLM_PROVIDER=openai` seam, so the DETERMINISTIC CODE GATE alone decides —
+  runs the CONTAINERIZED action against the committed `depot_target` lab in
+  `.github/workflows/aivist-verify-selftest.yml` (SAFE `DP-READ-SAFE-ECHO` → exit 0; REAL `DP-READ-VULN` → exit 1).
+  Usage lives in README "Use in CI (GitHub Action)".
 
 ## Two open observations (pending director feedback — do not freeze the UX)
 1. **ASCII dash** — the header uses `-`, not `—` (the Windows console mangles the em-dash).

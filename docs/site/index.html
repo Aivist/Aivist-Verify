@@ -480,6 +480,29 @@ html.js .rv[data-d="3"]{transition-delay:.27s} html.js .rv[data-d="4"]{transitio
   </div>
 </section>
 
+<section id="ci">
+  <div class="wrap">
+    <span class="eyebrow rv">In your pipeline</span>
+    <h2 class="rv">A regression gate, not another scanner.</h2>
+    <p class="lede rv" data-d="1">Ship it as a GitHub Action. Point it at a running target with two identities and a list of <strong>already-known</strong> BOLA/IDOR candidates; it re-confirms them on every pull request and <strong>fails the build the moment the code gate confirms a real one</strong>. It <em>confirms</em> known candidates — it does not discover them, which is exactly why the zero-false-positive discipline still holds: a red build is a real regression, not a pile of <em>maybe</em>.</p>
+    <div class="term rv" data-d="2">
+      <div class="term-bar" aria-hidden="true">
+        <i style="background:#f85149"></i><i style="background:#d29922"></i><i style="background:#3fb950"></i>
+        <span class="t">.github/workflows/access-control-gate.yml</span>
+      </div>
+      <pre tabindex="0" role="region" aria-label="Example GitHub Actions workflow step using the Aivist Verify confirmation gate">- uses: Aivist/Aivist-Verify@v1
+  with:
+    target-url: https://staging.example.com
+    candidates: .github/bola-candidates.json   # your already-known candidates
+    attacker-token: ${{ secrets.TARGET_ATTACKER_TOKEN }}
+    owner-token:    ${{ secrets.TARGET_OWNER_TOKEN }}
+    provider-api-key: ${{ secrets.GEMINI_API_KEY }}
+    fail-on-confirm: true</pre>
+    </div>
+    <p class="note rv"><strong>exit 0</strong> nothing confirmed · <strong>exit 1</strong> a real cross-user bug confirmed · <strong>exit 2</strong> the gate could not run — never a silent pass. The Action self-tests on every push: it builds its image, boots a committed lab and a deterministic (no-key) model stub, and proves the gate still <em>passes</em> the safe case and <em>fails</em> the real one. See <a href="https://github.com/Aivist/Aivist-Verify/blob/master/action.yml"><code>action.yml</code></a>.</p>
+  </div>
+</section>
+
 </main>
 
 <footer>

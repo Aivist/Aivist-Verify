@@ -105,3 +105,12 @@ endpoint + ids (verify) or a catalog source `spec_path` / `endpoints` / `endpoin
 one → a clear JSON error, never a prompt; `attacker == owner` is refused). Exit code: **0** when a
 verdict/report is produced, **non-zero** on NOT DATA / setup error (so CI can branch); no token value ever
 appears in the JSON.
+
+### In CI — the GitHub Action
+
+The same `run --config` path is packaged as a container GitHub Action (`action.yml` + `Dockerfile` at the
+repo root) so it can be an **access-control regression gate**: give it a running target, two identities, and
+a list of already-known BOLA/IDOR candidates, and it fails the build when the deterministic gate confirms a
+real one (exit **0** nothing confirmed · **1** confirmed with `fail-on-confirm` · **2** the gate could not
+run). It confirms known candidates; it does not discover them. Copy-paste workflow, inputs, and the honest
+scope note are in the README section **"Use in CI (GitHub Action)"**.
