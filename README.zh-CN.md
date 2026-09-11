@@ -225,6 +225,69 @@ export TARGET_BYSTANDER_TOKEN=...   # a third account that does NOT own the reso
 
 `attacker == owner` 的冲突会在引擎运行之前就被 fail-closed 地拒绝；token 从不会被回显或写入日志。
 
+## 在 CI 中使用（GitHub Action）
+
+Aivist Verify 以**容器化 GitHub Action** 的形式发布，它封装了上文同一条 `run --config` 确认路径，因此你可以把它当作一道**访问控制回归闸门**：把它指向一个正在运行的目标，给它两个身份和一批**已知的** BOLA/IDOR 候选端点，当确定性闸门**确认其中任何一个是真实漏洞时，它就让构建失败**。
+
+它**确认**已知候选，而**不发现**它们。这是刻意为之——确认正是零 false positive 闸门所在之处（一个 `CONFIRMED` 意味着某条确定性代码通道证明了跨用户效果，绝非仅凭模型的意见），所以一次绿色构建意味着*这些已知的访问控制漏洞没有回归*，且没有任何需要人工甄别的误报。发现是另一件事（见 `scan`）。
+
+```yaml
+# .github/workflows/access-control-gate.yml
+name: Access-control regression gate
+on: [pull_request]
+jobs:
+  bola-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # 1) 启动你要确认的目标，使其在下面的 URL 上可达。
+      #    （已部署的 staging URL 最简单；若目标在 runner 上启动，见下方网络说明。）
+      - name: Confirm known BOLA/IDOR candidates have not regressed
+        uses: Aivist/Aivist-Verify@v1
+        with:
+          target-url: https://staging.example.com
+          candidates: .github/bola-candidates.json    # 你的已知候选（文件或内联 JSON）
+          attacker-token: ${{ secrets.TARGET_ATTACKER_TOKEN }}   # 身份 A（发起攻击）
+          owner-token:    ${{ secrets.TARGET_OWNER_TOKEN }}      # 身份 B（owner-view 回读）
+          provider-api-key: ${{ secrets.GEMINI_API_KEY }}        # 引擎所用的模型 key
+          fail-on-confirm: true                                  # 默认——确认到漏洞即失败
+```
+
+每个候选就是一个操作：
+
+```json
+[
+  {
+    "name": "order-idor",
+    "method": "GET",
+    "path_template": "/api/orders/{id}",
+    "id_location": "path",
+    "id_param": "id",
+    "attacker_id": "1001",
+    "victim_id": "1002"
+  }
+]
+```
+
+**输入**（完整列表见 [`action.yml`](./action.yml)）：
+
+| 输入 | 必填 | 说明 |
+|---|---|---|
+| `target-url` | 是 | 要确认的、正在运行的目标 base URL。 |
+| `candidates` | 是 | 已知的 BOLA/IDOR 操作——JSON 文件路径或内联 JSON。 |
+| `attacker-token` | 是 | 身份 A 凭据（攻击身份）。请用 secret。 |
+| `owner-token` | 是 | 身份 B 凭据（owner-view 回读）。请用 secret。 |
+| `bystander-token` | 否 | 用于 D30 公共资源判别的第三/旁观者身份。 |
+| `provider-api-key` | 否 | 引擎用来得出原始判定的 LLM key。请用 secret。 |
+| `llm-provider` / `llm-base-url` / `llm-model` | 否 | 选择 `gemini`（默认）、`openai`（中转/本地）或 `anthropic`。 |
+| `fail-on-confirm` | 否 | 确认到漏洞时让构建失败（默认 `true`；`false` = 仅报告）。 |
+
+**输出：** `confirmed-count`、`signal-count`、`refuted-count`、`notdata-count`、`verdicts-path`。**退出码：** `0` 未确认任何漏洞（构建通过）· `1` 在 `fail-on-confirm: true` 下至少有一个候选被代码确认（构建失败）· `2` 闸门无法运行（配置/执行错误——绝不静默放行）。每次运行都会向 job summary 写入一张简明表格。
+
+**网络说明（在 runner 上启动的目标）。** 容器 Action 里的 `localhost` 指的是容器自身，而不是 runner 主机。如果你在同一个 job 内启动目标，请通过 Docker 网桥网关从 Action 访问它（Linux runner 上用 `target-url: http://172.17.0.1:<port>`），或把它作为[服务容器](https://docs.github.com/actions/using-containerized-services/about-service-containers)运行并使用其服务名。若目标本就在某个可达 URL 上（staging、服务容器），则无需任何特殊处理。
+
+**自检。** 每次相关推送都会由 [`.github/workflows/aivist-verify-selftest.yml`](./.github/workflows/aivist-verify-selftest.yml) 运行该 Action：它构建镜像，启动已提交的 `depot_target` 实验环境和一个确定性的（无需 key）模型桩，然后断言闸门对 SAFE 用例（`DP-READ-SAFE-ECHO`）**放行**、对 REAL 用例（`DP-READ-VULN`）**失败**。一旦闸门不再拒绝安全用例、或不再确认真实用例，该 job 就会变红。
+
 ## 自己复现
 
 你不必相信一段终端记录——证据可以在三个彼此独立的层面上重新运行：
@@ -265,7 +328,7 @@ python scripts/measure/verdict_measure.py \
 
 ## 能力与诚实的局限
 
-**已支持（在仓库内构建并经过审计）：** 基于 OpenAPI spec 以及无 spec 的发现（手工端点列表、HAR / 原始 HTTP 解析、实时 mitmproxy 抓包）；静态 token *以及*自动重新登录的认证方式；一个在遇到质询/限流时中止并转为 `NOT DATA`、而不是持续冲击目标的断路器；同一接缝之后的三家模型提供方（默认 Gemini、OpenAI 兼容、Anthropic）；以及面向 CI 的完全非交互 `run --config` 入口。
+**已支持（在仓库内构建并经过审计）：** 基于 OpenAPI spec 以及无 spec 的发现（手工端点列表、HAR / 原始 HTTP 解析、实时 mitmproxy 抓包）；静态 token *以及*自动重新登录的认证方式；一个在遇到质询/限流时中止并转为 `NOT DATA`、而不是持续冲击目标的断路器；同一接缝之后的三家模型提供方（默认 Gemini、OpenAI 兼容、Anthropic）；面向 CI 的完全非交互 `run --config` 入口；以及一个把该入口封装成访问控制回归闸门的 **GitHub Action**（只确认、确认即失败）。
 
 **局限，直说：** **统计意义上的**零 false positive 纪录来自**两个受控实验环境**；引擎另外还在**两个公开的真实目标**上得到了验证（crAPI 与 VAmPI —— 九次经人工核验的运行，[见上文](#在真实的公开目标上验证--不只是我们自己的实验环境)），但它**尚未**在多样化的生产系统上大规模运行过——"已支持"意味着该能力存在并经过审计，而不是说它已在真实环境中久经考验。读取语义确认闸门存在**已记录在案的边界**（参见 `RESULTS.md`），其中包括对 broken-for-all 资源的一次刻意漏报。该工具**没有任何认证机制**，且面向 **localhost**。
 
@@ -275,12 +338,14 @@ python scripts/measure/verdict_measure.py \
 Aivist-Verify/
 ├─ run.py                    # CLI entry point (the `aivist` command)
 ├─ README.md · RESULTS.md · REPRODUCE.md · LICENSE
+├─ action.yml · Dockerfile   # 面向 CI 的回归闸门 GitHub Action（对 `run --config` 的薄封装）
 ├─ backend/app/
 │   ├─ services/             # the confirmation engine: differential oracle, deep verifier, exemption gates
 │   └─ cli/                  # the command line and interactive console
 ├─ vulnerable_target/        # lab 1 (integer ids) + its independent ground-truth test suite
 ├─ depot_target/             # lab 2 (UUID ids) + ground-truth suite
 ├─ scripts/measure/          # the measurement harness + committed result artifacts (sweep_*.jsonl)
+├─ .github/action/           # Action 的入口脚本、示例，以及无需 key 的自检模型桩
 └─ docs/                     # architecture and engine documentation
 ```
 

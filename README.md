@@ -256,6 +256,70 @@ export TARGET_BYSTANDER_TOKEN=...   # a third account that does NOT own the reso
 
 An `attacker == owner` collision is refused fail-closed before the engine runs; tokens are never echoed or logged.
 
+## Use in CI (GitHub Action)
+
+Aivist Verify ships as a **container GitHub Action** that wraps the same `run --config` confirmation path above, so you can use it as an **access-control regression gate**: point it at a running target with two identities and a list of **already-known** BOLA/IDOR candidate endpoints, and it **fails the build when the deterministic gate confirms a real one**.
+
+It **confirms** known candidates; it does **not** discover them. That is deliberate — confirmation is where the zero-false-positive gate lives (a `CONFIRMED` means a deterministic code channel proved a cross-user effect, never the model's opinion alone), so a green build means *these known access-control bugs have not regressed*, with no false alarms to triage. Discovery is a separate concern (see `scan`).
+
+```yaml
+# .github/workflows/access-control-gate.yml
+name: Access-control regression gate
+on: [pull_request]
+jobs:
+  bola-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # 1) Bring up the target you want to confirm against, reachable at the URL below.
+      #    (A deployed staging URL is simplest. For a target you start on the runner,
+      #     see the networking note below.)
+      - name: Confirm known BOLA/IDOR candidates have not regressed
+        uses: Aivist/Aivist-Verify@v1
+        with:
+          target-url: https://staging.example.com
+          candidates: .github/bola-candidates.json    # your known candidates (file or inline JSON)
+          attacker-token: ${{ secrets.TARGET_ATTACKER_TOKEN }}   # identity A (the attack)
+          owner-token:    ${{ secrets.TARGET_OWNER_TOKEN }}      # identity B (owner-view re-read)
+          provider-api-key: ${{ secrets.GEMINI_API_KEY }}        # the engine's model key
+          fail-on-confirm: true                                  # default — fail on a confirmed bug
+```
+
+Each candidate is one operation:
+
+```json
+[
+  {
+    "name": "order-idor",
+    "method": "GET",
+    "path_template": "/api/orders/{id}",
+    "id_location": "path",
+    "id_param": "id",
+    "attacker_id": "1001",
+    "victim_id": "1002"
+  }
+]
+```
+
+**Inputs** (see [`action.yml`](./action.yml) for the full list):
+
+| Input | Required | Description |
+|---|---|---|
+| `target-url` | yes | Base URL of the running target to confirm against. |
+| `candidates` | yes | Known BOLA/IDOR ops — a JSON file path or inline JSON. |
+| `attacker-token` | yes | Identity-A credential (attack identity). Use a secret. |
+| `owner-token` | yes | Identity-B credential (owner-view re-read). Use a secret. |
+| `bystander-token` | no | Third/bystander identity for D30 public-resource discrimination. |
+| `provider-api-key` | no | LLM key the engine uses to reach its raw verdict. Use a secret. |
+| `llm-provider` / `llm-base-url` / `llm-model` | no | Select `gemini` (default), `openai` (relay/local), or `anthropic`. |
+| `fail-on-confirm` | no | Fail the build on a confirmed bug (default `true`; `false` = report only). |
+
+**Outputs:** `confirmed-count`, `signal-count`, `refuted-count`, `notdata-count`, `verdicts-path`. **Exit codes:** `0` nothing confirmed (build passes) · `1` at least one candidate code-confirmed with `fail-on-confirm: true` (build fails) · `2` the gate could not run (setup/execution error — never a silent pass). A concise table is written to the job summary each run.
+
+**Networking note (targets started on the runner).** A container action's `localhost` is the container, not the runner host. If you start the target inside the same job, reach it from the action via the Docker bridge gateway (`target-url: http://172.17.0.1:<port>` on Linux runners) or run it as a [service container](https://docs.github.com/actions/using-containerized-services/about-service-containers) and use its service name. A target on a reachable URL (staging, a service container) needs no special handling.
+
+**Self-checking.** The Action is exercised on every relevant push by [`.github/workflows/aivist-verify-selftest.yml`](./.github/workflows/aivist-verify-selftest.yml): it builds the image, boots the committed `depot_target` lab and a deterministic (no-key) model stub, then asserts the gate **passes** the SAFE case (`DP-READ-SAFE-ECHO`) and **fails** the REAL one (`DP-READ-VULN`). If the gate ever stopped refuting the safe case or confirming the real one, that job goes red.
+
 ## Reproduce it yourself
 
 You don't have to trust a transcript — the evidence is re-runnable in three independent layers:
@@ -296,7 +360,7 @@ A tool whose entire value is *honesty* has to be honest about its own boundaries
 
 ## Capabilities & honest limits
 
-**Supported (built and audited in-repo):** OpenAPI-spec and spec-less discovery (manual endpoint lists, HAR / raw-HTTP parsing, live mitmproxy capture); static-token *and* automatic re-login auth; a challenge/rate-limit circuit-breaker that aborts to `NOT DATA` rather than hammer a target; three model providers behind one seam (Gemini default, OpenAI-compatible, Anthropic); and the fully non-interactive `run --config` entry for CI.
+**Supported (built and audited in-repo):** OpenAPI-spec and spec-less discovery (manual endpoint lists, HAR / raw-HTTP parsing, live mitmproxy capture); static-token *and* automatic re-login auth; a challenge/rate-limit circuit-breaker that aborts to `NOT DATA` rather than hammer a target; three model providers behind one seam (Gemini default, OpenAI-compatible, Anthropic); the fully non-interactive `run --config` entry for CI; and a packaged **GitHub Action** that turns that entry into an access-control regression gate (confirm-only, fail-on-confirm).
 
 **Limits, stated plainly:** the **statistical** zero-false-positive record comes from **two controlled labs**; the engine has additionally been validated against **two public real targets** (crAPI and VAmPI — nine hand-verified runs, [above](#validated-on-real-public-targets--not-just-our-own-labs)), but it has **not** been run at scale across diverse production systems — "supported" means the capability exists and is audited, not that it's been battle-tested in the wild. The read-semantic confirmation gate has **documented bounds** (see `RESULTS.md`), including a deliberate miss on broken-for-all resources. The tool has **no authentication** and targets **localhost**.
 
@@ -306,12 +370,14 @@ A tool whose entire value is *honesty* has to be honest about its own boundaries
 Aivist-Verify/
 ├─ run.py                    # CLI entry point (the `aivist` command)
 ├─ README.md · RESULTS.md · REPRODUCE.md · LICENSE
+├─ action.yml · Dockerfile   # the CI regression-gate GitHub Action (a thin wrapper over `run --config`)
 ├─ backend/app/
 │   ├─ services/             # the confirmation engine: differential oracle, deep verifier, exemption gates
 │   └─ cli/                  # the command line and interactive console
 ├─ vulnerable_target/        # lab 1 (integer ids) + its independent ground-truth test suite
 ├─ depot_target/             # lab 2 (UUID ids) + ground-truth suite
 ├─ scripts/measure/          # the measurement harness + committed result artifacts (sweep_*.jsonl)
+├─ .github/action/           # the Action's entrypoint, examples, and its no-key self-test LLM stub
 └─ docs/                     # architecture and engine documentation
 ```
 
