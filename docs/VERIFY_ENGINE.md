@@ -1,6 +1,7 @@
 # VERIFY ENGINE — Differential Fuzzing & Auth Custody
 
-> File: `backend/app/services/fuzzer.py` (~1600 lines, the core of the product).
+> File: `backend/app/services/fuzzer.py` (~1600 lines — the **legacy differential
+> engine**; see the interface note below for how it relates to the shipped CLI).
 > This engine takes a persisted `VulnerabilityFinding` + its `automation_payloads`
 > and actively replays mutated requests against the live target, then uses a
 > **differential oracle** to decide whether each payload exposed a real
@@ -10,13 +11,30 @@
 > organized into "Section 7.x" (custody) and "Step 8" (parallel) blocks that map
 > to that skill.
 
-## Entry points
+## What drives this engine (CLI-only; no HTTP API)
 
-| Function | Trigger | Purpose |
+> **Interface reality.** Aivist Verify is a **CLI-only** tool — there is **no server,
+> HTTP API, or web UI** (see [`ARCHITECTURE.md`](./ARCHITECTURE.md)). The product is driven
+> by `run.py` (`aivist verify` / `scan` / `run` / `demo` / `config`), and the **shipped
+> confirmation path is the deep verifier** (`deep_verifier.execute_deep_verification`; see
+> [`DEEP_VERIFY.md`](./DEEP_VERIFY.md)), which the CLI calls directly.
+>
+> The `fuzzer.py` **differential engine documented below is the LEGACY batch path.** Its
+> functions were historically triggered by an HTTP API (`POST /hunter/verify/*`) that was
+> **removed together with the FastAPI server layer** — there is no `hunter.py` and no
+> `FastAPI(` / `APIRouter(` anywhere in `backend/app`. These functions remain in-tree and
+> are still exercised by tests and by the additive Phase-7 shadow path, but they are **not
+> reachable from the shipped CLI** (which does not call `execute_parallel_fuzzing`). The
+> differential-oracle / mutation / custody **mechanism** described here is accurate; only
+> the historical HTTP/UI triggers are gone.
+
+## Entry points (internal functions in `fuzzer.py`)
+
+| Function | Caller | Purpose |
 |---|---|---|
-| `execute_differential_fuzzing(finding_id)` | `POST /hunter/verify/{id}` | Legacy single-target path. **Thin wrapper** → `execute_parallel_fuzzing([finding_id])`. Scope-lock stays OFF; re-auth harvested from the finding. |
-| `execute_parallel_fuzzing(finding_ids, auth_refresh_request, approved_host, max_concurrency)` | `POST /hunter/verify/batch` | True-concurrent multi-endpoint engine. One shared auth custody, one DB writer, single-host scope lock. |
-| `dry_run_auth_refresh(auth_refresh_request, approved_host)` | `POST /hunter/auth/dry-run` | Run a re-auth request once, report extracted credential. No persistence. |
+| `execute_differential_fuzzing(finding_id)` | internal / tests (historically `POST /hunter/verify/{id}` — removed) | Legacy single-target path. **Thin wrapper** → `execute_parallel_fuzzing([finding_id])`. Scope-lock stays OFF; re-auth harvested from the finding. |
+| `execute_parallel_fuzzing(finding_ids, auth_refresh_request, approved_host, max_concurrency)` | internal / tests / Phase-7 shadow (historically `POST /hunter/verify/batch` — removed) | True-concurrent multi-endpoint engine. One shared auth custody, one DB writer, single-host scope lock. |
+| `dry_run_auth_refresh(auth_refresh_request, approved_host)` | internal / tests (historically `POST /hunter/auth/dry-run` — removed) | Run a re-auth request once, report extracted credential. No persistence. |
 
 > The single-target and batch paths share **the same engine** — single-target is
 > just a batch of one. This guarantees identical behavior and zero regression
@@ -57,13 +75,12 @@ Phase 7  (SHADOW, additive, read-only) — only if AI_DEEP_VERIFY_SHADOW=True;
   this whole design exists to prevent (SQLAlchemy async sessions are not
   concurrency-safe; SQLite has a single writer).
 
-> **Step 9 generalization.** This single-writer pattern was promoted to an
-> **app-wide `WriterService`** (`services/proxy_pipeline.py`), started in the
-> lifespan and shared with the proxy radar. When it is running the fuzzer
-> **forwards** its persistence jobs to it instead of starting its own
-> `_db_writer_consumer`, so there is globally **one** SQLite writer for the whole
-> process; the local consumer remains as an ephemeral fallback (e.g. isolated unit
-> tests). The invariant above is unchanged — see [`ARCHITECTURE.md`](./ARCHITECTURE.md) §5.
+> **Step 9 generalization (legacy — inert in the CLI product).** The `WriterService`
+> class still exists (`services/proxy_pipeline.py`) as an app-wide single-writer
+> generalization, but it was **started in the removed server's lifespan**. The CLI-only
+> product has **no lifespan to start it**, so it is never running here and the fuzzer
+> always uses its own ephemeral `_db_writer_consumer` (in fact `WriterService.submit`
+> raises if called before `start()`). The single-writer invariant above is unchanged.
 
 ---
 
@@ -170,10 +187,12 @@ contains a soft-logout signature (`session expired`, `please login`,
    **Never gridlock.** Preserve this `finally` contract if you touch this code.
 
 ### Live diagnostics
-While a refresh is in flight, `GET /verify/{id}/results` injects a transient
+While a refresh is in flight, `get_active_custody(finding_id)` exposes a transient
 record (`payload_index = -1`, `verification_status = "running"`,
-`id="__custody_diagnostic__"`) via `get_active_custody(finding_id)` so the UI
-shows a recovery state instead of appearing hung. It is never persisted.
+`id="__custody_diagnostic__"`) so a caller can see a recovery state instead of a
+process that appears hung. It is never persisted. (This was historically surfaced
+through the removed `GET /verify/{id}/results` endpoint; the CLI-only product has no
+such endpoint or UI — the diagnostic record is simply available to an in-process caller.)
 
 ---
 
@@ -187,9 +206,11 @@ shows a recovery state instead of appearing hung. It is never persisted.
 - No `approved_host`, multiple findings → locked to their shared derived host.
 - Any out-of-scope host → the batch is rejected/aborted.
 
-The API layer (`/hunter/verify/batch` in `hunter.py`) enforces the same single-
-host rule up front and returns 400 on a mixed-host or out-of-scope selection,
-refusing to probe third-party domains.
+(Historically the removed HTTP layer enforced the same single-host rule up front and
+returned 400 on a mixed-host or out-of-scope selection; that server no longer exists. In
+the CLI-only product the scope lock is enforced in the engine itself — the `ScopePolicy`
+chokepoint in `_send_request` raises before the socket opens — so third-party domains are
+refused regardless of entry point. See [`ARCHITECTURE.md`](./ARCHITECTURE.md) §7.)
 
 ---
 
@@ -205,14 +226,15 @@ refusing to probe third-party domains.
 
 ---
 
-## Verdict lifecycle for the UI
+## Verdict lifecycle
 ```
 untested → (engine runs) → verified | suspicious | failed
                          ↘ running (transient, only during re-auth)
 ```
-Poll `GET /hunter/verify/{finding_id}/results`; records are ordered by
-`payload_index`. The job completes when all payloads have rows and no custody
-diagnostic is present.
+Records are ordered by `payload_index`; the job completes when all payloads have rows and
+no custody diagnostic is present. (Historically polled via the removed
+`GET /hunter/verify/{finding_id}/results` endpoint; the CLI-only product surfaces records
+through the command output / the `run --config` JSON, not an HTTP API or UI.)
 
 ---
 
@@ -286,6 +308,8 @@ semantics is the enabling half of **B-1** (see [`DEEP_VERIFY.md`](./DEEP_VERIFY.
 
 ## Related: `deep_verifier.py`
 
-[`DEEP_VERIFY.md`](./DEEP_VERIFY.md) documents `services/deep_verifier.py` (not
-called from `POST /hunter/verify/*`; invoked read-only by the fuzzer's Phase 7
-only when `AI_DEEP_VERIFY_SHADOW=True`; both AI gates default `False`).
+[`DEEP_VERIFY.md`](./DEEP_VERIFY.md) documents `services/deep_verifier.py` — the
+**shipped confirmation path**, which the CLI (`aivist verify` / `scan` / `run`) calls
+directly. It is also invoked read-only by this fuzzer's legacy Phase 7 when
+`AI_DEEP_VERIFY_SHADOW=True` (both AI gates default `False`). There is no
+`POST /hunter/verify/*` endpoint — that HTTP surface was removed with the server layer.

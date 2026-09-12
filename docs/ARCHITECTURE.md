@@ -101,6 +101,25 @@ engine calls — it structurally cannot manufacture a verdict.
   `TARGET_BYSTANDER_TOKEN` (or a `--tokens-file` read at use-time, never persisted). Each becomes
   a `SecretStr`, routed per-account; an `attacker == owner` collision is refused fail-closed
   before the engine runs.
+- **Authenticated re-login (`--auth`)** (`cli/relogin.py`) — instead of static tokens, `verify`
+  and `scan` can obtain (and refresh) tokens from a login flow described in a JSON `LoginSpec`.
+  Three independent per-account `TokenProvider`s (attacker / owner / bystander) are built with
+  **zero shared state** (identity isolation), each proactively refreshing on JWT expiry and
+  reactively on a 401. What it supports:
+  - **Token location** `body` / `header` / `cookie` (`_extract_token`, `_TOKEN_LOCATIONS`) — the
+    token is read from a JSON field, a response header, or a `Set-Cookie`.
+  - **Multi-step / CSRF login** (`_run_login_sequence`) — an ordered step list that can extract a
+    value (body / header / cookie / regex — e.g. an anti-CSRF token) and inject it into a later
+    step, per-account, with each hop scope-re-checked.
+  - **OAuth 2.0** (`_run_oauth_grant`) — both **resource-owner-password** and **authorization_code
+    + PKCE (S256)** grants, with the authorization-code capture scope-checked per redirect hop.
+  - **D28 owner-only mid-run refresh** (`external_verify._owner_view_auth_degraded` /
+    `_verify_external_relogin`) — if the owner token expires mid-run (the owner-view read returns
+    401), only the **owner** provider is refreshed and the run retried once; the attacker/bystander
+    providers are untouched, and the fresh owner token flows only into `owner_credential`, never an
+    attack request.
+  Deliberate non-goals (never built): MFA/2FA bypass, captcha solving, third-party consent-screen
+  scraping, credential brute-force — a failed/misconfigured flow yields `NOT DATA`, never a verdict.
 - **Scope lock + remote hardening** (`services/scope.py`, `scope_psl.py`, `services/remote_safety.py`)
   — one audited host-scope policy; every outbound request is scope-checked fail-closed at the
   `_send_request` chokepoint. For remote use it also refuses cloud-metadata / link-local addresses,
@@ -163,15 +182,25 @@ safety on the confirmer's *own* requests, and that lives entirely in the scope/n
   `Host`/SNI preserved, so httpx does not re-resolve the name at connect time (closes the DNS-TOCTOU).
   Pinning can only *narrow* to an already-validated address — it can never widen scope.
 - **Per-hop redirect re-validation** and the **challenge/rate-limit circuit-breaker** (aborts to
-  `NOT DATA` rather than hammer a host).
+  `NOT DATA` rather than hammer a host). A second, related guard (`_CHALLENGE_PAGE_REASON` in
+  `deep_verifier.py`) protects the D24 owner-view corroboration itself: when a would-be
+  corroboration rests on a WAF/challenge page — the attack **or** the owner-view response detected
+  as a challenge by `_is_challenge_response` — the confirmation is forced to `NOT DATA`. It is
+  downgrade-only and gated on a would-be corroboration, so a genuine 200-denial still stays
+  `[REFUTED]` unchanged.
 - **`remote_safety.preflight()`** runs this one audited policy against the target BEFORE the run, so
   a remote operator gets a single clear "refused: DNS rebinding / metadata / unresolvable" up front
   instead of a mid-run failure. It reuses `ScopePolicy` — it adds no new guard and makes no verdict
   decision; loopback/lab/intranet targets are never resolved by it.
 
-**What remote does NOT change:** the access-control zero-false-positive gate is byte-identical local
-vs remote (the same run against a lab over loopback and over a non-loopback address reaches the same
-verdict). Remote is a networking/scope capability, not a new class of finding.
+**What remote does NOT change:** the access-control zero-false-positive gate does not depend on
+whether the host is remote — the verdict logic reads HTTP evidence, not the address, so a run over
+loopback and over a non-loopback address is **designed and code-gated to reach the same verdict**.
+That equivalence is exercised by the scope/networking tests (non-loopback hosts driven through the
+real `_send_request` via a mock transport + injected resolvers) and was observed in a live session,
+but it is **not yet locked by a committed end-to-end test against a real non-loopback socket** —
+treat it as designed-and-expected, not demonstrated at that layer. Remote is a networking/scope
+capability, not a new class of finding.
 
 ## 8. Tiered-verdict framework (`services/verdict_tiers.py`)
 

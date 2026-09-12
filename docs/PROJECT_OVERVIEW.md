@@ -216,9 +216,15 @@ scripts/measure/                     # the measurement harness + committed resul
 - **Measured on two controlled labs, not at scale in the wild.** "Supports X" means the
   capability exists and is audited in-repo — not that it has been battle-tested against
   diverse real-world targets.
-- **Single AI provider.** The AI layer currently targets Gemini via the `google.genai`
-  SDK; there is no provider-abstraction layer yet (the interactive `config` flow offers
-  other providers, but the measured, load-bearing path is Gemini).
+- **Provider-agnostic seam, but zero-FP is measured on Gemini only.** The AI layer goes
+  through a three-provider seam (`services/llm/get_provider`): **Gemini** (default,
+  `google.genai`), **OpenAI-compatible** (relays / DeepSeek / Kimi / GLM / Qwen / Grok /
+  local, via `LLM_BASE_URL`), and **Anthropic** — see §3 and [`LLM_PROVIDERS.md`](./LLM_PROVIDERS.md).
+  What that seam guarantees is **connectivity, not correctness**: the zero-false-positive
+  record is measured on `gemini-2.5-pro` only and does not transfer to another model. Zero-FP
+  is a property of the deterministic **code gate** (which reads HTTP evidence, not model text),
+  so a non-Gemini backend is *expected* to hold the line — but that is not re-measured or
+  locked by a committed test.
 - **Read-semantic gate has documented bounds.** Its corroboration threshold is calibrated
   on deterministic lab data, and public/shared resources are a residual gap (see
   `RESULTS.md`). The `--assert-owner-only` option surfaces a "broken-for-all" resource as
