@@ -200,9 +200,10 @@ class CapturedFlow(Base):
     pre-existing tables). No existing table is altered.
 
     ``promoted_finding_id`` is a deliberately decoupled, nullable back-reference
-    (NOT a ForeignKey) recording that an operator pushed this flow into the
-    Hunter pipeline via POST /hunter/findings — keeping capture and analysis
-    loosely coupled and migration-free.
+    (NOT a ForeignKey) recording that a captured flow was promoted into the
+    analysis pipeline — keeping capture and analysis loosely coupled and
+    migration-free. (The HTTP promotion endpoint that once set this was removed
+    with the server layer; the column remains as vestigial, decoupled metadata.)
     """
     __tablename__ = "captured_flows"
 

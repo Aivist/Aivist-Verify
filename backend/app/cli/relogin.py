@@ -26,9 +26,13 @@
 # field (default; covers VAmPI and most JWT logins), a response HEADER (e.g. Authorization
 # or a custom header), or a Set-Cookie COOKIE. This is READ-ONLY: wherever the token is read
 # from, it flows downstream IDENTICALLY (attacker -> auth_context, owner -> OwnerCredential),
-# and refresh / scope-check / identity-isolation wrap the extractor unchanged. Still OUT
-# (later slices — report, do not build): OAuth redirect flows, multi-step / MFA challenges,
-# CSRF-token round-trips and captcha.
+# and refresh / scope-check / identity-isolation wrap the extractor unchanged.
+#
+# SCOPE (later slices, now BUILT): a multi-step / CSRF-token login sequence (ordered steps that
+# extract a value — body / header / cookie / regex — and inject it into a later step), plus OAuth 2.0
+# (resource-owner-password AND authorization_code + PKCE, the auth-code capture scope-checked per
+# redirect hop). Still OUT, by design (report, do not build): MFA / 2FA challenges, captcha solving,
+# and third-party consent-screen scraping.
 # ==============================================================================
 from __future__ import annotations
 
