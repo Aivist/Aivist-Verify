@@ -124,6 +124,16 @@ subcommands:
   (`CONFIRMED` deterministic · `SIGNAL` inferred · `REFUTED` · `NOT DATA`) with `CONFIRMED` reserved
   by construction; access control delegates to `confirm_render` so it maps to `CONFIRMED` exactly as
   today. Only access control is wired to `CONFIRMED`; `SIGNAL` is a reserved extension point. §8.
+- **Query-string / non-path object ids (D29)** — an id in `?report_id=` is expressed, attacked, and
+  owner-view-corroborated exactly like a path id. Fixed in the request-assembly layer only
+  (`external_verify` split/compose + `fuzzer._reconstruct_url` merge + `fetch_owner_view` query
+  carry); NO verdict change. Proven end-to-end by the `query_target/` lab (§4) — REAL confirms, SAFE
+  refutes — and by `backend/tests/test_query_idor_e2e.py`.
+- **Out-of-band (interactsh) client** (`services/oob/`) — INFRASTRUCTURE ONLY for a **future** SSRF
+  detector: register a session, mint a unique interaction domain, poll DNS/HTTP interactions,
+  correlate by token. **Not wired to any verdict**; makes no claim today. Correlation is proven
+  offline with a stub transport (`backend/tests/test_oob.py`); a real run needs a reachable interactsh
+  server. See `docs/OOB.md`.
 - **`demo`** — a zero-setup confirmation of a real cross-user write on the built-in lab
   (no Docker, no external target, no tokens to supply). It needs only an API key.
 - **`target`** / **`config`** — save a reusable target as one editable file; set the AI
@@ -145,6 +155,9 @@ resists it:
 
 - `vulnerable_target/` — a self-contained lab + `vulnerable_target/test_vulns.py`
 - `depot_target/` — a second, structurally different lab + `depot_target/test_vulns.py`
+- `query_target/` — a third lab whose object id lives in the **query string** (the D29 shape) +
+  `query_target/test_vulns.py` (REAL `GET /reports?report_id=` leaks; SAFE `GET /notes?note_id=`
+  refuses). Added alongside the two frozen labs, not by editing them.
 
 These suites require no API key. They are the oracle: the engine is measured against them,
 never the reverse, and a label is never edited to make the engine agree.

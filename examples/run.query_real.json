@@ -1,0 +1,12 @@
+{
+  "_comment": "D29 QUERY-STRING IDOR — REAL (must CONFIRM). Drives the query_target lab (GET /reports?report_id=). The attacker reads their OWN report_id=7 on the baseline; the attack swaps only the query id to the victim's 6. Tokens come from ENV ONLY (TARGET_ATTACKER_TOKEN=Bearer alice-query-token-aaaa, TARGET_OWNER_TOKEN=Bearer bob-query-token-bbbb). Boot the lab first: python -m uvicorn query_target.main:app --port 8003. Run: python run.py run --config examples/run.query_real.json",
+  "mode": "verify",
+  "name": "qs-read-vuln",
+  "base_url": "http://127.0.0.1:8003",
+  "method": "GET",
+  "path_template": "/reports",
+  "id_location": "query",
+  "id_param": "report_id",
+  "attacker_id": "7",
+  "victim_id": "6"
+}
