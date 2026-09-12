@@ -148,13 +148,22 @@ def run_from_config(
 def _run_verify(cfg, attacker_tok, owner_tok, bystander_tok, model, out, err, pretty, engine) -> int:
     from backend.app.cli.console.targets import build_op
     from backend.app.cli.external_verify import (
-        _verify_external, classify_degradation, _record_from_result, _load_spec_file)
+        _verify_external, classify_degradation, _record_from_result, _load_spec_file, _approved_host)
     from backend.app.services.endpoint_catalog import spec_from_endpoints
     from backend.app.services.deep_verifier import execute_deep_verification
+    from backend.app.services.remote_safety import preflight
 
     missing = [f for f in _VERIFY_REQUIRED if not cfg.get(f)]
     if missing:
         out(_dump(_error("missing_fields", "verify mode requires: " + ", ".join(missing))))
+        return 2
+
+    # Remote-safety preflight (reuses the audited ScopePolicy; no new guard, no verdict change):
+    # refuse an SSRF / DNS-rebinding / metadata / unresolvable-remote target early with one clear
+    # error. The engine still re-checks + pins every request; loopback/lab targets are never resolved.
+    _pf = preflight(cfg["base_url"], _approved_host(cfg["base_url"]))
+    if _pf.blocked:
+        out(_dump(_error("unsafe_target", _pf.message, target=cfg["base_url"])))
         return 2
 
     op = build_op(cfg["method"], cfg["path_template"], cfg["id_location"], cfg["id_param"],

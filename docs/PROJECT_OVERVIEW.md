@@ -116,6 +116,14 @@ subcommands:
   confirm a list of already-known BOLA/IDOR candidates against a running target with two
   identities and fail the build when the deterministic gate confirms one. Confirm-only (no
   discovery); new wrapper files only, engine untouched. See README "Use in CI (GitHub Action)".
+- **Remote targets** — the confirmer now targets a local **or authorized-remote** host with the
+  same verdict logic. Remote egress is hardened in the scope layer only (`services/remote_safety.py`
+  preflight over the audited `ScopePolicy`: SSRF / DNS-rebinding refusal + resolved-IP pinning +
+  challenge breaker); no verdict change. See `docs/ARCHITECTURE.md` §7.
+- **Tiered-verdict framework** (`services/verdict_tiers.py`) — an explicit strength layer
+  (`CONFIRMED` deterministic · `SIGNAL` inferred · `REFUTED` · `NOT DATA`) with `CONFIRMED` reserved
+  by construction; access control delegates to `confirm_render` so it maps to `CONFIRMED` exactly as
+  today. Only access control is wired to `CONFIRMED`; `SIGNAL` is a reserved extension point. §8.
 - **`demo`** — a zero-setup confirmation of a real cross-user write on the built-in lab
   (no Docker, no external target, no tokens to supply). It needs only an API key.
 - **`target`** / **`config`** — save a reusable target as one editable file; set the AI
