@@ -225,6 +225,20 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Emit machine-readable JSON to stdout (the default and only stdout format).")
     rc.add_argument("--pretty", action="store_true",
                     help="Also print a short human summary to stderr (stdout stays pure JSON).")
+
+    # ssrf: NON-INTERACTIVE SSRF confirmation via an out-of-band (interactsh) callback. Kept
+    # SEPARATE from the access-control run/verify/scan path; a CONFIRMED SSRF requires a REAL
+    # OOB callback (needs outbound network + a reachable public interactsh server).
+    sf = sub.add_parser(
+        "ssrf",
+        help="Non-interactive: confirm SSRF via an out-of-band interactsh callback from a JSON "
+             "config (+ optional env TARGET_ATTACKER_TOKEN). CONFIRMED only on a real callback.",
+    )
+    sf.add_argument("--config", required=True,
+                    help="Path to a JSON config file (base_url, path, url_param, method, "
+                         "url_location, optional oob_server / poll_seconds). Needs outbound network.")
+    sf.add_argument("--pretty", action="store_true",
+                    help="Also print a short human summary to stderr (stdout stays pure JSON).")
     return ap
 
 
@@ -302,6 +316,13 @@ def main():
         # a --pretty human summary (if asked) goes to stderr so stdout stays pure JSON for piping.
         from backend.app.cli.run_command import run_from_config
         sys.exit(run_from_config(
+            args.config, pretty=args.pretty,
+            err=(lambda *a: print(*a, file=sys.stderr))))
+    if args.cmd == "ssrf":
+        # SSRF confirmation via out-of-band callback — separate additive path (no LLM key needed;
+        # CONFIRMED only on a real interactsh callback). Structured JSON to stdout.
+        from backend.app.cli.ssrf_command import run_ssrf_from_config
+        sys.exit(run_ssrf_from_config(
             args.config, pretty=args.pretty,
             err=(lambda *a: print(*a, file=sys.stderr))))
 

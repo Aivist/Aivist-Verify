@@ -1,0 +1,11 @@
+{
+  "_comment": "SSRF via OOB — SAFE (must NOT confirm). Drives the ssrf_target lab (GET /fetch-safe?url=), which validates the URL host against a strict allow-list and refuses the probe domain BEFORE any request — so no out-of-band callback occurs and the result is REFUTED, never CONFIRMED. Boot the lab first: python -m uvicorn ssrf_target.main:app --port 8004. Run: python run.py ssrf --config examples/run.ssrf_safe.json",
+  "mode": "ssrf",
+  "base_url": "http://127.0.0.1:8004",
+  "method": "GET",
+  "path": "/fetch-safe",
+  "url_location": "query",
+  "url_param": "url",
+  "scheme": "http",
+  "poll_seconds": 20
+}

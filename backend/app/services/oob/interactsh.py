@@ -151,12 +151,16 @@ class InteractshTransport(Transport):
             raise OOBTransportError(f"could not decrypt the interactsh AES key: {e}") from e
 
     def _decrypt_item(self, aes_key: bytes, item_b64: str) -> dict:
-        """AES-CFB: IV is the first 16 bytes, ciphertext the rest (interactsh convention)."""
+        """AES-CTR: the first 16 bytes are the initial counter block, the rest is the
+        ciphertext. The interactsh server encrypts each interaction with AES-256-CTR and
+        prepends the IV; verified against the live public interactsh servers (a CFB reading
+        decrypts only the first 16-byte block correctly — CFB and CTR share block 0 — then
+        diverges, which is exactly the failure this decode avoids)."""
         try:
             from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
             blob = base64.b64decode(item_b64)
             iv, ciphertext = blob[:16], blob[16:]
-            decryptor = Cipher(algorithms.AES(aes_key), modes.CFB(iv)).decryptor()
+            decryptor = Cipher(algorithms.AES(aes_key), modes.CTR(iv)).decryptor()
             plaintext = decryptor.update(ciphertext) + decryptor.finalize()
             return json.loads(plaintext.decode("utf-8"))
         except Exception as e:

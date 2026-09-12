@@ -30,8 +30,10 @@ from typing import Dict, List, Optional, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
 # interactsh id lengths (match the ProjectDiscovery client): a 20-char per-session
-# correlation id and a 13-char per-payload random prefix. token+correlation = the 33-char
-# leftmost DNS label (<= 63, always a legal label).
+# correlation id and a 13-char per-payload random nonce. correlation+token = the 33-char
+# leftmost DNS label — correlation id FIRST, because the interactsh server reads the
+# correlation id from the LEADING 20 chars of the label to find the session (<= 63, always
+# a legal label).
 _CORRELATION_ID_LEN = 20
 _PAYLOAD_TOKEN_LEN = 13
 _ID_ALPHABET = string.ascii_lowercase + string.digits
@@ -62,15 +64,17 @@ def _random_id(length: int) -> str:
 class OOBPayload:
     """One minted probe target. `domain` is what you plant in a request you want the
     target to resolve/fetch; `token` is the per-payload nonce that makes correlation exact."""
-    token: str                 # 13-char per-payload nonce (the leftmost label prefix)
-    correlation_id: str        # the owning session's 20-char id
-    domain: str                # "<token><correlation_id>.<server>" (lowercased)
+    token: str                 # 13-char per-payload nonce (the TRAILING part of the label)
+    correlation_id: str        # the owning session's 20-char id (the LEADING part of the label)
+    domain: str                # "<correlation_id><token>.<server>" (lowercased)
 
     @property
     def unique_id(self) -> str:
         """The 33-char leftmost DNS label an interaction against this payload carries —
-        `<token><correlation_id>`. Correlation matches an interaction's id against THIS."""
-        return f"{self.token}{self.correlation_id}"
+        `<correlation_id><token>` (correlation id FIRST: the interactsh server reads the
+        correlation id from the leading 20 chars). Correlation matches an interaction's id
+        against THIS."""
+        return f"{self.correlation_id}{self.token}"
 
     @property
     def url(self) -> str:
@@ -82,7 +86,7 @@ class OOBInteraction:
     """One received interaction, as parsed by a transport. `unique_id` is the 33-char
     leftmost label the interaction hit — the value correlation keys on."""
     protocol: str                       # "dns" | "http" | "smtp" | ...
-    unique_id: str                      # "<token><correlation_id>" (lowercased)
+    unique_id: str                      # "<correlation_id><token>" (lowercased)
     remote_address: Optional[str] = None
     timestamp: Optional[str] = None
     q_type: Optional[str] = None        # DNS query type, when protocol == "dns"
@@ -149,7 +153,7 @@ class OOBSession:
         payload = OOBPayload(
             token=token,
             correlation_id=self.correlation_id,
-            domain=f"{token}{self.correlation_id}.{self.server}".lower(),
+            domain=f"{self.correlation_id}{token}.{self.server}".lower(),
         )
         self._issued[token] = payload
         return payload

@@ -38,9 +38,10 @@ def test_new_payload_is_unique_and_well_formed():
     assert a.token != b.token                                   # distinct per-probe nonce
     assert len(a.token) == _PAYLOAD_TOKEN_LEN
     assert len(s.correlation_id) == _CORRELATION_ID_LEN
-    # domain == <token><correlation_id>.<server>, all lowercase, one label + server
-    assert a.domain == f"{a.token}{s.correlation_id}.oast.pro"
-    assert a.unique_id == f"{a.token}{s.correlation_id}"        # the 33-char label
+    # domain == <correlation_id><token>.<server>, all lowercase, one label + server
+    # (correlation id FIRST — the interactsh server reads it from the leading 20 chars)
+    assert a.domain == f"{s.correlation_id}{a.token}.oast.pro"
+    assert a.unique_id == f"{s.correlation_id}{a.token}"        # the 33-char label
     assert len(a.unique_id) == _PAYLOAD_TOKEN_LEN + _CORRELATION_ID_LEN
     assert a.url == f"https://{a.domain}"
     # both probes share the session correlation id but differ only in the token prefix
