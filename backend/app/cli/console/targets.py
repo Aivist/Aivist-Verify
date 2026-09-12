@@ -36,8 +36,10 @@ FIELD_GUIDE = {
         "hint": "A label to save and re-select this target.", "example": "crapi-orders"},
     "base_url": {
         "label": "Base URL", "required": True,
-        "hint": "The target's base URL (localhost only).", "example": "http://localhost:8888",
-        "why": "Every request is scope-locked to this host."},
+        "hint": "The target's base URL (localhost or an authorized remote host).",
+        "example": "http://localhost:8888",
+        "why": "Every request is scope-locked to this host; a remote host is also SSRF / "
+               "DNS-rebinding guarded and pinned to its validated IP."},
     "spec_path": {
         "label": "OpenAPI spec path (blank if the target has none)", "required": False,
         "hint": "Path to the target's OpenAPI/Swagger file (.json or .yml), or BLANK.",

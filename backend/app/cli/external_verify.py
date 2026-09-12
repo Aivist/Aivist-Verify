@@ -47,6 +47,7 @@ from backend.app.cli import relogin
 from backend.app.cli.confirm_render import render_tree, exit_code_for
 from backend.app.services.endpoint_catalog import catalog_from_openapi, _parse_endpoint_line
 from backend.app.services.scope import ScopePolicy
+from backend.app.services import remote_safety
 from backend.app.services.deep_verifier import OwnerCredential, execute_deep_verification, flatten_evidence
 
 # A challenged / auth-failed / rate-limited response is NOT a security signal -> NOT DATA.
@@ -590,6 +591,16 @@ def run_external_verify(
         return 2
     if not op.get("method") or not op.get("baseline_path"):
         err("[NOT DATA] the --op JSON must include 'method' and 'baseline_path'.")
+        return 2
+
+    # Remote-safety preflight (REUSES the audited ScopePolicy; adds no new guard). Refuse an
+    # SSRF / DNS-rebinding / cloud-metadata / unresolvable-remote target EARLY with one clear
+    # message, before any request is sent. The engine's _send_request re-checks + pins every
+    # request regardless, so this only makes a refusal that would happen anyway happen sooner and
+    # clearer. Loopback / lab / intranet targets are never resolved here, so they are unaffected.
+    _pf = remote_safety.preflight(target, _approved_host(target))
+    if _pf.blocked:
+        err(f"[NOT DATA] {_pf.message}")
         return 2
 
     # #7 per-finding: which account each role uses (default labels => today's exact keys).
