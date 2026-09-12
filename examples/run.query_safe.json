@@ -1,0 +1,12 @@
+{
+  "_comment": "D29 QUERY-STRING IDOR — SAFE (must REFUTE). Drives the query_target lab (GET /notes?note_id=), where ownership IS enforced and a cross-account read returns a soft-200 denial. The attacker reads their OWN note_id=7 on the baseline; the attack swaps only the query id to the victim's 6. Tokens come from ENV ONLY (TARGET_ATTACKER_TOKEN=Bearer alice-query-token-aaaa, TARGET_OWNER_TOKEN=Bearer bob-query-token-bbbb). Boot the lab first: python -m uvicorn query_target.main:app --port 8003. Run: python run.py run --config examples/run.query_safe.json",
+  "mode": "verify",
+  "name": "qs-read-safe",
+  "base_url": "http://127.0.0.1:8003",
+  "method": "GET",
+  "path_template": "/notes",
+  "id_location": "query",
+  "id_param": "note_id",
+  "attacker_id": "7",
+  "victim_id": "6"
+}
