@@ -1,0 +1,11 @@
+{
+  "_comment": "SSRF via OOB — REAL (must CONFIRM with a real interactsh callback). Drives the ssrf_target lab (GET /fetch?url=), which fetches ANY user URL server-side. The detector injects a UNIQUE interactsh domain and CONFIRMS iff the target's server-side fetch triggers an out-of-band callback. Needs OUTBOUND network + a reachable public interactsh server. Boot the lab first: python -m uvicorn ssrf_target.main:app --port 8004. Run: python run.py ssrf --config examples/run.ssrf_real.json",
+  "mode": "ssrf",
+  "base_url": "http://127.0.0.1:8004",
+  "method": "GET",
+  "path": "/fetch",
+  "url_location": "query",
+  "url_param": "url",
+  "scheme": "http",
+  "poll_seconds": 30
+}

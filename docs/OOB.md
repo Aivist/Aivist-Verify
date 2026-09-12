@@ -1,15 +1,16 @@
-# Out-of-band (OOB) interaction client — infrastructure for a future SSRF detector
+# Out-of-band (OOB) interaction client — the callback substrate for OOB confirmation
 
 `backend/app/services/oob/` is a small client for a [ProjectDiscovery
 interactsh](https://github.com/projectdiscovery/interactsh) session: register a session, mint
 a **unique interaction domain** per probe, poll for received DNS/HTTP/SMTP interactions, and
 **correlate** each received interaction back to the exact probe that caused it.
 
-> **Infrastructure only — NOT wired to any verdict path.** Nothing in `deep_verifier`,
-> `fuzzer`, `verdict_tiers`, or any confirmer imports this module. It gathers evidence a
-> **future** blind-SSRF / out-of-band-injection detector could consume; it makes **no claim
-> and produces no verdict** today. Shipping it now is plumbing, not a zero-false-positive
-> statement, and it does not touch the access-control confirmation path in any way.
+> **Now consumed by the SSRF detector.** The **SSRF confirmer** (`services/ssrf_detector.py`,
+> [`SSRF.md`](./SSRF.md)) uses this client to prove SSRF out-of-band: a real callback to the unique
+> probe domain is the `DeterministicProof`. It remains **isolated from the access-control path** —
+> `deep_verifier`, `fuzzer`, `confirm_render`, and the owner-view gate neither import nor depend on it,
+> so it changes no access-control verdict. `verdict_tiers` does not import it either; the SSRF detector
+> composes the two (OOB client + tiered framework) without coupling them.
 
 ## Why a seam
 

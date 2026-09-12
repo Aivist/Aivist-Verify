@@ -129,11 +129,19 @@ subcommands:
   (`external_verify` split/compose + `fuzzer._reconstruct_url` merge + `fetch_owner_view` query
   carry); NO verdict change. Proven end-to-end by the `query_target/` lab (§4) — REAL confirms, SAFE
   refutes — and by `backend/tests/test_query_idor_e2e.py`.
-- **Out-of-band (interactsh) client** (`services/oob/`) — INFRASTRUCTURE ONLY for a **future** SSRF
-  detector: register a session, mint a unique interaction domain, poll DNS/HTTP interactions,
-  correlate by token. **Not wired to any verdict**; makes no claim today. Correlation is proven
-  offline with a stub transport (`backend/tests/test_oob.py`); a real run needs a reachable interactsh
-  server. See `docs/OOB.md`.
+- **SSRF confirmation via out-of-band callback** (`services/ssrf_detector.py`, `aivist ssrf --config`)
+  — the **first non-access-control vuln type**. It mints a UNIQUE interactsh domain, injects it into a
+  candidate request's URL parameter, sends the request to the target, and polls the OOB session:
+  `CONFIRMED` **iff** the target's server makes a real DNS/HTTP callback to that domain (the interaction
+  is the `DeterministicProof`), else `REFUTED` / `NOT_DATA` — never a bluffed `CONFIRMED`. Wired through
+  `verdict_tiers`; ADDITIVE and ISOLATED from the access-control path. Needs outbound network + a
+  reachable interactsh server. Lab: `ssrf_target/` (§4); offline tests `backend/tests/test_ssrf_detector.py`.
+  See `docs/SSRF.md`.
+- **Out-of-band (interactsh) client** (`services/oob/`) — register a session, mint a unique interaction
+  domain, poll DNS/HTTP interactions, correlate by token. It is now **consumed by the SSRF detector
+  above** (previously infrastructure-only). Correlation is proven offline with a stub transport
+  (`backend/tests/test_oob.py`); a real run needs a reachable public interactsh server (`oast.*`). See
+  `docs/OOB.md`.
 - **`demo`** — a zero-setup confirmation of a real cross-user write on the built-in lab
   (no Docker, no external target, no tokens to supply). It needs only an API key.
 - **`target`** / **`config`** — save a reusable target as one editable file; set the AI
@@ -157,7 +165,10 @@ resists it:
 - `depot_target/` — a second, structurally different lab + `depot_target/test_vulns.py`
 - `query_target/` — a third lab whose object id lives in the **query string** (the D29 shape) +
   `query_target/test_vulns.py` (REAL `GET /reports?report_id=` leaks; SAFE `GET /notes?note_id=`
-  refuses). Added alongside the two frozen labs, not by editing them.
+  refuses). Added alongside the frozen labs, not by editing them.
+- `ssrf_target/` — a fourth lab for **SSRF**: REAL `GET /fetch?url=` fetches any user-supplied URL
+  server-side; SAFE `GET /fetch-safe?url=` allow-list-blocks it. `ssrf_target/test_vulns.py` proves this
+  with a local canary server (no interactsh, no engine imports).
 
 These suites require no API key. They are the oracle: the engine is measured against them,
 never the reverse, and a label is never edited to make the engine agree.

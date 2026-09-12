@@ -328,9 +328,9 @@ python scripts/measure/verdict_measure.py \
 
 ## 能力与诚实的局限
 
-**已支持（在仓库内构建并经过审计）：** 本地**与已授权远程**目标的确认（scope-lock ＋ SSRF / DNS-rebinding 防护 ＋ 解析 IP pinning ＋ 质询断路器）；**路径 *与* query string（非路径）对象 id** —— 位于 `?report_id=` 的 id 会像路径 id 一样被表达、攻击并由 owner-view 佐证；基于 OpenAPI spec 以及无 spec 的发现（手工端点列表、HAR / 原始 HTTP 解析、实时 mitmproxy 抓包）；静态 token *以及*自动重新登录的认证方式；同一接缝之后的三家模型提供方（默认 Gemini、OpenAI 兼容（含 **DeepSeek** / 中转 / 本地）、Anthropic）；面向 CI 的完全非交互 `run --config` 入口；一个把该入口封装成访问控制回归闸门的 **GitHub Action**（只确认、确认即失败）；以及一个显式的**分级判定框架**（`CONFIRMED` = 确定性证明 · `SIGNAL` = 证据推断的线索 · `REFUTED` · `NOT DATA`），其中 `CONFIRMED` 在构造上被保留给确定性检测器。
+**已支持（在仓库内构建并经过审计）：** 本地**与已授权远程**目标的确认（scope-lock ＋ SSRF / DNS-rebinding 防护 ＋ 解析 IP pinning ＋ 质询断路器）；**路径 *与* query string（非路径）对象 id** —— 位于 `?report_id=` 的 id 会像路径 id 一样被表达、攻击并由 owner-view 佐证；基于 OpenAPI spec 以及无 spec 的发现（手工端点列表、HAR / 原始 HTTP 解析、实时 mitmproxy 抓包）；静态 token *以及*自动重新登录的认证方式；同一接缝之后的三家模型提供方（默认 Gemini、OpenAI 兼容（含 **DeepSeek** / 中转 / 本地）、Anthropic）；面向 CI 的完全非交互 `run --config` 入口；一个把该入口封装成访问控制回归闸门的 **GitHub Action**（只确认、确认即失败）；一个显式的**分级判定框架**（`CONFIRMED` = 确定性证明 · `SIGNAL` = 证据推断的线索 · `REFUTED` · `NOT DATA`），其中 `CONFIRMED` 在构造上被保留给确定性检测器；以及**经带外回调确认的 SSRF**（`aivist ssrf`）—— **第一个非访问控制漏洞类型**，只有当目标服务器向唯一探测域名发起真实的 [interactsh](https://github.com/projectdiscovery/interactsh) 回调时才判为 `CONFIRMED`（参见 [`docs/SSRF.md`](./docs/SSRF.md)）。
 
-**局限，直说：** **统计意义上的**零 false positive 纪录来自**两个受控实验环境**；引擎另外还在**两个公开的真实目标**上得到了验证（crAPI 与 VAmPI —— 九次经人工核验的运行，[见上文](#在真实的公开目标上验证--不只是我们自己的实验环境)），但它**尚未**在多样化的生产系统上大规模运行过——"已支持"意味着该能力存在并经过审计，而不是说它已在真实环境中久经考验。远程支持指的是**网络与 scope 安全**已经构建并测试，它并不新增一类漏洞。读取语义确认闸门存在**已记录在案的边界**（参见 `RESULTS.md`），其中包括对 broken-for-all 资源的一次刻意漏报。分级判定框架**已就位，但目前只有访问控制被接到 `CONFIRMED`**——`SIGNAL` 层是一个预留的扩展点，尚未接入任何非访问控制的漏洞类型。**模型无关性：** 零 false positive 是确定性**代码闸门**的性质，而非模型的：换成 DeepSeek（`LLM_PROVIDER=openai`、`deepseek-chat`）后，*预期*会像 Gemini 一样确认 REAL、反驳 SAFE，且在一次真实会话中确实如此——但这一等价性**尚未由已提交的测试锁定**；非 Gemini 后端得到的是连通性，而非重新测得的零 FP 保证（参见 [`docs/LLM_PROVIDERS.md`](./docs/LLM_PROVIDERS.md)）。此外还有一个**带外（interactsh）客户端**（`services/oob/`，[`docs/OOB.md`](./docs/OOB.md)）—— 为**未来的** SSRF 检测器准备的基础设施，刻意**未接入任何判定**，当前不做任何声明。该工具自身**仍然没有任何认证机制**——请把它运行在只有你能访问到的地方。
+**局限，直说：** **统计意义上的**零 false positive 纪录来自**两个受控实验环境**；引擎另外还在**两个公开的真实目标**上得到了验证（crAPI 与 VAmPI —— 九次经人工核验的运行，[见上文](#在真实的公开目标上验证--不只是我们自己的实验环境)），但它**尚未**在多样化的生产系统上大规模运行过——"已支持"意味着该能力存在并经过审计，而不是说它已在真实环境中久经考验。远程支持指的是**网络与 scope 安全**已经构建并测试，它并不新增一类漏洞。读取语义确认闸门存在**已记录在案的边界**（参见 `RESULTS.md`），其中包括对 broken-for-all 资源的一次刻意漏报。分级判定框架**已就位**，且已接入两个检测器：**访问控制**经其确定性代码闸门达到 `CONFIRMED`，**SSRF** 经一次真实的带外回调达到 `CONFIRMED`（interactsh 交互即确定性证明）。SSRF 是第一个非访问控制类型；`SIGNAL` 层仍是为未来纯推断检测器预留的扩展点。**SSRF 确认需要出网能力与一台可达的 interactsh 服务器**——**带外（interactsh）客户端**（`services/oob/`，[`docs/OOB.md`](./docs/OOB.md)）现已被 **SSRF 检测器**（`services/ssrf_detector.py`，[`docs/SSRF.md`](./docs/SSRF.md)）消费；没有可达服务器时返回 `NOT DATA`，绝不臆测，而未发起回调的目标判为 `REFUTED`，绝不虚报 `CONFIRMED`。**模型无关性：** 零 false positive 是确定性**代码闸门**的性质，而非模型的：换成 DeepSeek（`LLM_PROVIDER=openai`、`deepseek-chat`）后，*预期*会像 Gemini 一样确认 REAL、反驳 SAFE，且在一次真实会话中确实如此——但这一等价性**尚未由已提交的测试锁定**；非 Gemini 后端得到的是连通性，而非重新测得的零 FP 保证（参见 [`docs/LLM_PROVIDERS.md`](./docs/LLM_PROVIDERS.md)）。该工具自身**仍然没有任何认证机制**——请把它运行在只有你能访问到的地方。
 
 ## 仓库结构
 
@@ -342,10 +342,12 @@ Aivist-Verify/
 ├─ backend/app/
 │   ├─ services/             # the confirmation engine: differential oracle, deep verifier, exemption gates
 │   └─ cli/                  # the command line and interactive console
-│   └─ services/oob/         # interactsh OOB client — infra for a FUTURE SSRF detector, not wired
+│   └─ services/oob/         # interactsh OOB client — now consumed by the SSRF detector
+│   └─ services/ssrf_detector.py  # SSRF confirmation via OOB (first non-access-control type)
 ├─ vulnerable_target/        # lab 1 (integer ids) + its independent ground-truth test suite
 ├─ depot_target/             # lab 2 (UUID ids) + ground-truth suite
 ├─ query_target/             # lab 3 (query-string ids) + ground-truth suite — the D29 shape
+├─ ssrf_target/              # lab 4 (SSRF: REAL /fetch + SAFE /fetch-safe) + ground-truth suite
 ├─ scripts/measure/          # the measurement harness + committed result artifacts (sweep_*.jsonl)
 ├─ .github/action/           # Action 的入口脚本、示例，以及无需 key 的自检模型桩
 └─ docs/                     # architecture and engine documentation

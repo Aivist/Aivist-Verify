@@ -220,6 +220,22 @@ broken-for-all) · `REFUTED` · `NOT_DATA` · `SKIPPED`.
   `classify()`. `InferenceSignalDetector` is a worked, non-wired example of a future response-
   inference detector — it renders `SIGNAL` and is structurally barred from `CONFIRMED`.
 
-The framework is a layer the CLI and future types build on; it does not alter any current confirm /
-scan output. **Only access control is wired to `CONFIRMED` today**; `SIGNAL` is a reserved slot with
-no non-access-control type wired in yet.
+The framework is a layer the CLI and future types build on; it does not alter the access-control
+confirm / scan output. **Two detectors are wired to it today:** the access-control confirmer
+(`AccessControlDetector`, reaching `CONFIRMED` via its code gate) and the **SSRF detector**
+(`SsrfOobDetector`, reaching `CONFIRMED` via a real out-of-band callback — see §9). `SIGNAL` remains a
+reserved slot for a future inference-only detector (`InferenceSignalDetector` is its non-wired example).
+
+## 9. SSRF confirmation via out-of-band callback (`services/ssrf_detector.py`) — first non-access-control type
+
+The FIRST non-access-control vuln type, and it earns `CONFIRMED` the same way access control does — only
+with a physical, code-observed proof. Here the proof is a real **out-of-band callback**: the detector
+mints a UNIQUE [interactsh](https://github.com/projectdiscovery/interactsh) domain via the OOB client
+(`services/oob/`), injects `http://<domain>/` into the candidate request's URL parameter, sends that ONE
+request to the target, and polls the OOB session. A correlated DNS/HTTP interaction — the target's server
+actually reaching out to the unique domain — is the `DeterministicProof`; no interaction means `REFUTED`
+(probed, nothing came back) or `NOT_DATA` (no reachable interactsh server), **never** a bluffed
+`CONFIRMED`. It is ADDITIVE and ISOLATED: it composes the OOB client + `verdict_tiers` and does not import
+or touch the access-control engine, its gate, or its verdict path. Reachable via `aivist ssrf --config`.
+Needs outbound network + a reachable public interactsh server (the self-test uses `oast.*`; no
+self-hosting). See [`SSRF.md`](./SSRF.md).
