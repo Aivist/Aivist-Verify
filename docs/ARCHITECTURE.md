@@ -101,8 +101,13 @@ engine calls — it structurally cannot manufacture a verdict.
   `TARGET_BYSTANDER_TOKEN` (or a `--tokens-file` read at use-time, never persisted). Each becomes
   a `SecretStr`, routed per-account; an `attacker == owner` collision is refused fail-closed
   before the engine runs.
-- **Scope lock** (`services/scope.py`, `scope_psl.py`) — one audited host-scope policy; every
-  outbound request is scope-checked (fail-closed).
+- **Scope lock + remote hardening** (`services/scope.py`, `scope_psl.py`, `services/remote_safety.py`)
+  — one audited host-scope policy; every outbound request is scope-checked fail-closed at the
+  `_send_request` chokepoint. For remote use it also refuses cloud-metadata / link-local addresses,
+  refuses a public name that resolves to a private/loopback IP (DNS rebinding), pins the connection
+  to the scope-validated IP with `Host`/SNI preserved (closes the DNS-TOCTOU), and re-validates each
+  redirect hop. `remote_safety.preflight()` runs this same policy once up front for a clear early
+  refusal. See §7.
 - **AI provider seam** (`services/llm/`) — a small `get_provider()` factory over Gemini
   (default), OpenAI-compatible, and Anthropic. Only the model *call* sits behind it; the verdict
   logic is untouched. See [`LLM_PROVIDERS.md`](./LLM_PROVIDERS.md).
@@ -140,3 +145,52 @@ candidate ──► assemble op (endpoint + ids + tokens)  [cli/external_verify 
 
 It is a local CLI tool end to end: no listening socket, no authentication of its own, and it only
 ever acts as the identities whose tokens you supply, against the single target you point it at.
+
+## 7. Remote-target support & safety
+
+The confirmer targets a **local or an authorized remote** base URL with the SAME verdict logic — the
+host being remote changes nothing about how a verdict is reached. What remote use requires is egress
+safety on the confirmer's *own* requests, and that lives entirely in the scope/networking layer
+(never the verdict path):
+
+- **Scope-lock fail-closed** to the declared target (`ScopePolicy`); an out-of-scope request raises
+  `ScopeViolationError` before the socket opens.
+- **SSRF / DNS-rebinding guard**: cloud-metadata (`169.254.169.254`) and link-local addresses are
+  always refused; a *public registrable* name that resolves to a private/loopback IP is refused as
+  rebinding. An explicitly-declared private/loopback target (a lab, an authorized internal host) is
+  honored.
+- **Resolved-IP pinning** (`fuzzer._pin_kwargs`): the connection dials the scope-validated IP with
+  `Host`/SNI preserved, so httpx does not re-resolve the name at connect time (closes the DNS-TOCTOU).
+  Pinning can only *narrow* to an already-validated address — it can never widen scope.
+- **Per-hop redirect re-validation** and the **challenge/rate-limit circuit-breaker** (aborts to
+  `NOT DATA` rather than hammer a host).
+- **`remote_safety.preflight()`** runs this one audited policy against the target BEFORE the run, so
+  a remote operator gets a single clear "refused: DNS rebinding / metadata / unresolvable" up front
+  instead of a mid-run failure. It reuses `ScopePolicy` — it adds no new guard and makes no verdict
+  decision; loopback/lab/intranet targets are never resolved by it.
+
+**What remote does NOT change:** the access-control zero-false-positive gate is byte-identical local
+vs remote (the same run against a lab over loopback and over a non-loopback address reaches the same
+verdict). Remote is a networking/scope capability, not a new class of finding.
+
+## 8. Tiered-verdict framework (`services/verdict_tiers.py`)
+
+An explicit verdict-**strength** layer OVER the existing tiers, so a future vuln type can report at
+the right confidence without diluting the access-control guarantee. Tiers: `CONFIRMED` (deterministic
+proof) · `SIGNAL` (evidence-inferred lead, needs human review) · `INCONCLUSIVE` (conditional, e.g.
+broken-for-all) · `REFUTED` · `NOT_DATA` · `SKIPPED`.
+
+- **Access control maps to `CONFIRMED` exactly as today.** `access_control_verdict()` *delegates* to
+  `confirm_render.case_outcome` — there is no second verdict implementation to drift.
+- **`CONFIRMED` is reserved by construction** (mirroring how the engine reserves `verified`): (1)
+  `Verdict.confirmed()` requires a `DeterministicProof`, which a model opinion cannot mint; (2) every
+  finding is emitted through `classify(detector, evidence)`, which refuses any verdict above the
+  detector's declared `max_tier`. A non-deterministic detector declares `max_tier = SIGNAL` and
+  therefore *cannot* emit `CONFIRMED`.
+- **Extension point**: implement the `Detector` protocol (`name`, `max_tier`, `assess`) and emit via
+  `classify()`. `InferenceSignalDetector` is a worked, non-wired example of a future response-
+  inference detector — it renders `SIGNAL` and is structurally barred from `CONFIRMED`.
+
+The framework is a layer the CLI and future types build on; it does not alter any current confirm /
+scan output. **Only access control is wired to `CONFIRMED` today**; `SIGNAL` is a reserved slot with
+no non-access-control type wired in yet.
