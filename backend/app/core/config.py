@@ -91,7 +91,7 @@ class Settings(BaseSettings):
     # --------------------------------------------------------------------------
     API_PORT: int = Field(
         default=8000,
-        description="The network port for the FastAPI backend service to listen on."
+        description="Legacy port setting left from the removed FastAPI server layer (no server runs in the CLI-only tool); retained only for vestigial internal references."
     )
 
     # SECURITY NOTE (N5 + D2): the server binds to this interface. Default
@@ -103,7 +103,7 @@ class Settings(BaseSettings):
     # with the server shut down when not in use. (env / .env still override.)
     API_HOST: str = Field(
         default="127.0.0.1",
-        description="Network interface the FastAPI server binds to. Default 127.0.0.1 (localhost only); set 0.0.0.0 to expose on all interfaces."
+        description="Legacy bind-interface setting left from the removed FastAPI server layer (no server runs in the CLI-only tool); retained only for vestigial internal references. Default 127.0.0.1."
     )
 
     LOG_LEVEL: str = Field(
