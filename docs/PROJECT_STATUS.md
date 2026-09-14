@@ -50,6 +50,12 @@ zero-false-positive discipline of the ones already shipped.
 - **SSRF via out-of-band callback** — the **first non-access-control vuln type**. It is `CONFIRMED` only
   when the target's server makes a real callback to a unique probe domain (the interaction is the
   deterministic proof); otherwise `REFUTED` or `NOT DATA`. Reachable via `aivist ssrf`.
+- **Blind SQL injection via out-of-band callback** — the **fourth vuln type**. It is `CONFIRMED` only
+  when the target's DBMS executes injected SQL that makes a callback whose **token corresponds one-to-one
+  to a payload we actually injected** into this candidate (an injection-causal link); error-based /
+  time-based blind leads are `SIGNAL` at most, and a callback we cannot tie to our own injection never
+  confirms. Reachable via `aivist sqli`. See [`SQLI.md`](./SQLI.md). (A deterministic capability, **not**
+  part of the statistical benchmark; trusted OOB infrastructure is a precondition.)
 - **Bring-your-own model** — a provider seam (Gemini default; OpenAI-compatible including **DeepSeek**;
   Anthropic). Because verdicts are decided by the code gate reading HTTP evidence, the discipline does not
   depend on which model proposes.

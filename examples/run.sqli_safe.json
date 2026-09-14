@@ -1,0 +1,10 @@
+{
+  "_comment": "BLIND SQL INJECTION via OOB - SAFE control (must NOT confirm). Drives the sqli_target lab's SECURE endpoint (GET /report-safe?id=), which binds id as a parameter so an injected OOB primitive never reaches the SQL text the DBMS parses - no out-of-band lookup can occur => REFUTED, never CONFIRMED. Boot the lab first: python -m uvicorn sqli_target.main:app --port 8006. Run: python run.py sqli --config examples/run.sqli_safe.json",
+  "mode": "sqli",
+  "base_url": "http://127.0.0.1:8006",
+  "method": "GET",
+  "path": "/report-safe",
+  "param": "id",
+  "param_location": "query",
+  "poll_seconds": 12
+}

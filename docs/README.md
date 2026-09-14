@@ -14,7 +14,8 @@ the deeper references.
 | [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md) | The differential oracle (`fuzzer.py`) — rules, veto, escalation. |
 | [`DEEP_VERIFY.md`](./DEEP_VERIFY.md) | The access-control deep verifier (`deep_verifier.py`) — the cross-resource guard + four exemption channels + the D24 owner-view gate. |
 | [`SSRF.md`](./SSRF.md) | SSRF confirmation via out-of-band interactsh callback — the first non-access-control vuln type. |
-| [`OOB.md`](./OOB.md) | The out-of-band (interactsh) client the SSRF detector uses. |
+| [`SQLI.md`](./SQLI.md) | Blind SQL injection confirmed via an injection-causal, token-matched out-of-band callback — the fourth vuln type. |
+| [`OOB.md`](./OOB.md) | The out-of-band (interactsh) client the SSRF / SQLi detectors use. |
 | [`CLI_ORIENTATION.md`](./CLI_ORIENTATION.md) | A code-anchored map of the CLI front doors (`verify` / `scan` / `run` / `ssrf` / `demo`). |
 | [`QUICKSTART.md`](./QUICKSTART.md) | Run it now — the lab demo, a real-target `verify`, `scan`, `ssrf`, and the non-interactive `run`. |
 | [`DEVELOPMENT.md`](./DEVELOPMENT.md) | Contributor setup and how to run the test suites. |

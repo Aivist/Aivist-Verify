@@ -1,0 +1,10 @@
+{
+  "_comment": "BLIND SQL INJECTION via OOB - REAL (must CONFIRM with a real interactsh callback). Drives the sqli_target lab (GET /report?id=), which concatenates id into the SQL text. The detector injects DBMS-specific OOB primitives (MySQL LOAD_FILE UNC, MSSQL xp_dirtree, Oracle UTL_INADDR/UTL_HTTP, PostgreSQL dblink), each carrying a UNIQUE interactsh domain; the DBMS parses one and makes an out-of-band lookup, and CONFIRMED requires the received callback's token to be one we actually injected. Needs OUTBOUND network + a reachable public interactsh server. Boot the lab first: python -m uvicorn sqli_target.main:app --port 8006. Run: python run.py sqli --config examples/run.sqli_real.json",
+  "mode": "sqli",
+  "base_url": "http://127.0.0.1:8006",
+  "method": "GET",
+  "path": "/report",
+  "param": "id",
+  "param_location": "query",
+  "poll_seconds": 30
+}
