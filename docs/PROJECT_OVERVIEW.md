@@ -30,9 +30,13 @@ It is a *confirmation* layer, not a scanner and not a red-team tool:
   "not confirmed."
 - **Not an exploitation tool.** It confirms reachability across a user boundary for
   blue-team verification; it is not built to weaponize or mass-exploit.
-- **Local and single-tenant.** It runs from the command line, against locally-hosted
-  targets you control, with credentials you supply. It has no authentication of its own
-  and is not an internet-facing service.
+- **Authorized targets, single-tenant.** It runs from the command line against targets you own
+  or are authorized to test — a locally-hosted target **or an authorized remote host** — protected
+  by the tested, fail-closed scope-lock + preflight rails (cloud-metadata / link-local / DNS-rebinding /
+  unresolvable refused; connection pinned to the scope-validated IP), with credentials you supply. It
+  is **not** a mass-scanner. The **tool itself** has no authentication of its own and is not an
+  internet-facing service — run the process where only you can reach it. (The rails are locked by
+  `backend/tests/test_remote_safety_lock.py` + `backend/tests/test_remote_e2e_lock.py`.)
 
 The product is the confirmation engine and its command-line front door — a local CLI tool,
 with no server, HTTP API, or web UI to run.

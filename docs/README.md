@@ -26,7 +26,12 @@ benchmark, recomputed from the committed artifact) and [`../REPRODUCE.md`](../RE
 two public vulnerable targets it was not built for — see
 [`../scripts/measure/real_targets/REAL_TARGET_RESULTS.md`](../scripts/measure/real_targets/REAL_TARGET_RESULTS.md)
 (9 runs on crAPI + VAmPI, every capture archived verbatim; an engineering signal on hand-verified
-ground truth, **not** an extension of the statistical benchmark).
+ground truth, **not** an extension of the statistical benchmark). For the **authorized-remote path** —
+the confirmer driven over a non-loopback network interface — see
+[`../scripts/measure/real_targets/REMOTE_TARGET_RESULTS.md`](../scripts/measure/real_targets/REMOTE_TARGET_RESULTS.md)
+(a controlled non-loopback target; likewise an engineering signal, not a benchmark entry). The rails that
+make the remote path safe are locked by `backend/tests/test_remote_safety_lock.py` and
+`backend/tests/test_remote_e2e_lock.py`.
 
 > All docs are grounded in the source tree and cite file references. When code and docs
 > disagree, the code wins — please update the docs.
