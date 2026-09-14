@@ -22,11 +22,20 @@ non-interactive `run` path need a key; the ground-truth lab suites (below) do no
 
 ```
 run.py                    # the `aivist` CLI entry (dispatch + orchestration)
-backend/app/services/     # the engine: fuzzer.py (differential oracle), deep_verifier.py (guard + channels)
-backend/app/cli/          # the command line + interactive console + renderer
-vulnerable_target/        # lab 1 (integer ids) + independent ground-truth suite
-depot_target/             # lab 2 (UUID ids)   + independent ground-truth suite
-scripts/measure/          # the measurement harness + committed result artifacts
+backend/app/services/     # the engine + detectors:
+#   fuzzer.py             #   differential oracle
+#   deep_verifier.py      #   access-control deep verifier (guard + four channels + D24 owner-view gate)
+#   verdict_tiers.py      #   tiered-verdict framework (Detector/classify; CONFIRMED reserved by proof)
+#   ssrf_detector.py      #   SSRF via OOB — first non-access-control type (CONFIRMED = real callback)
+#   oob/                  #   interactsh OOB client (register/poll/AES-CTR decrypt) — used by SSRF
+#   remote_safety.py, scope.py, scope_psl.py   # remote-target preflight + fail-closed ScopePolicy
+#   llm/                  #   provider seam: gemini / openai_compat (incl. DeepSeek) / anthropic
+backend/app/cli/          # the command line + interactive console + renderer (incl. ssrf_command.py, relogin.py)
+vulnerable_target/        # lab 1 (integer ids)       + independent ground-truth suite
+depot_target/             # lab 2 (UUID ids)          + independent ground-truth suite
+query_target/             # lab 3 (query-string / D29) + independent ground-truth suite
+ssrf_target/              # lab 4 (SSRF)              + independent ground-truth suite
+scripts/measure/          # the access-control measurement harness + committed result artifacts
 ```
 
 See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for how these fit together.
@@ -37,9 +46,11 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for how these fit together.
 # the backend suite (offline, no API key)
 python -m pytest backend/tests -q
 
-# the two labs' independent ground-truth suites (no API key)
+# the four labs' independent ground-truth suites (no API key)
 python -m pytest vulnerable_target/test_vulns.py -q
 python -m pytest depot_target/test_vulns.py -q
+python -m pytest query_target/test_vulns.py -q
+python -m pytest ssrf_target/test_vulns.py -q
 ```
 
 The backend suite is offline by design (the renderer/engine are driven by committed golden rows,

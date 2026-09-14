@@ -8,7 +8,7 @@
 #   register   POST {server}/register   {"public-key": b64(PEM SPKI), "secret-key": <uuid>,
 #                                        "correlation-id": <20-char id>}
 #   poll       GET  {server}/poll?id=<correlation-id>&secret=<uuid>
-#                    -> {"aes_key": b64(RSA-OAEP-SHA256 enc AES key), "data": [b64(AES-CFB ct), ...]}
+#                    -> {"aes_key": b64(RSA-OAEP-SHA256 enc AES key), "data": [b64(AES-CTR ct), ...]}
 #   deregister POST {server}/deregister {"correlation-id": ..., "secret-key": ...}
 #
 # Each polled `data` item, once decrypted, is a JSON interaction:

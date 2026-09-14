@@ -3,13 +3,26 @@
 > File: `backend/app/services/deep_verifier.py`. Manual script:
 > `backend/scripts/deep_verify_live_check.py`.
 >
-> **Status:** present in tree; **not wired to any HTTP endpoint**. It IS now
-> invoked, **read-only**, from the fuzzer as **shadow-mode Phase 7** (see
-> [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md) §Phase 7). Two independent gates, both
-> default `False`: `AI_DEEP_VERIFY_ENABLED` (the verifier itself runs / may call
-> Gemini) and `AI_DEEP_VERIFY_SHADOW` (the fuzzer calls it after a batch). With the
-> defaults, nothing here runs and behavior is byte-identical to before. The
-> rule-based HTTP verify still uses `fuzzer.py`.
+> **Status:** this is the **SHIPPED confirmation engine**. `execute_deep_verification` is
+> invoked **directly by the CLI** — `aivist verify` / `scan` / `run` (`run.py` →
+> `backend/app/cli/external_verify.py`, which assembles the one engine call) — so the verdict a
+> user sees comes from here, rendered by `confirm_render.case_outcome` as
+> CONFIRMED / SIGNAL / REFUTED / NOT DATA. The tool is **CLI-only; there is no HTTP API or
+> server** (the former FastAPI layer was removed). The CLI turns the verifier on at runtime
+> (`AI_DEEP_VERIFY_ENABLED`); the committed config default stays `False`, so importing the module
+> without the CLI is byte-identical to before it existed. Two additive, default-`False` layers
+> remain and are NOT the shipped path: the fuzzer's legacy **shadow-mode Phase 7**
+> (`AI_DEEP_VERIFY_SHADOW`, observe-only — see [`VERIFY_ENGINE.md`](./VERIFY_ENGINE.md) §Phase 7)
+> and the D19 promotion path (`AI_DEEP_VERIFY_PROMOTE`).
+>
+> **Orientation (what else now exists).** This engine is the **access-control** confirmer — the
+> `AccessControlDetector` under the tiered-verdict framework (`services/verdict_tiers.py`; see
+> [`ARCHITECTURE.md`](./ARCHITECTURE.md) §8, which reserves CONFIRMED for a deterministic proof and
+> renders a model-only `verified` as SIGNAL). It also confirms **query-string / non-path IDOR
+> (D29)** — the owner/bystander re-reads carry `query_params` so the re-read hits the same
+> query-string id. A **separate first non-access-control type, SSRF-via-OOB**
+> (`services/ssrf_detector.py`, [`SSRF.md`](./SSRF.md)), is confirmed by a real out-of-band
+> callback, not by this write-then-read loop.
 >
 > **Confirms five vuln shapes, zero false positives** (shadow):
 > **M1.0/B-1** silent cross-path write via a code-gathered **write-record**; **M1.1** read-type
@@ -397,8 +410,12 @@ match is. This is what keeps the X-SAFE trap from re-opening the integrity hole.
 | Setting | Default | Effect |
 |---|---|---|
 | `AI_DEEP_VERIFY_ENABLED` | `False` | When `False`, `execute_deep_verification` returns a clearly-marked `disabled` result and **never** touches the network. Gates the verifier itself. |
-| `AI_DEEP_VERIFY_SHADOW` | `False` | When `False`, the fuzzer's Phase 7 shadow pass is an immediate no-op. When `True`, the fuzzer calls the verifier read-only after a batch. To get a live Gemini second opinion, **both** this and `AI_DEEP_VERIFY_ENABLED` must be `True`. |
-| `GEMINI_API_KEY` | optional | If unset, AI steps return degraded output (see module). |
+| `AI_DEEP_VERIFY_SHADOW` | `False` | When `False`, the fuzzer's legacy Phase 7 shadow pass is an immediate no-op. When `True`, the fuzzer calls the verifier read-only after a batch. This is NOT the shipped CLI path (the CLI calls `execute_deep_verification` directly). |
+| `AI_DEEP_VERIFY_PROMOTE` | `False` | The D19 opt-in promotion path (fuzzer Phase 7 only): may promote a rule-oracle `suspicious` to `verified` when a deterministic code channel authorizes it. Default OFF. |
+| `AI_DEEP_VERIFY_OWNER_AUTH` | `None` | Owner/victim credential for the D24 owner-view gate (per-deployment). Also suppliable per-run via `owner_credential`. |
+| `AI_DEEP_VERIFY_BYSTANDER_AUTH` | `None` | Bystander credential for the D30 public-resource probe. `None` ⇒ no probe (byte-identical). |
+| `AI_DEEP_VERIFY_OPENAPI_SPEC` | `None` | **Declared** `Optional[str]` field (`config.py`) — path to an OpenAPI/Swagger JSON for the endpoint-catalog seam; fails safe to the placeholder. |
+| `GEMINI_API_KEY` | optional | If unset, AI steps return degraded output (see module). Non-Gemini backends are selected via the `LLM_*` provider seam — see [`LLM_PROVIDERS.md`](./LLM_PROVIDERS.md). |
 | `GEMINI_PRO_MODEL` | `gemini-2.5-pro` (code default — the model the zero-FP evidence was measured on; `.env` may override) | Model used for both turns. |
 | `GEMINI_REQUEST_TIMEOUT_SECONDS` | `60` | From `settings`; used by Gemini calls in this module. |
 
@@ -412,7 +429,9 @@ Set in `backend/.env` or override at runtime (as the live-check script does).
 execute_deep_verification(parsed_request, payload, base_url, *,
                           approved_host=None, auth_context=None,
                           context_note="", available_endpoints=None,
-                          model_name=None) -> DeepVerificationResult
+                          model_name=None, owner_credential=None,
+                          bystander_credential=None, challenge_break=False,
+                          assert_owner_only=False) -> DeepVerificationResult
 ```
 
 - `parsed_request` — the BASELINE (authorized/self) request; `payload` mutates it
@@ -424,6 +443,22 @@ execute_deep_verification(parsed_request, payload, base_url, *,
   can request the correct read-back path for its one follow-up; this is the
   **endpoint-catalog seam**.
 - `approved_host` — scope lock; a follow-up whose host ≠ this is refused.
+- `owner_credential` — the owner/victim identity for the **D24 read-semantic owner-view gate**
+  (`_apply_owner_view_gate`): a code-issued GET **as the owner** must corroborate the attack
+  response, else a `verified` is downgraded to `inconclusive` (downgrade-only). Owner/bystander
+  re-reads carry the attack's `query_params` (D29). `None` ⇒ the gate does not run.
+- `bystander_credential` — a third/bystander identity for the **D30 public-resource discrimination**
+  (`fetch_control_view` / `_resource_is_public`): if a bystander can also read the object, the
+  cross-user read is a public resource, not a BOLA, so a would-be `verified` is suppressed to
+  `inconclusive` (`PUBLIC_RESOURCE_NOT_BOLA_REASON`). `None` ⇒ no probe (byte-identical).
+- `assert_owner_only` — opt-in **broken-for-all disclosure**: inside the D30 suppress branch, an
+  anonymous re-read decides whether the resource is broken for every authenticated user; if so the
+  verdict is locked to `inconclusive` (`BROKEN_FOR_ALL_ASSERTION_REASON`) — never a bluffed confirm.
+- `challenge_break` — opt-in **WAF / rate-limit circuit breaker**: distinct challenge responses
+  (401/403/429 or a 200 block page, via `_is_challenge_response`) are counted and the run aborts to
+  `NOT DATA` at `_CHALLENGE_ABORT_THRESHOLD` rather than hammering the host. A companion guard forces
+  `NOT DATA` when a would-be owner-view corroboration rests on a challenge page. Both are
+  downgrade-only; default `False` ⇒ byte-identical on the lab/measurement path.
 - Returns a `DeepVerificationResult` with `status` (`completed`/`degraded`/`disabled`),
   `ai_verdict` (the **final**, post-guard verdict), `ai_verdict_raw` (the model's
   pre-guard verdict), `guard_override` (the structural-guard reason, or `None`),
@@ -493,9 +528,10 @@ unchanged. Two seams feed it, both currently minimal:
   now exists. `endpoint_catalog.py`'s `catalog_from_openapi` derives the surface from
   an OpenAPI/Swagger spec, and `_shadow_endpoint_catalog` **merges** it with the
   placeholder (the finding's own path + a same-resource GET read-back) when a spec
-  source is provided — read from `settings.AI_DEEP_VERIFY_OPENAPI_SPEC` via `getattr`
-  (a runtime-only seam, **not** a declared `config.py` field); with no source it falls
-  back byte-identically to the placeholder. Each catalog entry **leads with
+  source is provided — read from `settings.AI_DEEP_VERIFY_OPENAPI_SPEC`, which is now a
+  **declared `Optional[str]` field in `config.py`** (D21 resolved; loadable from `.env`/env like
+  the other `AI_DEEP_VERIFY_*` flags); with no source it falls back byte-identically to the
+  placeholder. Each catalog entry **leads with
   `METHOD /path`** and, when the spec declares them, now **carries the operation's
   genuine `tags` and `operationId`** (nothing invented — see the B-1 section below),
   so the model can tell what an endpoint *is* (e.g. that an audit/log endpoint is a

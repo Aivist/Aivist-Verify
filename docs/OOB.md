@@ -19,13 +19,17 @@ The design mirrors `services/llm/`: a transport-agnostic **session** facade over
 
 - **`OOBSession`** (in `__init__.py`) owns the session identity (a 20-char correlation id + a
   secret) and the issued-probe registry, and does all **correlation** — pure, in-process, no
-  network, no crypto. `new_payload()` mints a domain `"<token><correlation_id>.<server>"` with a
-  fresh 13-char per-probe token; `correlate()` attributes a received interaction to a probe iff
-  its `unique_id` exactly equals that probe's — so a replayed or scanned id we never minted is
-  dropped, never misattributed.
+  network, no crypto. `new_payload()` mints a domain `"<correlation_id><token>.<server>"` — the
+  **correlation id FIRST**, then a fresh 13-char per-probe token, because the interactsh server
+  reads the correlation id from the **leading 20 chars** of the label to find the session;
+  `correlate()` attributes a received interaction to a probe iff its `unique_id` exactly equals
+  that probe's `<correlation_id><token>` — so a replayed or scanned id we never minted is dropped,
+  never misattributed.
 - **`InteractshTransport`** (`interactsh.py`) speaks the interactsh HTTP API and owns the
   network + crypto: it registers an RSA public key, polls `/poll`, RSA-OAEP-SHA256 decrypts the
-  AES key, and AES-CFB decrypts each interaction. Lazy-imports `cryptography`.
+  AES key, and **AES-CTR** decrypts each interaction (the interactsh server encrypts each
+  interaction with AES-256-CTR, prepending the IV — verified against the live public servers; a
+  CFB reading decodes only the first 16-byte block, then diverges). Lazy-imports `cryptography`.
 - **`StubTransport`** (`stub.py`) is an in-memory fake server for deterministic offline tests —
   no network, no crypto. It is how the correlation plumbing is proven (`backend/tests/test_oob.py`).
 
@@ -48,7 +52,10 @@ session.close()
 - **Proven offline** (`backend/tests/test_oob.py`, no network/crypto): registration,
   unique-token minting, exact correlation, noise rejection, DNS 0x20 case-insensitivity, poll
   draining, fail-closed poll-before-register, lifecycle.
-- **NOT exercised here:** a real end-to-end OOB round trip. That needs a **reachable interactsh
-  server** (self-hosted, or a public `oast.*` instance) and is an operator/infrastructure step —
-  this repo stands up no public infra. The `InteractshTransport` implements the protocol so it is
-  ready to use against such a server when one is provided.
+- **Consumed live by the SSRF detector.** `services/ssrf_detector.py` opens a real session (via
+  `open_session`, which builds an `InteractshTransport`) against a public `oast.*` server
+  (`DEFAULT_OOB_SERVERS`) to confirm SSRF out-of-band — a real callback to the minted domain is the
+  `DeterministicProof`. That path needs **outbound network + a reachable interactsh server**; with
+  none reachable the SSRF result is `NOT DATA`, never a guess. This repo self-hosts no OOB
+  infrastructure — it uses the public ProjectDiscovery servers for the self-test. See
+  [`SSRF.md`](./SSRF.md).

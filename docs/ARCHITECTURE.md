@@ -83,6 +83,8 @@ subcommands:
   `scan_discovery.py`, `scan_ids.py`, `scan_report.py`.
 - **`run --config <json>`** — the fully non-interactive CI entry: JSON in, structured JSON to
   stdout, tokens from env only. Code: `backend/app/cli/run_command.py`.
+- **`ssrf --config <json>`** — confirm SSRF out-of-band (the first non-access-control type); a
+  CONFIRMED requires a real interactsh callback. Code: `backend/app/cli/ssrf_command.py`. See §9.
 - **`demo`** — zero-setup confirmation of a real cross-user write on the built-in lab.
 - **`target` / `config`** — save a reusable target file; set the AI provider/key/model.
 
@@ -135,20 +137,27 @@ engine calls — it structurally cannot manufacture a verdict.
   confirmation path does not depend on persisted state to reach a verdict; the DB is optional
   support, not part of the adjudication.
 
-## 5. The two labs and their independent ground truth
+## 5. The labs and their independent ground truth
 
-The engine is graded against two structurally different, self-contained vulnerable labs, each
+The engine is graded against **four** structurally different, self-contained vulnerable labs, each
 shipping its **own** ground-truth pytest suite (no API key required):
 
 - `vulnerable_target/` (integer ids) + `vulnerable_target/test_vulns.py`
 - `depot_target/` (UUID ids) + `depot_target/test_vulns.py`
+- `query_target/` (query-string / non-path IDOR, **D29**: `GET /reports?report_id=` REAL vs
+  `GET /notes?note_id=` SAFE) + `query_target/test_vulns.py` — the confirmer expresses, attacks, and
+  owner-view-corroborates an id carried in the **query string** exactly as one in the path.
+- `ssrf_target/` (SSRF: `GET /fetch?url=` REAL vs allow-listed `GET /fetch-safe?url=` SAFE) +
+  `ssrf_target/test_vulns.py` — ground truth for the OOB SSRF detector (§9), proven with a local
+  canary, no interactsh needed.
 
 These suites prove — against the live target's real bytes, with no involvement from the verifier —
-that every case labelled REAL is genuinely exploitable cross-account and every case labelled
-SECURE genuinely resists it. They are the oracle: the engine is measured against them, never the
-reverse. The measurement harness (`scripts/measure/verdict_measure.py`) drives the real
-`execute_deep_verification` across both labs and writes the committed evidence artifact
-(`scripts/measure/results/sweep_highN.jsonl`). See [`../RESULTS.md`](../RESULTS.md).
+that every case labelled REAL is genuinely exploitable and every case labelled SECURE genuinely
+resists it. They are the oracle: the engine is measured against them, never the reverse. The
+**access-control** zero-FP measurement harness (`scripts/measure/verdict_measure.py`) drives the real
+`execute_deep_verification` across the two original labs and writes the committed evidence artifact
+(`scripts/measure/results/sweep_highN.jsonl`, 430 rows); SSRF is confirmed model-free out-of-band and
+is deliberately not part of that model-graded benchmark. See [`../RESULTS.md`](../RESULTS.md).
 
 ## 6. End-to-end flow
 

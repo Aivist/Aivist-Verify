@@ -15,10 +15,13 @@
 
 ## 1. What this is
 
-Aivist Verify is a **local, CLI-first confirmation engine** for Broken Object-Level
-Authorization (BOLA / IDOR). You give it a candidate — an endpoint plus two identities
-(an attacker and an owner) — and it tells you, **with a reproducible evidence chain**,
-whether the attacker identity actually crosses a user boundary into the owner's resource.
+Aivist Verify is a **local, CLI-first confirmation engine** for web/API vulnerabilities. Its
+mature core is Broken Object-Level Authorization (BOLA / IDOR) — you give it a candidate (an
+endpoint plus two identities, an attacker and an owner) and it tells you, **with a reproducible
+evidence chain**, whether the attacker identity actually crosses a user boundary into the owner's
+resource. It has since begun covering **other vuln types** through a tiered-verdict framework
+(§3): the first non-access-control type, **SSRF**, is confirmed out-of-band, and `CONFIRMED` stays
+reserved for a deterministic proof regardless of type.
 
 It is a *confirmation* layer, not a scanner and not a red-team tool:
 
@@ -153,12 +156,12 @@ Tokens for the three roles are sourced **environment-first** —
 attacker and owner are required; an attacker==owner collision is refused fail-closed
 before the engine ever runs, because a self-vs-self comparison could false-confirm.
 
-## 4. The two labs and their independent ground truth
+## 4. The four labs and their independent ground truth
 
-The engine is graded against two structurally different, self-contained vulnerable labs,
+The engine is graded against **four** structurally different, self-contained vulnerable labs,
 each shipping its **own** ground-truth pytest suite that proves — against the live
 target's real bytes, with no involvement from the verifier — that every case labelled
-REAL is genuinely exploitable cross-account and every case labelled SECURE genuinely
+REAL is genuinely exploitable and every case labelled SECURE genuinely
 resists it:
 
 - `vulnerable_target/` — a self-contained lab + `vulnerable_target/test_vulns.py`
@@ -210,23 +213,37 @@ run.py                         # the `aivist` CLI front door (dispatch + orchest
 backend/app/
 ├─ services/
 │   ├─ fuzzer.py               # the differential oracle (_differential_verdict: Rules 1-5 + veto + escalation)
-│   └─ deep_verifier.py        # the deep verifier: AI proposes, the cross-resource guard + four
-│                              #   code-computed exemption channels dispose (downgrade-only)
+│   ├─ deep_verifier.py        # the access-control deep verifier: AI proposes, the cross-resource guard
+│   │                          #   + four code-computed exemption channels + D24 owner-view gate dispose
+│   ├─ verdict_tiers.py        # tiered-verdict framework (Detector/classify; CONFIRMED reserved by proof)
+│   ├─ ssrf_detector.py        # SSRF via OOB — first non-access-control type (CONFIRMED = real callback)
+│   ├─ oob/                    # interactsh OOB client (register/poll/AES-CTR decrypt) — used by SSRF
+│   ├─ remote_safety.py, scope.py, scope_psl.py   # remote-target preflight + fail-closed ScopePolicy
+│   └─ llm/                    # provider seam: gemini / openai_compat (incl. DeepSeek) / anthropic
 └─ cli/
     ├─ external_verify.py      # external real-target verify (spec + op + tokens/relogin)
+    ├─ relogin.py              # multi-step/CSRF login, OAuth2 (password + authcode+PKCE), token refresh
+    ├─ ssrf_command.py         # the `aivist ssrf` entry (run_ssrf_from_config)
     ├─ scan_cli.py / scan_*    # non-interactive scan: discovery + per-candidate confirm
+    ├─ run_command.py          # the `run --config` CI entry (verify/scan)
     ├─ confirm_render.py       # pure, offline evidence-chain renderer (cannot manufacture a verdict)
     ├─ console/                # the interactive console (controller + text/TUI views + launcher)
     └─ branding.py             # single-source brand constant (product/command names, config paths)
-vulnerable_target/  depot_target/    # two labs, each with an independent ground-truth suite
-scripts/measure/                     # the measurement harness + committed result artifacts (sweep_*.jsonl)
+vulnerable_target/  depot_target/  query_target/  ssrf_target/   # four labs, each with a ground-truth suite
+scripts/measure/                     # the access-control measurement harness + result artifacts (sweep_*.jsonl)
 ```
 
 ## 7. Honest limits
 
-- **Measured on two controlled labs, not at scale in the wild.** "Supports X" means the
-  capability exists and is audited in-repo — not that it has been battle-tested against
-  diverse real-world targets.
+- **The model-graded zero-FP sweep covers the two original labs, not scale in the wild.** The
+  430-run benchmark (§5) runs on `vulnerable_target` + `depot_target`; the `query_target` and
+  `ssrf_target` labs (§4) have their own ground-truth suites. "Supports X" means the capability
+  exists and is audited in-repo — not that it has been battle-tested against diverse real targets.
+- **SSRF confirmation needs outbound network + a reachable interactsh server.** A CONFIRMED SSRF
+  requires a real out-of-band callback (the interactsh interaction is the deterministic proof); with
+  no reachable OOB server the result is `NOT DATA`, and a target that makes no callback is
+  `REFUTED` — never a bluffed confirm. It is model-free and deliberately outside the model-graded
+  access-control benchmark.
 - **Provider-agnostic seam, but zero-FP is measured on Gemini only.** The AI layer goes
   through a three-provider seam (`services/llm/get_provider`): **Gemini** (default,
   `google.genai`), **OpenAI-compatible** (relays / DeepSeek / Kimi / GLM / Qwen / Grok /

@@ -16,7 +16,7 @@ existed.**
 |---|---|
 | `LLM_PROVIDER` | `gemini` (default) · `openai` · `anthropic` |
 | `LLM_API_KEY` | key for the selected provider (gemini falls back to `GEMINI_API_KEY`) |
-| `LLM_BASE_URL` | OpenAI-compatible endpoint (relay/gateway/local); used by `openai`, ignored by `gemini` |
+| `LLM_BASE_URL` | endpoint override; used by `openai` (relay/gateway/local) **and** honored by `anthropic` (point Claude at a gateway/proxy); ignored by `gemini` |
 | `LLM_MODEL` | model id (gemini falls back to `GEMINI_PRO_MODEL`) |
 
 Unset everything ⇒ Gemini via `GEMINI_API_KEY` / `GEMINI_PRO_MODEL`.
