@@ -75,9 +75,13 @@ only) can manufacture a `verified`.
 `[project.scripts]`). With no arguments it opens the interactive console; otherwise it dispatches
 subcommands:
 
-- **`verify`** — confirm one finding. *Lab mode* (`--caseset [--case]`) against a built-in
-  ground-truth caseset; *external mode* (`--target --spec --op [--auth]`) against a locally-run
-  real target. Code: `backend/app/cli/external_verify.py`.
+- **`verify`** — confirm one finding. *Golden path* (recommended, real target): `--target-file` — a
+  saved Target whose op is built via `build_op` / `Target.to_op()` and whose spec is synthesized via
+  `spec_from_endpoints` when absent, so no hand-authored `--op` / `--spec` is needed (standalone; combining
+  it with the advanced flags is a fail-loud error). *Lab mode* (`--caseset [--case]`) against a built-in
+  ground-truth caseset; *advanced external mode* (`--target --spec --op [--auth]`) for a custom body /
+  accounts / exotic shapes. Code: `backend/app/cli/external_verify.py`
+  (`run_verify_from_target_file` builds the inputs, then the unchanged core runs).
 - **`scan`** — non-interactive auto-discovery + confirm; the model proposes candidates, code vets
   each, and the same confirm runs on every one. Code: `backend/app/cli/scan_run.py`,
   `scan_discovery.py`, `scan_ids.py`, `scan_report.py`.

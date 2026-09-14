@@ -55,6 +55,24 @@ IP, redirects re-validated per hop); an unsafe/unresolvable target is refused up
 
 ### `verify` — confirm ONE finding you already have (subcommand)
 
+**Recommended — a saved target FILE (the golden path).** Point `verify` at a filled target file and it
+builds the op (via the same `build_op` `scan` uses) and — if the target has no spec — synthesizes the
+catalog for you, so there is **NO hand-authored `op.json` and NO `--spec`**:
+
+```powershell
+python run.py target --dump-template mytarget.toml   # write the commented form (fill it in ONE pass)
+# ...edit mytarget.toml: base_url, method, path_template, id_location, id_param, attacker_id, victim_id...
+python run.py verify --target-file mytarget.toml      # confirm it (tokens from env, below)
+```
+
+`--target-file` is standalone — it carries base_url / op / spec / auth, so it may **not** be combined
+with `--op` / `--spec` / `--target` / `--caseset` (that is a clear error, never a silent pick). A path
+id fills the `{template}`; a query id (`id_location = "query"`) builds the `?param=attacker_id` baseline
+(D29). A finding that needs a request **body** or per-finding **accounts** uses the advanced `--op` path
+below.
+
+**Advanced — a hand-authored operation + spec** (custom body, `accounts`, exotic shapes):
+
 ```powershell
 python run.py verify --target http://localhost:8888 --spec path\to\openapi.json --op path\to\op.json
 ```

@@ -32,12 +32,21 @@ surfaces (verdict logic untouched — they only assemble the inputs and reuse `e
 plus a separate SSRF surface. Subcommands of `python run.py`: `verify · confirm · config · demo · target ·
 scan · run · ssrf` (`confirm` is a back-compat alias for `verify`).
 
-- **`verify` — one finding.** Subcommand `python run.py verify --target <url> --spec <openapi> --op <op.json>`
-  (`+ --auth <login.json>` for auto re-login). `<url>` may be **local or an authorized remote host** — a
+- **`verify` — one finding.** Two shapes of input, one engine call:
+  - **Golden path (recommended): `python run.py verify --target-file <target.toml>`** — a saved Target
+    (`target --dump-template` / `--from-file`). The op is built via the SAME `build_op` / `Target.to_op()`
+    `scan` and `run --config verify` use, and the catalog is synthesized via `spec_from_endpoints` when the
+    target has no `spec_path` — so **no hand-authored `--op` and (spec-less) no `--spec`**. Standalone:
+    combining it with `--op` / `--spec` / `--target` / `--caseset` / `--auth` is a fail-loud error (never a
+    silent pick). It builds only the (spec, op) inputs, then defers to the unchanged core below. Adapter:
+    `external_verify.run_verify_from_target_file`.
+  - **Advanced: `python run.py verify --target <url> --spec <openapi> --op <op.json>`** (`+ --auth <login.json>`
+    for auto re-login) — for a custom body, per-finding `accounts`, or shapes the target file does not express.
+  `<url>` (or the target file's base_url) may be **local or an authorized remote host** — a
   `remote_safety.preflight` over the audited `ScopePolicy` refuses cloud-metadata / link-local / DNS-rebinding
-  / unresolvable targets up front, and the engine pins to the scope-validated IP. Assembles one operation into
-  the same engine call; the three red lines (scope fail-closed, attacker/owner identity isolation, `SecretStr`
-  tokens) hold. The op's id may live in the **path OR the query string** (D29). Code in
+  / unresolvable targets up front, and the engine pins to the scope-validated IP. Whichever input shape,
+  the same engine call runs and the three red lines (scope fail-closed, attacker/owner identity isolation,
+  `SecretStr` tokens) hold. The op's id may live in the **path OR the query string** (D29). Code in
   `backend/app/cli/external_verify.py`.
 - **`scan` — auto-discover many (both a non-interactive subcommand AND a REPL command).** Non-interactive:
   `python run.py scan --target-file <file> [--endpoints-file … | --traffic-file … | --capture]` (`--target-file`
