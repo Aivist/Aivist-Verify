@@ -42,8 +42,10 @@ zero-false-positive discipline of the ones already shipped.
   the same verdict logic, hardened at the network layer (fail-closed scope lock; cloud-metadata /
   link-local / DNS-rebinding / unresolvable refusal; connection pinned to the scope-validated IP; per-hop
   redirect re-validation; a challenge / rate-limit circuit-breaker). These rails are locked by committed
-  tests (`backend/tests/test_remote_safety_lock.py` + a real-socket non-loopback end-to-end run in
-  `backend/tests/test_remote_e2e_lock.py`); one authorized-remote run is archived verbatim at
+  tests: `backend/tests/test_remote_safety_lock.py`, and in `backend/tests/test_remote_e2e_lock.py` a
+  real-socket non-loopback scope-lock enforcement test plus the full `verify --target-file` CLI to a
+  `CONFIRMED` over a non-loopback target (engine stubbed for determinism). A run where a real socket and a
+  live model together reach that `CONFIRMED` is archived verbatim at
   `scripts/measure/real_targets/REMOTE_TARGET_RESULTS.md` (an engineering signal, not a benchmark entry).
 - **SSRF via out-of-band callback** — the **first non-access-control vuln type**. It is `CONFIRMED` only
   when the target's server makes a real callback to a unique probe domain (the interaction is the
