@@ -82,10 +82,17 @@ def test_cmdi_payloads_embed_the_domain_and_cover_contexts_and_commands():
 # -----------------------------------------------------------------------------
 # Detector verdict mapping (synthetic results) — the core reservation.
 # -----------------------------------------------------------------------------
-def _result(interactions=None, probe_error=None, echoed=False, ms=None):
+def _result(interactions=None, probe_error=None, echoed=False, ms=None,
+            injected=None, matched=None, matched_domain="abc.oast.test"):
+    # Injection-causal defaults: an interaction is CONFIRMABLE only if its token is one we injected.
+    # By default a synthetic hit is causally-tied (matched token "tok" is in injected_tokens); a caller
+    # passes injected=[] or a non-injected `matched` to exercise the causal negative control.
+    inj = injected if injected is not None else (["tok"] if interactions else [])
+    mtok = matched if matched is not None else ("tok" if interactions else None)
     return CmdiProbeResult(
         target="http://t", method="GET", param="host", param_location="query",
-        payload_domain="abc.oast.test", payload_token="tok", oob_server="oast.test",
+        oob_server="oast.test", correlation_id="corr", injected_tokens=inj,
+        matched_token=mtok, matched_domain=matched_domain,
         interactions=interactions or [], probe_error=probe_error,
         echoed_marker=echoed, max_response_ms=ms, polls=3)
 
@@ -166,6 +173,44 @@ def test_nonmatching_token_callback_is_dropped_and_never_confirms():
         poll_seconds=4, poll_interval=1, sleep=lambda _s: None)
     assert res.interactions == []                     # the non-matching-token callback was dropped
     assert cmdi_verdict(res).tier is Tier.REFUTED     # never CONFIRMED
+
+
+# -----------------------------------------------------------------------------
+# CAUSAL NEGATIVE-CONTROL: a legitimate session token whose payload was NEVER injected into the
+# target must NOT confirm. CONFIRMED requires the interaction's token to be one we ACTUALLY injected
+# (`matched_token in injected_tokens`), not merely minted in the session — this closes the hole where
+# the target itself, or polluted OOB infra, emits a callback for a session token while our injected
+# command never executed. (The RED-then-GREEN scratch break of the causal check is in the report.)
+# -----------------------------------------------------------------------------
+def test_causal_negative_control_callback_for_a_non_injected_token_never_confirms():
+    it = OOBInteraction(protocol="dns", unique_id="corr-noninjected", q_type="A")
+    # a real interaction correlated to a token we minted but did NOT inject into the target
+    res = _result(interactions=[it], matched="NONINJECTED", injected=[])
+    assert res.confirmed is False
+    assert cmdi_verdict(res).tier is not Tier.CONFIRMED
+    assert cmdi_verdict(res).tier is Tier.REFUTED
+
+
+def test_causal_positive_a_token_we_actually_injected_confirms():
+    it = OOBInteraction(protocol="dns", unique_id="corr-injected", q_type="A", remote_address="203.0.113.9")
+    res = _result(interactions=[it], matched="TOKX", injected=["TOKA", "TOKX", "TOKB"])
+    assert res.confirmed is True
+    assert cmdi_verdict(res).tier is Tier.CONFIRMED and res.matched_token in res.injected_tokens
+
+
+def test_probe_confirms_only_a_dispatched_token_not_a_send_that_errored():
+    # End-to-end at the probe: a sender that RAISES on every send dispatches nothing, so NO token is
+    # recorded as injected — even though the session minted them. With no injected token, the probe
+    # can never mark a callback as confirming (injected_tokens stays empty).
+    sess, tr = _stub_session()
+    def _raising_sender(*, target_url, method, headers, body):
+        raise ConnectionError("target unreachable")
+    res = run_cmdi_probe(
+        base_url="http://target", path="/diag", param="host",
+        session_factory=lambda: sess, http_send=_raising_sender,
+        poll_seconds=2, poll_interval=1, sleep=lambda _s: None)
+    assert res.injected_tokens == []                  # nothing was dispatched -> nothing is injected
+    assert cmdi_verdict(res).tier is not Tier.CONFIRMED
 
 
 # -----------------------------------------------------------------------------
