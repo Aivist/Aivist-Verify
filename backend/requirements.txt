@@ -60,7 +60,7 @@ PyYAML>=6.0,<7.0
 # Intercepting proxy. The 'mitmdump' headless runner is spawned + supervised as a
 # child process by ProxyManager (it lives in its own Python interpreter; IPC is a
 # loopback HTTP POST back into FastAPI). Pinned to the tested version.
-mitmproxy==11.0.2
+mitmproxy==11.1.2
 
 # mitmproxy 11.0.2 constrains h11<0.15. The newer httpcore 1.0.9 demands
 # h11>=0.16, which would conflict and break httpx (used by the fuzzer + proxy
