@@ -104,9 +104,14 @@ The `aivist` command (repo-root `run.py`; installed via `pip install -e .`) is t
 door. With no arguments it opens an interactive console; otherwise it dispatches
 subcommands:
 
-- **`verify`** — confirm a single finding. *Lab mode* (`--caseset [--case]`) runs against
-  a built-in ground-truth caseset; *external mode* (`--target --spec --op [--auth]`) runs
-  against a locally-hosted real target described by an OpenAPI spec and one operation.
+- **`verify`** — confirm a single finding. *Golden path* (recommended, real target):
+  `--target-file <target.toml>` — a saved Target from which the op is built (via the same
+  `build_op` `scan` uses) and the spec is synthesized when absent, so no hand-authored
+  operation JSON and no `--spec` are needed (standalone; it cannot be combined with the
+  advanced flags — that errors). *Lab mode* (`--caseset [--case]`) runs against a built-in
+  ground-truth caseset; *advanced external mode* (`--target --spec --op [--auth]`) runs
+  against a locally-hosted real target described by an OpenAPI spec and one operation (for a
+  custom body / per-finding accounts / exotic shapes).
 - **`scan`** — non-interactive auto-discovery + confirm from a saved target file. Works
   from an OpenAPI spec, or spec-less from an endpoints list, a captured-traffic file
   (HAR / raw-HTTP), or a live mitmproxy capture. An AI step proposes candidate endpoints,

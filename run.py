@@ -35,7 +35,7 @@ from backend.app.core.config import settings, reveal_secret  # noqa: E402
 from backend.app.cli.confirm_render import render_tree, exit_code_for, render_tally  # noqa: E402
 from backend.app.cli.branding import command_name, product_name  # noqa: E402
 from backend.app.cli.config_flow import run_config_flow  # noqa: E402
-from backend.app.cli.external_verify import run_external_verify  # noqa: E402
+from backend.app.cli.external_verify import run_external_verify, run_verify_from_target_file  # noqa: E402
 import verdict_measure as vm  # noqa: E402  (reuse: _run_one/_boot_target/_stop_target/_rm_db/_attack_path)
 
 _EXIT_NOTDATA = 2
@@ -150,7 +150,13 @@ def build_parser() -> argparse.ArgumentParser:
     # Lab mode (unchanged): a built-in caseset + optional case id.
     v.add_argument("--caseset", default=None, help="LAB mode: path to a caseset JSON")
     v.add_argument("--case", default=None, help="LAB mode: a case id to confirm; omit to confirm ALL cases in the set")
-    # External mode: a locally-run REAL target (base URL + OpenAPI spec + one operation).
+    # GOLDEN PATH (recommended): a saved Target FILE (target --dump-template/--from-file) — the op is
+    # built from its fields and the spec is synthesized if the target has none, so NO hand-authored
+    # --op and NO --spec are needed. Standalone: it carries base_url/op/spec/auth itself.
+    v.add_argument("--target-file", default=None,
+                   help="GOLDEN PATH: path to a saved target file (see `target --dump-template`). Builds "
+                        "the op + synthesizes the spec from it — no --op / --spec needed. Standalone.")
+    # EXTERNAL/ADVANCED mode: a locally-run REAL target (base URL + OpenAPI spec + one operation).
     v.add_argument("--target", default=None, help="EXTERNAL mode: base URL of a locally-run real target, e.g. http://localhost:8888")
     v.add_argument("--spec", default=None, help="EXTERNAL mode: path to the target's OpenAPI JSON")
     v.add_argument("--op", default=None, help="EXTERNAL mode: path to an operation JSON {method, baseline_path, body, payload, shape}")
@@ -252,6 +258,20 @@ def main():
 
     args = build_parser().parse_args()
     if args.cmd in ("verify", "confirm"):
+        if args.target_file:
+            # GOLDEN PATH: build the op + synthesize the spec from a saved Target. Standalone —
+            # fail LOUD (never silently pick) if combined with the advanced --op/--spec/--target path,
+            # lab --caseset, or --auth (the target file already carries base_url/op/spec/auth).
+            clash = [flag for flag, val in (("--op", args.op), ("--spec", args.spec),
+                                            ("--target", args.target), ("--caseset", args.caseset),
+                                            ("--case", args.case), ("--auth", args.auth)) if val]
+            if clash:
+                print(f"--target-file is a standalone golden path and cannot be combined with "
+                      f"{', '.join(clash)}. The target file already carries base_url / op / spec / auth. "
+                      f"Use --target-file ALONE, or the advanced --target --spec --op path.",
+                      file=sys.stderr)
+                sys.exit(_EXIT_NOTDATA)
+            sys.exit(run_verify_from_target_file(args.target_file, model=args.model))
         if args.auth and not args.target:
             print("--auth is for EXTERNAL mode; it needs --target (and --spec / --op).", file=sys.stderr)
             sys.exit(_EXIT_NOTDATA)

@@ -219,13 +219,22 @@ pip install -e .          # registers the `aivist` command; config lives under ~
 **`aivist verify` — confirm one finding.**
 
 ```bash
+# RECOMMENDED (real target): a saved target FILE — the op is built and the spec is
+# synthesized from it, so NO hand-authored operation.json and NO --spec are needed.
+aivist verify --target-file ./mytarget.toml           # + env tokens (below)
+
 # LAB mode: confirm against a built-in ground-truth caseset
 aivist verify --caseset <caseset.json> [--case <id>]
 
-# EXTERNAL mode: a locally-run real target = base URL + OpenAPI spec + one operation
+# ADVANCED (real target): hand-authored operation + spec — for a custom body,
+# per-finding accounts, or exotic shapes the target file does not express.
 aivist verify --target http://localhost:8888 --spec ./openapi.json --op ./operation.json
 # optional: --auth ./login.json for automatic re-login instead of static tokens
 ```
+
+`--target-file` is standalone (it carries base_url / op / spec / auth); it cannot be combined with
+`--op` / `--spec` / `--target` / `--caseset` (that errors — never a silent pick). Create one with
+`aivist target --dump-template ./mytarget.toml`, fill it in, and `verify --target-file` it.
 
 **`aivist scan` — non-interactive auto-discovery + confirm.** From an OpenAPI spec *or* spec-less:
 

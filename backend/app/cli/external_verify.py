@@ -554,8 +554,8 @@ async def _verify_external_relogin(
 def run_external_verify(
     *,
     target: str,
-    spec_path: str,
-    op_path: str,
+    spec_path: Optional[str] = None,
+    op_path: Optional[str] = None,
     model: Optional[str] = None,
     prompt_secret: Callable[[str], str] = getpass.getpass,
     prompt: Callable[[str], str] = input,
@@ -566,6 +566,8 @@ def run_external_verify(
     auth_spec_path: Optional[str] = None,
     http_post=None,
     bystander_token: Optional[str] = None,
+    spec: Optional[Dict[str, Any]] = None,
+    op: Optional[Dict[str, Any]] = None,
 ) -> int:
     """Run `verify` against a locally-run external real target. Returns a process exit code
     (0 nothing confirmed · 1 confirmed · 2 NOT DATA / input error). I/O is injectable for
@@ -573,7 +575,13 @@ def run_external_verify(
 
     Tokens come EITHER from static tokens (default) OR, when `auth_spec_path` (`--auth`) is
     given, from an auto re-login flow (see relogin.py) — either/or; the static path is unchanged.
-    Whichever the source, the same `_verify_external` engine call is built (byte-identical)."""
+    Whichever the source, the same `_verify_external` engine call is built (byte-identical).
+
+    (spec, op) arrive EITHER as files (`spec_path`/`--spec`, `op_path`/`--op` — the advanced path)
+    OR already assembled by the `--target-file` adapter (`run_verify_from_target_file` passes `spec`
+    + `op` directly, having built the op via `build_op` and synthesized the catalog via
+    `spec_from_endpoints`). Only the SOURCE of (spec, op) differs; everything downstream — tokens,
+    the attacker!=owner collision guard, scope, the engine call, degradation, render — is identical."""
     if err is None:
         def err(*a):  # default: stderr
             print(*a, file=sys.stderr)
@@ -583,14 +591,21 @@ def run_external_verify(
             f"(provider, key, model) - or set GEMINI_API_KEY / LLM_API_KEY. Nothing was sent.")
         return 2
 
+    # (spec, op) come from files ONLY when not pre-supplied by the --target-file adapter.
     try:
-        spec = _load_spec_file(spec_path)     # JSON or YAML (--spec); op stays JSON below
-        op = _load_json(op_path)
+        if op is None:
+            op = _load_json(op_path)              # JSON (--op)
+        if spec is None and spec_path:
+            spec = _load_spec_file(spec_path)     # JSON or YAML (--spec)
     except Exception as e:
         err(f"[NOT DATA] could not read --spec / --op: {type(e).__name__}: {e}")
         return 2
     if not op.get("method") or not op.get("baseline_path"):
         err("[NOT DATA] the --op JSON must include 'method' and 'baseline_path'.")
+        return 2
+    if spec is None:
+        err("[NOT DATA] no OpenAPI spec: pass --spec, or use --target-file "
+            "(the spec is synthesized from the target's endpoint).")
         return 2
 
     # Remote-safety preflight (REUSES the audited ScopePolicy; adds no new guard). Refuse an
@@ -697,3 +712,59 @@ def run_external_verify(
     echo(f"[real target: {target}]  (no ground truth - an engineering signal, NOT a zero-FP claim)")
     echo(render_tree(record))
     return exit_code_for([record])
+
+
+def run_verify_from_target_file(
+    target_file_path: str, *,
+    model: Optional[str] = None,
+    prompt_secret: Callable[[str], str] = getpass.getpass,
+    prompt: Callable[[str], str] = input,
+    config_path: Optional[str] = None,
+    engine: Callable = execute_deep_verification,
+    echo: Callable[..., None] = print,
+    err: Optional[Callable[..., None]] = None,
+    http_post=None,
+    bystander_token: Optional[str] = None,
+) -> int:
+    """`verify --target-file <path>` — the human GOLDEN PATH: confirm ONE finding from a saved Target
+    (the `target --dump-template` / `--from-file` TOML), with NO hand-authored `--op` and — for a
+    spec-less target — NO `--spec`.
+
+    It only changes how (spec, op) are ASSEMBLED, then defers to the unchanged `run_external_verify`
+    core (identical tokens / collision guard / scope / engine / degradation / render):
+      * op   -> `Target.to_op()` == `build_op(...)` — the SAME op-gen `scan` and `run --config verify`
+                use (NOT a second op builder). A path id fills the {template}; a query id builds the
+                `?param=attacker_id` baseline (D29). `body` is None (a body needs the advanced `--op`).
+      * spec -> the target's `spec_path` if it has one; otherwise `spec_from_endpoints([METHOD path])`,
+                exactly as `run --config verify` synthesizes a single-endpoint catalog.
+
+    Tokens are UNCHANGED — env `TARGET_ATTACKER_TOKEN` / `_OWNER_TOKEN` (/ `_BYSTANDER_TOKEN`) > per-user
+    config > masked prompt; NEVER the target file (off-disk discipline); `attacker == owner` is fail-closed
+    (the guard lives in the core). The target's optional `auth_spec_path` is honored exactly like `--auth`.
+    Returns a process exit code (0 nothing confirmed · 1 confirmed · 2 NOT DATA / input error)."""
+    if err is None:
+        def err(*a):  # default: stderr
+            print(*a, file=sys.stderr)
+
+    from backend.app.cli import target_file as _target_file
+    from backend.app.services.endpoint_catalog import spec_from_endpoints
+
+    t, errors = _target_file.load_target_file(target_file_path)
+    if errors:
+        err(f"[NOT DATA] the target file has {len(errors)} problem(s) - fix them and re-run:")
+        for e in errors:
+            err(f"  - {e}")
+        return 2
+
+    op = t.to_op()                                     # build_op — the SAME op-gen scan / run --config use
+    spec_path = t.spec_path or None
+    # Spec-less target -> synthesize a single-endpoint catalog from the TEMPLATED path (identical to
+    # run --config verify). A target WITH a spec keeps its file (run_external_verify loads it; YAML too).
+    spec = None if spec_path else spec_from_endpoints([f"{t.method} {t.path_template}"])
+
+    return run_external_verify(
+        target=t.base_url, spec_path=spec_path, spec=spec, op=op, model=model,
+        prompt_secret=prompt_secret, prompt=prompt, config_path=config_path, engine=engine,
+        echo=echo, err=err, auth_spec_path=(t.auth_spec_path or None),
+        http_post=http_post, bystander_token=bystander_token,
+    )
