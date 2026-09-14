@@ -245,6 +245,23 @@ def build_parser() -> argparse.ArgumentParser:
                          "url_location, optional oob_server / poll_seconds). Needs outbound network.")
     sf.add_argument("--pretty", action="store_true",
                     help="Also print a short human summary to stderr (stdout stays pure JSON).")
+
+    # cmdi: NON-INTERACTIVE OS command-injection confirmation via an out-of-band (interactsh)
+    # callback — the THIRD vuln type, reusing the SAME OOB proof shape as ssrf. Kept SEPARATE from
+    # the access-control path; a CONFIRMED cmdi requires a REAL token-matched OOB callback (needs
+    # outbound network + a reachable public interactsh server).
+    cm = sub.add_parser(
+        "cmdi",
+        help="Non-interactive: confirm OS command injection via an out-of-band interactsh callback "
+             "from a JSON config OR a saved --target-file. CONFIRMED only on a real token-matched callback.",
+    )
+    cmg = cm.add_mutually_exclusive_group(required=True)
+    cmg.add_argument("--config", help="Path to a JSON config file (base_url, path, param, method, "
+                                      "param_location, optional oob_server / poll_seconds). Needs outbound network.")
+    cmg.add_argument("--target-file", help="Path to a saved target file (see `target --dump-template`); "
+                                           "uses its base_url + path_template + id_param (query param). Standalone.")
+    cm.add_argument("--pretty", action="store_true",
+                    help="Also print a short human summary to stderr (stdout stays pure JSON).")
     return ap
 
 
@@ -344,6 +361,14 @@ def main():
         from backend.app.cli.ssrf_command import run_ssrf_from_config
         sys.exit(run_ssrf_from_config(
             args.config, pretty=args.pretty,
+            err=(lambda *a: print(*a, file=sys.stderr))))
+    if args.cmd == "cmdi":
+        # OS command-injection confirmation via out-of-band callback — separate additive path (no
+        # LLM key needed; CONFIRMED only on a real token-matched interactsh callback). Accepts a JSON
+        # --config OR a saved --target-file (like verify). Structured JSON to stdout.
+        from backend.app.cli.cmdi_command import run_cmdi_from_config
+        sys.exit(run_cmdi_from_config(
+            config_path=args.config, target_file_path=args.target_file, pretty=args.pretty,
             err=(lambda *a: print(*a, file=sys.stderr))))
 
 

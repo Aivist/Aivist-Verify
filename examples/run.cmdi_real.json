@@ -1,0 +1,10 @@
+{
+  "_comment": "OS COMMAND INJECTION via OOB — REAL (must CONFIRM with a real interactsh callback). Drives the cmdi_target lab (GET /diag?host=), which concatenates `host` into a shell command. The detector injects a battery of context payloads carrying a UNIQUE interactsh domain; the shell executes one and calls back out-of-band, and CONFIRMED requires that the received callback's token matches the one injected. Needs OUTBOUND network + a reachable public interactsh server. Boot the lab first: python -m uvicorn cmdi_target.main:app --port 8005. Run: python run.py cmdi --config examples/run.cmdi_real.json",
+  "mode": "cmdi",
+  "base_url": "http://127.0.0.1:8005",
+  "method": "GET",
+  "path": "/diag",
+  "param": "host",
+  "param_location": "query",
+  "poll_seconds": 30
+}

@@ -1,0 +1,10 @@
+{
+  "_comment": "OS COMMAND INJECTION via OOB — SAFE control (must NOT confirm). Drives the cmdi_target lab's SECURE endpoint (GET /diag-safe?host=), which validates `host` against a strict allow-list regex and refuses any payload carrying a shell metacharacter with 400 — so no command runs and no out-of-band callback can occur => REFUTED, never CONFIRMED. Boot the lab first: python -m uvicorn cmdi_target.main:app --port 8005. Run: python run.py cmdi --config examples/run.cmdi_safe.json",
+  "mode": "cmdi",
+  "base_url": "http://127.0.0.1:8005",
+  "method": "GET",
+  "path": "/diag-safe",
+  "param": "host",
+  "param_location": "query",
+  "poll_seconds": 12
+}
