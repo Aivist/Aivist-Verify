@@ -1,8 +1,9 @@
 # QUICKSTART — open the confirmer
 
-The BOLA/IDOR **confirmer** is the human-walkable front door: it runs the real verification
-engine against a lab finding and prints whether the finding is a **CONFIRMED** cross-user
-access-control bug or **REFUTED**.
+The **confirmer** is the human-walkable front door: it runs the real verification engine against a
+finding and prints whether it is **CONFIRMED**, **REFUTED**, or **NOT DATA**. Its mature core is
+BOLA/IDOR access control (below); it also confirms **SSRF** out-of-band (`aivist ssrf`, the first
+non-access-control type — see the `ssrf` section and [`SSRF.md`](./SSRF.md)).
 
 ## Prerequisites
 
@@ -16,16 +17,22 @@ access-control bug or **REFUTED**.
 
 ## Run it
 
-Run everything from the repo root.
+Run everything from the repo root. (`verify` is the primary subcommand; `confirm` is kept as a
+back-compat alias, so older `run.py confirm …` invocations still work.)
+
+**Zero-setup demo** — confirm a real cross-user write on the built-in lab (no caseset path to know):
+```powershell
+python run.py demo
+```
 
 **CONFIRMED demo** — a real cross-user write BOLA:
 ```powershell
-python run.py confirm --caseset "scripts\measure\casesets\vulnerable_target.json" --case B1-X-CROSS
+python run.py verify --caseset "scripts\measure\casesets\vulnerable_target.json" --case B1-X-CROSS
 ```
 
 **REFUTED demo** — a securely-handled look-alike:
 ```powershell
-python run.py confirm --caseset "scripts\measure\casesets\vulnerable_target.json" --case X-EQUIV-SAFE
+python run.py verify --caseset "scripts\measure\casesets\vulnerable_target.json" --case X-EQUIV-SAFE
 ```
 
 Also: omit `--case` to confirm the whole caseset (one result per case + a one-line tally).
@@ -38,10 +45,13 @@ Also: omit `--case` to confirm the whole caseset (one result per case + a one-li
 
 ## Confirm a REAL target — `verify` (one finding) and `scan` (auto-discover many)
 
-The lab demo above uses a caseset. Against a **locally-run real target** you have two front doors. Both
-need an API key first (run `config` once; see [`LLM_PROVIDERS.md`](./LLM_PROVIDERS.md)). The engine's
-verdict is byte-identical to the lab path — a real target has **no ground truth**, so there is **no
-zero-FP claim**; a timeout / 401 / 403 / 429 is reported as **NOT DATA**, never a verdict.
+The lab demo above uses a caseset. Against a real target — **local or an authorized remote host** —
+you have two front doors. Both need an API key first (run `config` once; see
+[`LLM_PROVIDERS.md`](./LLM_PROVIDERS.md)). The engine's verdict is byte-identical to the lab path — a
+real target has **no ground truth**, so there is **no zero-FP claim**; a timeout / 401 / 403 / 429 is
+reported as **NOT DATA**, never a verdict. A remote target is scope-locked fail-closed and hardened
+(cloud-metadata / link-local refused, DNS-rebinding refused, connection pinned to the scope-validated
+IP, redirects re-validated per hop); an unsafe/unresolvable target is refused up front.
 
 ### `verify` — confirm ONE finding you already have (subcommand)
 
@@ -105,6 +115,25 @@ endpoint + ids (verify) or a catalog source `spec_path` / `endpoints` / `endpoin
 one → a clear JSON error, never a prompt; `attacker == owner` is refused). Exit code: **0** when a
 verdict/report is produced, **non-zero** on NOT DATA / setup error (so CI can branch); no token value ever
 appears in the JSON.
+
+### `ssrf` — confirm SSRF out-of-band (the first non-access-control type)
+
+A **separate** subcommand for Server-Side Request Forgery. It mints a UNIQUE
+[interactsh](https://github.com/projectdiscovery/interactsh) domain, injects `http://<domain>/` into
+the candidate request's URL parameter, sends the request to the target, and polls the OOB session —
+**CONFIRMED only if the target's server makes a real callback** to that domain (the interaction is
+the deterministic proof); no callback → **REFUTED**; no reachable interactsh server → **NOT DATA**.
+No LLM key needed (SSRF is confirmed by a physical callback, not a model). Needs **outbound network**.
+
+```powershell
+python -m uvicorn ssrf_target.main:app --port 8004          # a local lab (REAL /fetch, SAFE /fetch-safe)
+python run.py ssrf --config examples\run.ssrf_real.json     # -> [CONFIRMED] on a real callback (exit 1)
+python run.py ssrf --config examples\run.ssrf_safe.json     # -> [REFUTED] (no callback; exit 0)
+```
+
+Config: `base_url`, `path`, `url_param`, `method`, `url_location` (`query`|`body`), optional
+`scheme` / `oob_server` / `poll_seconds`. Exit codes: **1** CONFIRMED · **0** refuted · **2** NOT DATA.
+See [`SSRF.md`](./SSRF.md).
 
 ### In CI — the GitHub Action
 

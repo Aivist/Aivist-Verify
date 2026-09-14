@@ -1,22 +1,20 @@
 # VERIFY ENGINE — Differential Fuzzing & Auth Custody
 
-> File: `backend/app/services/fuzzer.py` (~1600 lines — the **legacy differential
+> File: `backend/app/services/fuzzer.py` (~2000 lines — the **legacy differential
 > engine**; see the interface note below for how it relates to the shipped CLI).
 > This engine takes a persisted `VulnerabilityFinding` + its `automation_payloads`
 > and actively replays mutated requests against the live target, then uses a
 > **differential oracle** to decide whether each payload exposed a real
 > vulnerability. It also self-heals expiring auth sessions mid-run.
 >
-> Related skill: `.agents/skills/async-session-custody/SKILL.md`. The code is
-> organized into "Section 7.x" (custody) and "Step 8" (parallel) blocks that map
-> to that skill.
+> The code is organized into "Section 7.x" (custody) and "Step 8" (parallel) blocks.
 
 ## What drives this engine (CLI-only; no HTTP API)
 
 > **Interface reality.** Aivist Verify is a **CLI-only** tool — there is **no server,
 > HTTP API, or web UI** (see [`ARCHITECTURE.md`](./ARCHITECTURE.md)). The product is driven
-> by `run.py` (`aivist verify` / `scan` / `run` / `demo` / `config`), and the **shipped
-> confirmation path is the deep verifier** (`deep_verifier.execute_deep_verification`; see
+> by `run.py` (`aivist verify` / `scan` / `run` / `ssrf` / `demo` / `target` / `config`), and the
+> **shipped confirmation path is the deep verifier** (`deep_verifier.execute_deep_verification`; see
 > [`DEEP_VERIFY.md`](./DEEP_VERIFY.md)), which the CLI calls directly.
 >
 > The `fuzzer.py` **differential engine documented below is the LEGACY batch path.** Its
@@ -302,8 +300,8 @@ operation's genuine `tags` + `operationId`** when the spec declares them (nothin
 invented; `summary`/`description` are deliberately not surfaced, and the HAR adapter is
 a `NotImplementedError` stub). `_shadow_endpoint_catalog` **merges** that real surface
 with the placeholder when a spec source is provided (read from
-`settings.AI_DEEP_VERIFY_OPENAPI_SPEC` via `getattr` — a runtime-only seam, not a
-declared config field), else falls back byte-identically to the placeholder. Carrying
+`settings.AI_DEEP_VERIFY_OPENAPI_SPEC`, now a **declared** `Optional[str]` field in
+`config.py`), else falls back byte-identically to the placeholder. Carrying
 semantics is the enabling half of **B-1** (see [`DEEP_VERIFY.md`](./DEEP_VERIFY.md)).
 
 ## Related: `deep_verifier.py`

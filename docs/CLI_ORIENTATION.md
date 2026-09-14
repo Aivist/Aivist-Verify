@@ -4,7 +4,7 @@ A brief, code-anchored map for the next execution node. This is a technical map,
 strategy doc.
 
 ## Where it lives
-- **`run.py`** (repo root) — the `confirm` CLI entry: `python run.py confirm --caseset <path> [--case <id>]`.
+- **`run.py`** (repo root) — the CLI entry. Primary lab command: `python run.py verify --caseset <path> [--case <id>]` (`confirm` is a kept back-compat alias).
 - **`backend/app/cli/confirm_render.py`** — the **pure** renderer (`render_tree`, `case_outcome`,
   `exit_code_for`). No engine / network / settings import.
 - **`backend/tests/test_confirm_render.py`** — offline renderer test, driven by the committed golden
@@ -27,15 +27,21 @@ strategy doc.
 
 ## Beyond the lab confirmer — the real-target front doors (`verify`, `scan`, `run`)
 
-The map above is the **lab caseset** renderer. Over the same engine there are now **three** real-target
-surfaces (verdict logic untouched — they only assemble the inputs and reuse `execute_deep_verification`).
-Subcommands of `python run.py`: `verify · confirm · config · demo · target · scan · run`.
+The map above is the **lab caseset** renderer. Over the same engine there are now real-target
+surfaces (verdict logic untouched — they only assemble the inputs and reuse `execute_deep_verification`),
+plus a separate SSRF surface. Subcommands of `python run.py`: `verify · confirm · config · demo · target ·
+scan · run · ssrf` (`confirm` is a back-compat alias for `verify`).
 
 - **`verify` — one finding.** Subcommand `python run.py verify --target <url> --spec <openapi> --op <op.json>`
-  (`+ --auth <login.json>` for auto re-login). Assembles one operation into the same engine call; the
-  three red lines (scope fail-closed, attacker/owner identity isolation, `SecretStr` tokens) hold. Code in
+  (`+ --auth <login.json>` for auto re-login). `<url>` may be **local or an authorized remote host** — a
+  `remote_safety.preflight` over the audited `ScopePolicy` refuses cloud-metadata / link-local / DNS-rebinding
+  / unresolvable targets up front, and the engine pins to the scope-validated IP. Assembles one operation into
+  the same engine call; the three red lines (scope fail-closed, attacker/owner identity isolation, `SecretStr`
+  tokens) hold. The op's id may live in the **path OR the query string** (D29). Code in
   `backend/app/cli/external_verify.py`.
-- **`scan` — auto-discover many (REPL command, no subcommand).** Launch the console (`python run.py` with
+- **`scan` — auto-discover many (both a non-interactive subcommand AND a REPL command).** Non-interactive:
+  `python run.py scan --target-file <file> [--endpoints-file … | --traffic-file … | --capture]` (`--target-file`
+  is REQUIRED; tokens from env / `--tokens-file`). Interactive: launch the console (`python run.py` with
   no args) → `config` → `target` → `scan`. It builds a catalog from **one** of four sources — the target's
   spec, a `METHOD /path` endpoints list, a **captured-traffic file** (HAR/raw-HTTP), or a **LIVE `mitmdump`
   capture** — then has the model **propose** BOLA/IDOR candidates, **code-fences every op twice**, sources
@@ -44,10 +50,11 @@ Subcommands of `python run.py`: `verify · confirm · config · demo · target �
   proposal + code fences), `scan_ids.py` (id sourcing tiers a/b/c), `scan_report.py` (tier-grouped render);
   REPL wiring in `console/controller.py:do_scan` + `console/intro.py`.
   - **Passive discovery (built).** LIGHT: `scan_traffic.py` templatizes a HAR/raw-HTTP capture (scope-locked
-    to the target origin) into the endpoints list — non-interactive `run.py scan --traffic-file <cap>`, or the
-    interactive `scan` prompt. HEAVY: `scan_capture.py` + `proxy/capture_addon.py` drive a synchronous
-    `mitmdump` (clean process-tree teardown; no async ingest stack) writing scope-filtered flows to a temp
-    file the LIGHT loader reads — `run.py scan --capture [--capture-port N] [--capture-duration S]`.
+    to the target origin) into the endpoints list — non-interactive `run.py scan --target-file <file>
+    --traffic-file <cap>`, or the interactive `scan` prompt. HEAVY: `scan_capture.py` + `proxy/capture_addon.py`
+    drive a synchronous `mitmdump` (clean process-tree teardown; no async ingest stack) writing scope-filtered
+    flows to a temp file the LIGHT loader reads — `run.py scan --target-file <file> --capture [--capture-port N]
+    [--capture-duration S]`.
   - **CLI experience fixes (director hands-on run).** Robust Windows ANSI/VT color detection (plain, no raw
     `\033[` leak, when unsupported); env-first owner+bystander tokens (masked, with a "from environment"
     message); required-choice framing when no spec; token re-entry from the scan review; and non-numeric
@@ -71,6 +78,15 @@ Subcommands of `python run.py`: `verify · confirm · config · demo · target �
   runs the CONTAINERIZED action against the committed `depot_target` lab in
   `.github/workflows/aivist-verify-selftest.yml` (SAFE `DP-READ-SAFE-ECHO` → exit 0; REAL `DP-READ-VULN` → exit 1).
   Usage lives in README "Use in CI (GitHub Action)".
+
+- **`ssrf` — SSRF via out-of-band callback (the FIRST non-access-control type).** Subcommand
+  `python run.py ssrf --config <file.json>`. A SEPARATE path from the access-control confirmer: it does not
+  reuse `execute_deep_verification` — it composes the interactsh OOB client (`services/oob/`) and the
+  tiered-verdict framework (`services/verdict_tiers.py`). Mints a UNIQUE interactsh domain, injects
+  `http://<domain>/` into the request's URL param, sends it, and polls the OOB session — **CONFIRMED only on a
+  real DNS/HTTP callback** (the interaction is the `DeterministicProof`), else REFUTED / NOT DATA. No LLM key
+  (model-free). Code: `backend/app/cli/ssrf_command.py`, `backend/app/services/ssrf_detector.py`; lab
+  `ssrf_target/`; exit codes 1 CONFIRMED / 0 refuted / 2 NOT DATA. See `docs/SSRF.md`.
 
 ## Two open observations (pending director feedback — do not freeze the UX)
 1. **ASCII dash** — the header uses `-`, not `—` (the Windows console mangles the em-dash).
